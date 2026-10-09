@@ -41,7 +41,7 @@ def qwen_enrich(content: str, think: bool):
     instr = ("You are a project file analyzer. Output ONLY a JSON object with keys: "
              "purpose (one sentence), key_points (max 3 strings), components (max 3), "
              "depends_on (max 3). Answer in the SAME LANGUAGE as the file. No other text.")
-    body = json.dumps({"model": "qwen3.5:4b", "think": think, "stream": False,
+    body = json.dumps({"model": "qwen3.5-route", "think": think, "stream": False,
                        "options": {"num_ctx": 4096},
                        "messages": [{"role": "user", "content": instr + "\n\nFILE CONTENT:\n" + content[:2600]}]})
     r = subprocess.run(["curl", "-s", "127.0.0.1:11434/api/chat", "-d", body, "--max-time", "400"],
