@@ -17,6 +17,7 @@ import FileExplorer from "./components/FileExplorer";
 import WarningBanner from "./components/WarningBanner";
 import StalenessBanner from "./components/StalenessBanner";
 import TokenGate from "./components/TokenGate";
+import ProjectStudio from "./components/ProjectStudio";
 import MobileLayout from "./components/MobileLayout";
 import { useIsMobile } from "./hooks/useIsMobile";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
@@ -300,6 +301,7 @@ function DashboardContent({
   const toggleShowFunctionsInClassView = useDashboardStore((s) => s.toggleShowFunctionsInClassView);
   const [showKeyboardHelp, setShowKeyboardHelp] = useState(false);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("info");
+  const [studioMode, setStudioMode] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(shouldShowOnboarding);
   const dismissOnboarding = useCallback((remember: boolean) => {
     if (remember && typeof window !== "undefined") {
@@ -481,6 +483,10 @@ function DashboardContent({
     </div>
   );
 
+  if (studioMode) {
+    return <ProjectStudio onOpenGraph={() => setStudioMode(false)} />;
+  }
+
   if (isMobile) {
     return (
       <MobileLayout
@@ -628,6 +634,24 @@ function DashboardContent({
 
         {/* Right — fixed actions */}
         <div className="flex items-center gap-2 sm:gap-4 shrink-0">
+          <button
+            onClick={() => setStudioMode(true)}
+            className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 rounded-lg text-sm bg-elevated text-text-secondary hover:text-text-primary transition-colors"
+            title="Open Project Studio"
+          >
+            <svg
+              className="w-4 h-4"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <rect x="3" y="3" width="7" height="7" rx="1" strokeWidth={2} />
+              <rect x="14" y="3" width="7" height="7" rx="1" strokeWidth={2} />
+              <rect x="3" y="14" width="7" height="7" rx="1" strokeWidth={2} />
+              <rect x="14" y="14" width="7" height="7" rx="1" strokeWidth={2} />
+            </svg>
+            <span className="hidden md:inline">Studio</span>
+          </button>
           <FilterPanel />
           <ExportMenu />
           <button

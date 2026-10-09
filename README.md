@@ -150,6 +150,7 @@ The detailed review documents are:
 - [AgentFlow Architecture](docs/AGENTFLOW_ARCHITECTURE.md) — voiceprint, HomeHub policy, project knowledge, Studio, Coding Agent, and Jarvis Group integration.
 - [Investigation Report](docs/INVESTIGATION_REPORT_2026-10-09.md) — gbrain/framework capability audit and Jetson/Qwen capacity decision.
 - [Jetson Model Strategy](docs/JETSON_MODEL_STRATEGY.md) — resident Qwen3.5-4B, maintenance profiles, memory evidence, and the safe A/B plan.
+- [Visualization Design](docs/VISUALIZATION_DESIGN.md) — Project Studio information architecture, evidence language, visual tokens, states, and migration sequence.
 
 The first hardware deployment is one Jetson Agent Box serving multiple authorized source devices. Additional boxes should be introduced when workload, network locality, privacy isolation, or availability requirements justify them—not as a requirement for every computer.
 
