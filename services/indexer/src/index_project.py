@@ -130,7 +130,9 @@ def main():
         gate = 0.0
         if verdict is None:
             verdict, gate = laya_decide(head)
-        think = verdict == "deep-analysis" and gate > 0.5
+        # 首扫铺底策略 (ADR-0001 分层): 全量 think:false 铺覆盖, gate 值照记;
+        # deep 留给维护窗口的第二遍 (按 gate 挑 top 文件), 不在首扫烧 thinking。
+        think = False
         item = {"file": rel, "version": {"mtime": f["mtime"], "size": size},
                 "verdict": verdict, "think_gate": round(gate, 2),
                 "source": "mac-connector", "analyzed_at": time.strftime("%FT%T")}
