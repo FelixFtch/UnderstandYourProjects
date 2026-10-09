@@ -171,7 +171,8 @@ export function createStudioSnapshotFromGraph(graph: KnowledgeGraph): StudioSnap
       schemaVersion: graph.version,
       freshness: "partial",
       updatedAt: graph.project.analyzedAt,
-      visibility: "private",
+      // A graph snapshot has no HomeHub audience decision. Keep visibility
+      // unknown until the access projection supplies it.
     },
     health: {
       state: "partial",

@@ -203,3 +203,45 @@ check can pass while browser-level visual QA is still outstanding.
 - Every graph/search/evidence action is read-only unless an explicit server operation is present and HomeHub has authorized it.
 - Build and tests pass for the vendored dashboard; the dashboard does not write `.ua` output into source projects.
 - A map load, an index synchronization, an evidence answer, and a HomeHub authorization are shown as separate states in the UI.
+
+## Personal timeline and conversation sharing
+
+The Today surface includes a personal project timeline inspired by the mobile
+Jarvis experience. It is a readable digest, not a second event ledger. Each
+entry is derived from the latest KnowledgeGraph/StudioSnapshot and links back
+to the project map or evidence view. The first card answers ‘what did I learn
+yesterday?’ with the project name, indexed entity count, layer count,
+knowledge health, and the snapshot date. Follow-up rows show structure
+availability, connector health, and the next high-signal entry point. When the
+timeline has no connector-backed event, it says ‘Snapshot signal’ or
+‘Suggested from graph’ instead of inventing a commit or conversation event.
+
+Privacy is modelled as a data inventory before it is modelled as an audience.
+The global Your privacy map uses three concentric layers:
+
+| Layer | Purpose | Default meaning |
+| --- | --- | --- |
+| vault | sensitive working material, private notes, identity implementation | excluded from direct and group defaults |
+| trusted | material suitable for a known collaborator or owner circle | opt in through the global draft |
+| shareable | prepared summaries, onboarding, and selected examples | inherited by new direct and group drafts |
+
+An audience (this Jarvis, direct chat, or group) is a separate choice.
+Every conversation shows Inherited items from its default layers, Added items
+selected for that conversation, and Excluded items removed locally. Reset to
+default only clears the local draft. The UI never calls those states a HomeHub
+grant: the browser surface says Draft only, Demo policy preview, or HomeHub
+reviews any real grant until an AccessContextProjection is returned.
+
+The concentric map and the per-conversation scope panel are deliberately the
+same vocabulary. The map stays visually large and uncluttered: the ring
+receives drops, while three responsive layer trays show every item by name,
+type, and source. A user can drag a tray card into the ring to move it between
+layers, click it for its project/source detail, or use the selector as a
+keyboard-friendly fallback. A user can classify an item once in the global
+map, then fine-tune a specific group or one-to-one conversation without
+silently changing other conversations. HomeHub remains the only authority for
+identity, ownership, policy, revocation, and audit.
+
+The rings are intentionally unfilled dashed outlines. The three yellow tones
+identify the vault, trusted, and shareable boundaries without turning the
+center into a solid color block.
