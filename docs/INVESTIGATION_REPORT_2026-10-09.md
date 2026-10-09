@@ -107,6 +107,20 @@ If the Jetson deployment is still on an older gbrain build, first record the exa
 
 The existing framework therefore should be extended, not replaced. The largest missing boundary is **project-scoped ACL + versioned Evidence + incremental source synchronization**.
 
+The first implementation slice should reuse the existing policy engine by adding a project knowledge resource class such as `PROJECT_CONTEXT` or `PROJECT_KNOWLEDGE`. Its metadata should carry `source_id`, `project_id`, `grant_epoch`, and `evidence_scope`. Project search remains a read operation; bounded raw-source Evidence reads receive a separate sensitivity and step-up/egress decision. The project service must not trust client-supplied `member` or `role` fields.
+
+The safest first adapter is:
+
+```text
+existing VoiceContextGrant / IdentityContext
+  -> verified Project AccessContext
+  -> knowledge-service :8790 project prefilter
+  -> gbrain code/search/graph tools
+  -> KnowledgeResult with Evidence and freshness
+```
+
+This preserves the current resident model, turn queue, audit, delegation, and HomeHub ownership while adding a project-specific scope.
+
 ## 3. Qwen and Jetson capacity
 
 ### Read-only Jetson snapshot
