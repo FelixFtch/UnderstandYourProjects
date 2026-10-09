@@ -47,7 +47,21 @@ def qwen_enrich(content: str, think: bool):
     r = subprocess.run(["curl", "-s", "127.0.0.1:11434/api/chat", "-d", body, "--max-time", "400"],
                        capture_output=True, text=True)
     d = json.loads(r.stdout)
-    return (d.get("message", {}) or {}).get("content", ""), d.get("eval_count", 0)
+    content = (d.get("message", {}) or {}).get("content", "") or ""
+    tokens = d.get("eval_count", 0)
+    if not content.strip():
+        # thinking 空转修复 (2026-10-09 实测: thinking 偶发把预算全烧在 reasoning,
+        # content 为空)。降档 think:false 重试一次 - 15s 封顶, 保证必有可解析输出。
+        body2 = body.replace('"think": true', '"think": false')
+        r2 = subprocess.run(["curl", "-s", "127.0.0.1:11434/api/chat", "-d", body2, "--max-time", "120"],
+                            capture_output=True, text=True)
+        try:
+            d2 = json.loads(r2.stdout)
+            content = (d2.get("message", {}) or {}).get("content", "") or ""
+            tokens += d2.get("eval_count", 0)
+        except json.JSONDecodeError:
+            pass
+    return content, tokens
 
 def brace_json(text: str):
     """Thinking mode sometimes wraps JSON - extract first {...} block."""
@@ -94,8 +108,16 @@ def main():
     root = man["root_name"]
     os.makedirs(f"{STATE}", exist_ok=True)
     os.makedirs(f"{OUT}/{root}", exist_ok=True)
-    files = [f for f in man["files"] if f["kind"] == "file"][:a.limit]
-    print(f"indexing {root}: {len(files)} files (of {man['total']})")
+    def worth(f):
+        rel, ext = f["relpath"], os.path.splitext(f["relpath"])[1].lower()
+        if ext in {".py", ".ts", ".tsx", ".js", ".swift", ".rs", ".go", ".m"}: rank = 0
+        elif ext in {".md", ".markdown"}: rank = 1
+        elif ext in {".sh", ".toml", ".yaml", ".yml"}: rank = 2
+        elif ext in {".json", ".plist", ".cfg", ".ini", ".txt"}: rank = 3
+        else: rank = 4
+        return (rank, rel.count("/"), rel)
+    files = sorted([f for f in man["files"] if f["kind"] == "file"], key=worth)[:a.limit]
+    print(f"indexing {root}: {len(files)} files (of {man['total']})", flush=True)
 
     stats = {"rule_skip": 0, "rule_structure": 0, "laya_skip": 0, "laya_structure": 0,
              "quick": 0, "deep": 0, "json_ok": 0, "json_bad": 0, "tokens": 0}
@@ -135,7 +157,7 @@ def main():
         safe = rel.replace("/", "__") + ".knowledge.json"
         with open(f"{OUT}/{root}/{safe}", "w", encoding="utf-8") as fh:
             json.dump(item, fh, ensure_ascii=False, indent=1)
-        print(f"  {verdict:15s} {'think' if think else '     '} {rel[:70]}")
+        print(f"  {verdict:15s} {'think' if think else '     '} {rel[:70]}", flush=True)
     json.dump({"grant": a.grant, "root": root, "ran_at": time.strftime("%FT%T"), "stats": stats},
               open(f"{STATE}/{root}.json", "w"))
     print(f"\nDONE in {time.time()-t_start:.0f}s | {json.dumps(stats)}")
