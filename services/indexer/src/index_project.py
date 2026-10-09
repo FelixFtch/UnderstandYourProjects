@@ -154,16 +154,38 @@ def main():
         item = {"file": rel, "version": {"mtime": f["mtime"], "size": size},
                 "verdict": verdict, "think_gate": round(gate, 2),
                 "source": "mac-connector", "analyzed_at": time.strftime("%FT%T")}
+        READ_CAP = 16 * 1024 * 1024  # connector /read per-file cap
+        def safe_read(rel, size, maxb):
+            # 超限文件不读字节, 只回空串(下游走 metadata-only)
+            if size > READ_CAP:
+                return None
+            try:
+                return api(a.host, token,
+                           f"/read?grant={a.grant}&relpath={rel}&length={maxb}",
+                           binary=True).decode("utf-8", "replace")
+            except urllib.error.HTTPError as e:
+                if e.code == 413:
+                    return None
+                raise
         if verdict == "skip":
             stats["rule_skip" if gate == 0.0 and rel.startswith((".", "assets")) else "laya_skip"] += 1
         elif verdict == "structure-only":
-            full = api(a.host, token, f"/read?grant={a.grant}&relpath={rel}&length={min(size, 262144)}",
-                       binary=True).decode("utf-8", "replace")
-            item["derived"] = structure_only_summary(full)
+            full = safe_read(rel, size, min(size, 262144))
+            item["derived"] = structure_only_summary(full or "")
+            if full is None:
+                item["derived"]["too_large"] = True
             stats["rule_structure" if gate == 0.0 else "laya_structure"] += 1
         else:
-            full = api(a.host, token, f"/read?grant={a.grant}&relpath={rel}&length={min(size, 262144)}",
-                       binary=True).decode("utf-8", "replace")
+            full = safe_read(rel, size, min(size, 262144))
+            if full is None:
+                item["derived"] = {"too_large": True, "size": size}
+                item["verdict"] = "structure-only"
+                stats["rule_structure"] += 1
+                safe = rel.replace("/", "__") + ".knowledge.json"
+                with open(f"{OUT}/{root}/{safe}", "w", encoding="utf-8") as fh:
+                    json.dump(item, fh, ensure_ascii=False, indent=1)
+                print(f"  too-large->{verdict:15s} {rel[:70]}", flush=True)
+                continue
             t0 = time.time()
             raw, tok = qwen_enrich(full, think)
             stats["tokens"] += tok
