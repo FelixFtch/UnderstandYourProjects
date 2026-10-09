@@ -1,0 +1,6 @@
+node_modules/
+__pycache__/
+.venv/
+.DS_Store
+*.pyc
+services/indexer/vendor/understand-anything/node_modules/

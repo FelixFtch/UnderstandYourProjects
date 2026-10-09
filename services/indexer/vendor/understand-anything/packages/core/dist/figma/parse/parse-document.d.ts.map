@@ -1,0 +1,1 @@
+{"version":3,"file":"parse-document.d.ts","sourceRoot":"","sources":["../../../src/figma/parse/parse-document.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,SAAS,EAAE,SAAS,EAAE,MAAM,gBAAgB,CAAC;AAC3D,OAAO,KAAK,EAAE,aAAa,EAAa,MAAM,oBAAoB,CAAC;AAmBnE,wBAAgB,aAAa,CAAC,GAAG,EAAE,aAAa,EAAE,OAAO,EAAE,MAAM,GAAG;IAAE,KAAK,EAAE,SAAS,EAAE,CAAC;IAAC,KAAK,EAAE,SAAS,EAAE,CAAA;CAAE,CA+E7G"}
