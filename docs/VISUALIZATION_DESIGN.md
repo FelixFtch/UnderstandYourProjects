@@ -8,6 +8,16 @@ Reading this as a local product console for heavy AI developers, NAS users, rese
 
 The first screen is a **Project Cockpit**. The existing ReactFlow dashboard becomes the **Project Map** detail view. This changes the reading order from “open a graph and decode it” to “understand project state, choose a question, inspect evidence, then open the graph when structure matters.”
 
+## Reference translation
+
+The design study used Langflow's official visual-editor documentation and OpenCode's official product/docs pages as pattern references. Langflow demonstrates a canvas where relationships are manipulated directly, with zoom-to-fit, smart guides, notes, a playground, and logs available around the workspace. OpenCode demonstrates a keyboard-first agent surface with primary/subagent modes, multi-session work, shareable sessions, and an explicit plan/build distinction. We borrow those interaction principles while keeping this product read-only and evidence-oriented: the canvas explains project knowledge, the command bar scopes retrieval, and the inspector explains provenance.
+
+- [Langflow visual editor](https://docs.langflow.org/concepts-overview) — study canvas navigation, relationship edges, zoom, notes, playground, and logs.
+- [OpenCode agents](https://docs.opencode.ai/docs/agents/) — study visible agent modes, primary/subagent hierarchy, keyboard switching, and agent-specific appearance.
+- [OpenCode product surface](https://opencode.ai/) — study multi-session, share links, privacy-first positioning, and a direct developer workflow.
+
+The product should not copy their branding or layout. It should apply the same clarity principles to project facts, source ranges, graph relations, index jobs, and Jarvis scopes.
+
 ## Product information architecture
 
 ### Global workspace
