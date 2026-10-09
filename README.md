@@ -148,6 +148,7 @@ The detailed review documents are:
 
 - [Execution Plan](docs/EXECUTION_PLAN.md) — staged delivery, gates, evidence, collaboration, and release boundaries.
 - [AgentFlow Architecture](docs/AGENTFLOW_ARCHITECTURE.md) — voiceprint, HomeHub policy, project knowledge, Studio, Coding Agent, and Jarvis Group integration.
+- [Investigation Report](docs/INVESTIGATION_REPORT_2026-10-09.md) — gbrain/framework capability audit and Jetson/Qwen capacity decision.
 
 The first hardware deployment is one Jetson Agent Box serving multiple authorized source devices. Additional boxes should be introduced when workload, network locality, privacy isolation, or availability requirements justify them—not as a requirement for every computer.
 
