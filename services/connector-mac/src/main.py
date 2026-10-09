@@ -140,13 +140,15 @@ class Handler(BaseHTTPRequestHandler):
             root = os.path.realpath(g["path"])
             if not full.startswith(root + os.sep) or not os.path.isfile(full):
                 return self._json({"ok": False, "error": "not_found"}, 404, audit)
-            if os.path.getsize(full) > FILE_CAP:
-                return self._json({"ok": False, "error": "file_too_large"}, 413, audit)
             try:
                 off = int((q.get("offset") or ["0"])[0])
                 ln = min(int((q.get("length") or [READ_CAP])[0]), READ_CAP)
             except ValueError:
                 return self._json({"ok": False, "error": "bad_range"}, 400, audit)
+            # Cap is on the readable WINDOW, not the file: a 1KB triage
+            # peek into a 100MB log is harmless; slurping past 16MB is not.
+            if off + ln > FILE_CAP:
+                return self._json({"ok": False, "error": "range_beyond_cap"}, 413, audit)
             with open(full, "rb") as fh:
                 fh.seek(off)
                 data = fh.read(ln)

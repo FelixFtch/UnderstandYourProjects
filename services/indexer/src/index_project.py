@@ -142,8 +142,13 @@ def main():
     print(f"indexing {root}: {len(files)} files (of {man['total']})", flush=True)
     for f in files:
         rel, size = f["relpath"], f["size"]
-        head = api(a.host, token,
-                   f"/read?grant={a.grant}&relpath={rel}&length=1024", binary=True).decode("utf-8", "replace")
+        try:
+            head = api(a.host, token,
+                       f"/read?grant={a.grant}&relpath={rel}&length=1024", binary=True).decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            head = ""  # unreadable head (e.g. range cap) -> triage on metadata alone
+            if e.code != 413:
+                raise
         verdict = rule_pretriage(rel, size)
         gate = 0.0
         if verdict is None:
