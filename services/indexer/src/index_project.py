@@ -76,7 +76,6 @@ def rule_pretriage(rel: str, size: int) -> str | None:
 
 def structure_only_summary(content: str) -> dict:
     lines = content.split("\n")
-    if rel_ext := None: pass
     return {"kind": "structure-only",
             "lines": len(lines),
             "py_defs": len(re.findall(r"^\s*(def|class) ", content, re.M)) if content else 0,
