@@ -142,12 +142,14 @@ The build and the appliance runtime are separate steps:
 
 | Environment | Responsibility | Command or artifact |
 | --- | --- | --- |
-| Mac or CI | install dashboard dependencies, build, run browser review | `pnpm install --frozen-lockfile`; `pnpm build` in the vendored dashboard workspace |
+| Mac or CI | install dashboard dependencies, build, run browser review | `pnpm install --frozen-lockfile`; `pnpm --filter @understand-anything/core build`; `pnpm --filter @understand-anything/dashboard build` |
 | Jetson Agent Box | run indexer, retrieval API, model services, state, and logs | `~/dev/uyp/indexer/`, `~/dev/uyp/state/`, `~/dev/uyp/output/` |
 | Jetson Studio serving | serve the prebuilt static dashboard through the controlled knowledge service | release artifact from the Mac/CI build; a dedicated `jetson/deploy` unit is still pending |
 
-`pnpm build` is therefore a Mac/CI development and release step, not a model
-installation command. The Jetson can run the same Node toolchain later if an
+The vendored workspace root's plain `pnpm build` only compiles the skill
+package. The dashboard build is the filtered command shown in the table.
+These are Mac/CI development and release steps, not model installation
+commands. The Jetson can run the same Node toolchain later if an
 all-in-one appliance is chosen, but the first deployment should copy a tested
 static artifact and keep indexing/inference resource ownership explicit. The
 Mac connector remains on each source computer; the browser can be on the Mac,
