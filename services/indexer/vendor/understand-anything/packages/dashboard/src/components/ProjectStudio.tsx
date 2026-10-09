@@ -5,7 +5,7 @@ import type { GraphNode, KnowledgeGraph } from "@understand-anything/core/types"
 import { createStudioSnapshotFromGraph } from "../studio-contracts";
 import type { EvidenceRef, IndexJob, StudioSnapshot } from "../studio-contracts";
 
-type StudioSection = "overview" | "projects" | "evidence" | "activity" | "collaborate" | "sources" | "privacy";
+type StudioSection = "overview" | "projects" | "conversation" | "evidence" | "activity" | "collaborate" | "sources" | "privacy";
 
 interface ProjectStudioProps {
   onOpenGraph: () => void;
@@ -14,16 +14,17 @@ interface ProjectStudioProps {
 }
 
 const sectionLabels: Record<StudioSection, { label: string; detail: string }> = {
-  overview: { label: "Overview", detail: "Project command center" },
+  overview: { label: "Today", detail: "Project command center" },
   projects: { label: "Projects", detail: "Your indexed work" },
+  conversation: { label: "Ask Jarvis", detail: "Project conversation" },
   evidence: { label: "Evidence", detail: "Trace every answer" },
   activity: { label: "Activity", detail: "Freshness and changes" },
-  collaborate: { label: "Jarvis groups", detail: "Shared project context" },
+  collaborate: { label: "Groups", detail: "Shared project context" },
   sources: { label: "Sources", detail: "Devices and connectors" },
-  privacy: { label: "Privacy", detail: "Trust and audit" },
+  privacy: { label: "Privacy & audit", detail: "Trust and audit" },
 };
 
-function Icon({ name, size = 18 }: { name: "grid" | "folder" | "search" | "pulse" | "users" | "arrow" | "spark" | "shield" | "chevron"; size?: number }) {
+function Icon({ name, size = 18 }: { name: "grid" | "folder" | "search" | "pulse" | "users" | "arrow" | "spark" | "shield" | "chevron" | "message"; size?: number }) {
   const paths: Record<string, ReactNode> = {
     grid: <><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></>,
     folder: <><path d="M3 7.5a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><path d="M3 9.5h18" /></>,
@@ -34,6 +35,7 @@ function Icon({ name, size = 18 }: { name: "grid" | "folder" | "search" | "pulse
     spark: <><path d="m12 3 1.4 5.6L19 10l-5.6 1.4L12 17l-1.4-5.6L5 10l5.6-1.4z" /><path d="m19 16 .6 2.4L22 19l-2.4.6L19 22l-.6-2.4L16 19l2.4-.6z" /></>,
     shield: <><path d="M12 3 20 6v5c0 5-3.4 8.2-8 10-4.6-1.8-8-5-8-10V6z" /><path d="m8.5 12 2.2 2.2 4.8-5" /></>,
     chevron: <path d="m9 18 6-6-6-6" />,
+    message: <><path d="M20 11.5a7.5 7.5 0 0 1-7.5 7.5 7.6 7.6 0 0 1-3.1-.7L4 20l1.7-4.1A7.5 7.5 0 1 1 20 11.5Z" /><path d="M8 11.5h.01M12 11.5h.01M16 11.5h.01" /></>,
   };
 
   return (
@@ -200,6 +202,51 @@ function SectionFrame({ kicker, title, description, children, action }: { kicker
   );
 }
 
+function audienceLabel(audience: NonNullable<NonNullable<StudioSnapshot["access"]>["audience"]> | undefined): string {
+  switch (audience) {
+    case "owner_group": return "Owner group";
+    case "external_group": return "External group";
+    case "shared": return "Shared project";
+    default: return "Private project";
+  }
+}
+
+function StudioContextBar({ snapshot, onOpenPrivacy, onOpenGroups }: { snapshot: StudioSnapshot; onOpenPrivacy: () => void; onOpenGroups: () => void }) {
+  const access = snapshot.access;
+  const label = access?.displayLabel || "Felix";
+  const jarvis = access?.jarvisNodeId || "Local Jarvis";
+  return (
+    <div className="studio-context-bar" aria-label="Active Jarvis and HomeHub access context">
+      <div className="studio-context-identity"><span className="studio-context-avatar"><Icon name="spark" size={14} /></span><span><strong>{label}</strong><small>{jarvis}</small></span></div>
+      <span className="studio-context-divider" />
+      <span className="studio-context-chip studio-context-chip-scope"><Icon name="shield" size={13} />{audienceLabel(access?.audience)}</span>
+      <span className="studio-context-chip"><span className="studio-live-dot" />{access ? accessState(access) : "HomeHub context pending"}</span>
+      <span className="studio-context-chip studio-context-chip-muted">Project scope</span>
+      <div className="studio-context-actions"><button type="button" className="studio-context-link" onClick={onOpenGroups}>Groups <Icon name="users" size={13} /></button><button type="button" className="studio-context-link" onClick={onOpenPrivacy}>View access <Icon name="arrow" size={13} /></button></div>
+    </div>
+  );
+}
+
+function ConversationSection({ snapshot, onOpenGraph, onOpenEvidence, onOpenGroups }: { snapshot: StudioSnapshot; onOpenGraph: () => void; onOpenEvidence: () => void; onOpenGroups: () => void }) {
+  const [draft, setDraft] = useState("");
+  const scopeLabel = audienceLabel(snapshot.access?.audience);
+  return (
+    <SectionFrame kicker="Jarvis conversation" title="Ask your project memory in context." description="Keep the question, the selected scope, and the evidence trail in one workspace. Answers are attributed to the producing Jarvis and remain bounded by HomeHub context." action={<span className="studio-chip studio-chip-positive"><span className="studio-chip-dot" />{scopeLabel}</span>}>
+      <div className="studio-conversation-layout">
+        <div className="studio-panel studio-conversation-thread">
+          <div className="studio-conversation-header"><div><span className="studio-section-kicker">Current thread</span><h2>Understand this project</h2></div><span className="studio-status-pill studio-status-pill-neutral">Graph fallback</span></div>
+          <div className="studio-conversation-scope-row"><span className="studio-scope-lock"><Icon name="shield" size={13} />Ask this project</span><span>Private until HomeHub grants a wider audience</span></div>
+          <div className="studio-message studio-message-user"><span className="studio-message-avatar studio-message-avatar-user">F</span><div className="studio-message-body"><div className="studio-message-meta"><strong>You</strong><span>Project scope</span></div><p>How is this project shaped, and where should I start?</p></div></div>
+          <div className="studio-message studio-message-agent"><span className="studio-message-avatar"><Icon name="spark" size={15} /></span><div className="studio-message-body"><div className="studio-message-meta"><strong>Jarvis</strong><span>Local Jarvis · owner context</span></div><p>This graph has {snapshot.project.counts.nodes} indexed entities across {snapshot.project.counts.layers} logical layers. Start with the most connected entry points, then open the map when you need to follow a dependency path.</p><div className="studio-answer-citations"><button type="button" onClick={onOpenGraph}><Icon name="grid" size={12} />Project map</button><button type="button" onClick={onOpenEvidence}><Icon name="folder" size={12} />{snapshot.project.entryPoints[0] || "Entry points"}</button><span className="studio-evidence-visibility"><Icon name="shield" size={12} />{scopeLabel}</span></div></div></div>
+          <div className="studio-message studio-message-agent studio-message-muted"><span className="studio-message-avatar studio-message-avatar-muted"><Icon name="pulse" size={14} /></span><div className="studio-message-body"><div className="studio-message-meta"><strong>Evidence service</strong><span>Waiting for connector-backed retrieval</span></div><p>When the knowledge API is connected, this thread will show source ranges, commit anchors, knowledge epochs, and redaction reasons here.</p></div></div>
+          <div className="studio-conversation-composer"><Icon name="message" size={17} /><input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Ask about architecture, reuse, changes, or onboarding" aria-label="Ask Jarvis about this project" /><span className="studio-composer-status">Service pending</span><button type="button" className="studio-button studio-button-primary" disabled={!draft.trim()} title="Retrieval service is not connected yet">Ask Jarvis</button></div>
+        </div>
+        <aside className="studio-panel studio-conversation-context"><div className="studio-panel-heading"><div><span className="studio-section-kicker">Conversation scope</span><h2>Choose what Jarvis may search.</h2></div><Icon name="shield" size={17} /></div><div className="studio-scope-options"><button type="button" className="studio-scope-option is-selected"><span><strong>Private project</strong><small>Current project · owner context</small></span><span className="studio-scope-radio" /></button><button type="button" className="studio-scope-option" onClick={onOpenGroups}><span><strong>Owner group</strong><small>Multiple Jarvis boxes · HomeHub grant required</small></span><span className="studio-scope-state">Review</span></button><button type="button" className="studio-scope-option" onClick={onOpenGroups}><span><strong>External Jarvis group</strong><small>Summary and evidence refs only</small></span><span className="studio-scope-state">Invite</span></button></div><div className="studio-quick-actions"><span className="studio-section-kicker">Quick questions</span><button type="button" onClick={() => setDraft("Which project can I reuse for this feature?")}>Find reusable work <Icon name="arrow" size={13} /></button><button type="button" onClick={() => setDraft("What changed since the last knowledge update?")}>Explain recent changes <Icon name="arrow" size={13} /></button><button type="button" onClick={() => setDraft("Create an onboarding path for a new contributor.")}>Build onboarding path <Icon name="arrow" size={13} /></button></div><div className="studio-conversation-trust"><Icon name="shield" size={15} /><p><strong>HomeHub controls access.</strong> Studio only displays the returned audience, scope, expiry, epoch, and audit trace.</p></div></aside>
+      </div>
+    </SectionFrame>
+  );
+}
+
 function ProjectsSection({ snapshot, onOpenGraph }: { snapshot: StudioSnapshot; onOpenGraph: () => void }) {
   const { project, health } = snapshot;
   return (
@@ -258,10 +305,13 @@ function ActivitySection({ snapshot }: { snapshot: StudioSnapshot }) {
   );
 }
 
-function GroupsSection({ graph }: { graph: KnowledgeGraph }) {
+function GroupsSection({ graph, onOpenPrivacy }: { graph: KnowledgeGraph; onOpenPrivacy: () => void }) {
   return (
-    <SectionFrame kicker="Jarvis groups" title="Share context through scoped evidence." description="A group is a controlled retrieval relationship between Jarvis boxes. It never grants direct access to another box's source files or vector store." action={<span className="studio-chip">No external grant connected</span>}>
-      <div className="studio-groups-grid"><div className="studio-panel studio-group-card"><div className="studio-group-avatar studio-group-avatar-local"><Icon name="spark" size={18} /></div><span className="studio-section-kicker">This Jarvis</span><h2>Local project box</h2><p>Owns the current indexed graph for <strong>{graph.project.name}</strong>.</p><div className="studio-chip-row"><span className="studio-chip studio-chip-positive">Owner scope</span><span className="studio-chip">Local evidence</span></div></div><div className="studio-group-bridge"><span className="studio-group-line" /><span className="studio-group-bridge-label">scoped evidence request</span><span className="studio-group-line" /></div><div className="studio-panel studio-group-card studio-group-card-muted"><div className="studio-group-avatar"><Icon name="users" size={18} /></div><span className="studio-section-kicker">External Jarvis</span><h2>Awaiting group grant</h2><p>Connect another Jarvis only after HomeHub supplies an allowed project scope, TTL, epoch, and provenance.</p><button type="button" className="studio-button studio-button-quiet">Review group contract <Icon name="arrow" size={14} /></button></div></div><div className="studio-panel studio-provenance-panel"><div><span className="studio-section-kicker">Provenance rule</span><h2>Every shared answer carries its producing Jarvis.</h2></div><div className="studio-provenance-chain"><span>request</span><b>→</b><span>local ACL</span><b>→</b><span>remote query</span><b>→</b><span>cited evidence</span></div></div>
+    <SectionFrame kicker="Jarvis groups" title="Bring another Jarvis into the question." description="Groups are live, attributed conversations between independent Jarvis boxes. They share bounded summaries and evidence references; source files and vector stores stay with their owner." action={<div className="studio-group-actions"><button type="button" className="studio-button studio-button-primary" onClick={onOpenPrivacy}><Icon name="users" size={15} /> Invite another Jarvis</button><span className="studio-chip">No pending requests</span></div>}>
+      <div className="studio-group-boundaries"><article className="studio-boundary-card studio-boundary-private"><span className="studio-boundary-icon"><Icon name="shield" size={16} /></span><div><strong>Private project</strong><p>Only this Jarvis and the HomeHub owner context.</p></div><span className="studio-status-pill studio-status-pill-success">Active</span></article><article className="studio-boundary-card studio-boundary-owner"><span className="studio-boundary-icon"><Icon name="spark" size={16} /></span><div><strong>Owner group</strong><p>Other Jarvis boxes owned by the same principal.</p></div><span className="studio-status-pill studio-status-pill-neutral">Grant required</span></article><article className="studio-boundary-card studio-boundary-external"><span className="studio-boundary-icon"><Icon name="users" size={16} /></span><div><strong>External group</strong><p>Explicit project scope, TTL, epoch, and audit.</p></div><span className="studio-status-pill studio-status-pill-neutral">Not connected</span></article></div>
+      <div className="studio-groups-grid"><div className="studio-panel studio-group-card"><div className="studio-group-card-heading"><div className="studio-group-avatar studio-group-avatar-local"><Icon name="spark" size={18} /></div><span className="studio-status-pill studio-status-pill-success">Online</span></div><span className="studio-section-kicker">This Jarvis</span><h2>Local project box</h2><p>Owns the current indexed graph for <strong>{graph.project.name}</strong> and answers with local evidence.</p><div className="studio-chip-row"><span className="studio-chip studio-chip-positive">Producing Jarvis</span><span className="studio-chip">{graph.nodes.length} nodes</span></div><button type="button" className="studio-link-button" onClick={onOpenPrivacy}>View owner context <Icon name="arrow" size={14} /></button></div><div className="studio-group-bridge"><span className="studio-group-line" /><span className="studio-group-bridge-label">federated evidence request</span><span className="studio-group-line" /></div><div className="studio-panel studio-group-card studio-group-card-muted"><div className="studio-group-card-heading"><div className="studio-group-avatar"><Icon name="users" size={18} /></div><span className="studio-status-pill studio-status-pill-neutral">Awaiting grant</span></div><span className="studio-section-kicker">External Jarvis</span><h2>MIT research circle</h2><p>Invite a collaborator after HomeHub returns the allowed project scope. The group will see only what the approval card says.</p><div className="studio-chip-row"><span className="studio-chip">Will see: summaries + evidence refs</span><span className="studio-chip">Won't see: raw source</span></div><button type="button" className="studio-button studio-button-quiet" onClick={onOpenPrivacy}>Review group contract <Icon name="arrow" size={14} /></button></div></div>
+      <div className="studio-group-review"><div><span className="studio-section-kicker">Approval preview</span><h2>Make sharing legible before it happens.</h2><p>HomeHub will provide requester, scope, expiry, authorization epoch, and audit trace. Studio presents those facts and routes the decision back to HomeHub.</p></div><div className="studio-approval-columns"><div><strong>Will see</strong><span>Project summary</span><span>Selected evidence refs</span><span>Knowledge epoch</span></div><div><strong>Won't see</strong><span>Raw source files</span><span>Private projects</span><span>Unapproved scopes</span></div></div></div>
+      <div className="studio-panel studio-provenance-panel"><div><span className="studio-section-kicker">Provenance rule</span><h2>Every shared answer carries its producing Jarvis.</h2></div><div className="studio-provenance-chain"><span>request</span><b>→</b><span>HomeHub grant</span><b>→</b><span>remote query</span><b>→</b><span>cited answer</span></div></div>
     </SectionFrame>
   );
 }
@@ -273,7 +323,7 @@ function SourcesSection({ snapshot }: { snapshot: StudioSnapshot }) {
 
 function PrivacySection({ snapshot }: { snapshot: StudioSnapshot }) {
   const access = snapshot.access;
-  return <SectionFrame kicker="Privacy & audit" title="Make every answer explainable." description="This surface visualizes the HomeHub access trace that allowed a project query to return evidence."><div className="studio-panel studio-trace-panel"><div className="studio-trace-chain">{["Identity context", "HomeHub policy", "Project scope", "Retrieval", "Evidence answer"].map((step, index) => <div key={step} className="studio-trace-step"><span>{String(index + 1).padStart(2, "0")}</span><strong>{step}</strong>{index < 4 && <b>→</b>}</div>)}</div><div className="studio-trace-fields"><span><small>HomeHub status</small><strong>{access ? accessState(access) : "Awaiting AccessContext"}</strong></span><span><small>Grant epoch</small><strong>{access?.grantEpoch || "Not exposed"}</strong></span><span><small>Expires</small><strong>{access ? formatDateTime(access.expiresAt) : "Not exposed"}</strong></span></div></div><div className="studio-source-callout"><Icon name="shield" size={18} /><div><strong>Visual trust is a projection, not a permission engine.</strong><p>{access ? `HomeHub supplied this context at audit ${access.auditId}; Studio does not infer authorization from its presence.` : "Raw source, revocation, and audit decisions remain server-side until HomeHub provides an AccessContext projection."}</p></div></div></SectionFrame>;
+  return <SectionFrame kicker="Privacy & audit" title="Make the audience visible before the answer." description="Privacy is a visible scope on every project question, evidence card, and Jarvis group. HomeHub remains the authority for identity, policy, revocation, and audit."><div className="studio-privacy-scope-grid"><article className="studio-privacy-scope-card studio-privacy-scope-active"><span className="studio-privacy-scope-icon"><Icon name="shield" size={17} /></span><div><strong>Private project</strong><p>Current project and owner context.</p></div><span className="studio-status-pill studio-status-pill-success">Default</span></article><article className="studio-privacy-scope-card"><span className="studio-privacy-scope-icon"><Icon name="spark" size={17} /></span><div><strong>Owner group</strong><p>Multiple Jarvis boxes under one HomeHub principal.</p></div><span className="studio-status-pill studio-status-pill-neutral">Grant required</span></article><article className="studio-privacy-scope-card"><span className="studio-privacy-scope-icon"><Icon name="users" size={17} /></span><div><strong>External group</strong><p>Summary and evidence references with TTL.</p></div><span className="studio-status-pill studio-status-pill-neutral">Approval required</span></article></div><div className="studio-panel studio-trace-panel"><div className="studio-trace-chain">{["Identity context", "HomeHub policy", "Project scope", "Retrieval", "Evidence answer"].map((step, index) => <div key={step} className="studio-trace-step"><span>{String(index + 1).padStart(2, "0")}</span><strong>{step}</strong>{index < 4 && <b>→</b>}</div>)}</div><div className="studio-trace-fields"><span><small>HomeHub status</small><strong>{access ? accessState(access) : "Awaiting AccessContext"}</strong></span><span><small>Audience</small><strong>{audienceLabel(access?.audience)}</strong></span><span><small>Grant epoch</small><strong>{access?.grantEpoch || "Not exposed"}</strong></span><span><small>Expires</small><strong>{access ? formatDateTime(access.expiresAt) : "Not exposed"}</strong></span><span><small>Audit trace</small><strong>{access?.auditId || "Not exposed"}</strong></span></div></div><div className="studio-source-callout"><Icon name="shield" size={18} /><div><strong>Visual trust is a projection, not a permission engine.</strong><p>{access ? `HomeHub supplied this context at audit ${access.auditId}; Studio does not infer authorization from its presence.` : "Raw source, revocation, and audit decisions remain server-side until HomeHub provides an AccessContext projection."}</p></div></div></SectionFrame>;
 }
 
 function CommandPalette({ graph, onClose, onOpenGraph, onOpenEvidence }: { graph: KnowledgeGraph; onClose: () => void; onOpenGraph: () => void; onOpenEvidence: () => void }) {
@@ -415,14 +465,15 @@ export default function ProjectStudio({ onOpenGraph, snapshot: suppliedSnapshot 
         <button className="studio-workspace-switcher" type="button" onClick={() => setActiveSection("projects")}><span className="studio-workspace-avatar">U</span><span><strong>Current workspace</strong><small>Project catalog pending</small></span><Icon name="chevron" size={14} /></button>
         <nav className="studio-nav" aria-label="Project studio navigation">
           {(Object.keys(sectionLabels) as StudioSection[]).map((section) => (
-            <button key={section} type="button" className={`studio-nav-item ${activeSection === section ? "is-active" : ""}`} onClick={() => setActiveSection(section)}><Icon name={section === "overview" ? "grid" : section === "projects" || section === "sources" ? "folder" : section === "evidence" ? "search" : section === "activity" ? "pulse" : section === "privacy" ? "shield" : "users"} size={17} /><span>{sectionLabels[section].label}</span>{section === "overview" && <span className="studio-nav-badge">Now</span>}</button>
+            <button key={section} type="button" className={`studio-nav-item ${activeSection === section ? "is-active" : ""} ${section === "conversation" || section === "collaborate" || section === "privacy" ? "studio-nav-priority" : ""}`} onClick={() => setActiveSection(section)}><Icon name={section === "overview" ? "grid" : section === "projects" || section === "sources" ? "folder" : section === "evidence" ? "search" : section === "activity" ? "pulse" : section === "privacy" ? "shield" : section === "conversation" ? "message" : "users"} size={17} /><span>{sectionLabels[section].label}</span>{section === "overview" && <span className="studio-nav-badge">Now</span>}{section === "collaborate" && <span className="studio-nav-badge studio-nav-badge-warn">New</span>}</button>
           ))}
         </nav>
         <div className="studio-sidebar-bottom"><div className="studio-privacy-card"><span className="studio-privacy-icon"><Icon name="shield" size={15} /></span><div><strong>HomeHub boundary</strong><p>Identity and access are supplied by HomeHub.</p></div></div><button type="button" className="studio-help-link">Keyboard shortcuts <span>?</span></button></div>
       </aside>
       <main className="studio-main">
-        <header className="studio-topbar"><div className="studio-breadcrumb"><span>Workspace</span><b>/</b><strong>{sectionLabels[activeSection].label}</strong></div><button className="studio-global-search" type="button" onClick={() => setCommandOpen(true)}><Icon name="search" size={17} /><span>Ask about this project…</span><span className="studio-key">⌘ K</span></button><div className="studio-topbar-actions"><span className="studio-sync-status"><span className="studio-live-dot" />{stateLabel(snapshot.health.state)} knowledge</span><button className="studio-avatar" type="button" title="HomeHub access context" aria-label="HomeHub access context">F</button></div></header>
-        {activeSection === "overview" ? <Overview graph={graph} snapshot={snapshot} onOpenGraph={onOpenGraph} onAsk={() => setCommandOpen(true)} /> : activeSection === "projects" ? <ProjectsSection snapshot={snapshot} onOpenGraph={onOpenGraph} /> : activeSection === "evidence" ? <EvidenceSection graph={graph} snapshot={snapshot} onOpenGraph={onOpenGraph} /> : activeSection === "activity" ? <ActivitySection snapshot={snapshot} /> : activeSection === "collaborate" ? <GroupsSection graph={graph} /> : activeSection === "sources" ? <SourcesSection snapshot={snapshot} /> : <PrivacySection snapshot={snapshot} />}
+        <header className="studio-topbar"><div className="studio-breadcrumb"><span>Workspace</span><b>/</b><strong>{sectionLabels[activeSection].label}</strong></div><button className="studio-global-search" type="button" onClick={() => setCommandOpen(true)}><Icon name="search" size={17} /><span>Ask about this project…</span><span className="studio-key">⌘ K</span></button><div className="studio-topbar-actions"><span className="studio-sync-status"><span className="studio-live-dot" />{stateLabel(snapshot.health.state)} knowledge</span><button className="studio-avatar" type="button" title="HomeHub access context" aria-label="HomeHub access context" onClick={() => setActiveSection("privacy")}>F</button></div></header>
+        <StudioContextBar snapshot={snapshot} onOpenPrivacy={() => setActiveSection("privacy")} onOpenGroups={() => setActiveSection("collaborate")} />
+        {activeSection === "overview" ? <Overview graph={graph} snapshot={snapshot} onOpenGraph={onOpenGraph} onAsk={() => setActiveSection("conversation")} /> : activeSection === "projects" ? <ProjectsSection snapshot={snapshot} onOpenGraph={onOpenGraph} /> : activeSection === "conversation" ? <ConversationSection snapshot={snapshot} onOpenGraph={onOpenGraph} onOpenEvidence={() => setActiveSection("evidence")} onOpenGroups={() => setActiveSection("collaborate")} /> : activeSection === "evidence" ? <EvidenceSection graph={graph} snapshot={snapshot} onOpenGraph={onOpenGraph} /> : activeSection === "activity" ? <ActivitySection snapshot={snapshot} /> : activeSection === "collaborate" ? <GroupsSection graph={graph} onOpenPrivacy={() => setActiveSection("privacy")} /> : activeSection === "sources" ? <SourcesSection snapshot={snapshot} /> : <PrivacySection snapshot={snapshot} />}
       </main>
       {commandOpen && <CommandPalette graph={graph} onClose={() => setCommandOpen(false)} onOpenGraph={() => { setCommandOpen(false); onOpenGraph(); }} onOpenEvidence={() => { setCommandOpen(false); setActiveSection("evidence"); }} />}
     </div>

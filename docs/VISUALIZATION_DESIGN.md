@@ -18,6 +18,19 @@ The design study used Langflow's official visual-editor documentation and OpenCo
 
 The product should not copy their branding or layout. It should apply the same clarity principles to project facts, source ranges, graph relations, index jobs, and Jarvis scopes.
 
+## Research translation: graph, conversation, and privacy
+
+Understand Anything already has the right deep inspection primitives: a structural code graph, domain and flow views, plain-language node summaries, guided tours, semantic search, impact paths, and layer visualization. The Studio keeps those views inside `Map`, while the workspace adds the missing project-level reading order: `Today → Projects → Ask Jarvis → Evidence → Activity → Groups → Privacy & audit`. This prevents a large force-directed graph from becoming the first and only explanation of a codebase.
+
+- [Understand Anything on GitHub](https://github.com/alexhraber/understand-anything) — graph nodes, relationships, tours, summaries, semantic search, and impact exploration.
+- [Understand Anything knowledge design](https://github.com/Egonex-AI/Understand-Anything/blob/main/docs/superpowers/specs/2026-04-09-understand-knowledge-design.md) — typed code/knowledge graphs and the vertical knowledge-reading model.
+
+The graph conversion is deliberate: `GraphView` remains the structural map, `DomainGraphView` becomes a domain/flow layer, and `KnowledgeGraphView` becomes the reading layer for articles, entities, topics, claims, and source references. A project card and an answer can link to the same node, bounded source range, commit anchor, knowledge epoch, and freshness state. Graph JSON remains a read-only result of the indexer; the Studio does not write `.ua` output into source projects.
+
+`Ask Jarvis` and `Groups` are first-class navigation surfaces rather than secondary actions. The conversation view keeps the question, current audience, producing Jarvis, evidence chips, and the composer together. A group view uses a connection card, a live attributed transcript, and a HomeHub approval preview. It shares summaries and evidence references by contract; it never exposes a remote Jarvis's raw source or vector store.
+
+Privacy is visible at three levels: a global trust bar below the command bar, a scope chip on each answer/evidence/group card, and the full `Privacy & audit` trace page. The UI can display `Private project`, `Owner group`, and `External group` as HomeHub projections with grant epoch, expiry, and audit trace. It cannot create, infer, or revoke a permission. The iPhone Jarvis patterns we reuse are the central Jarvis entry point, left/right chat bubbles, voice/identity status, a bottom composer, privacy rings, sync/device status, and `Will see / Won't see` approval cards from the existing HomeHub designs.
+
 ## Product information architecture
 
 ### Global workspace

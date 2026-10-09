@@ -109,8 +109,15 @@ export interface AccessContextProjection {
   principalId: string;
   sessionId: string;
   jarvisNodeId: string;
+  displayLabel?: string;
+  audience?: "private" | "owner_group" | "external_group" | "shared";
+  groupId?: string;
+  groupLabel?: string;
   projectScopes: string[];
   sourceScopes: string[];
+  allowedOperations?: Array<"retrieve" | "cite" | "handoff">;
+  redactionReason?: string;
+  issuedAt?: string;
   grantEpoch: string;
   policyDigest: string;
   expiresAt: string;
