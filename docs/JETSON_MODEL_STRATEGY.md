@@ -107,3 +107,39 @@ Memory at ctx 2048: **qwen3.5:4b resident 3.1 GB vs route 4.2 GB** — the candi
 ### Verdict
 
 Switching the resident profile to qwen3.5:4b is justified for the UnderstandYourProjects workload: clearly better Chinese/architectural reasoning, equal routing, equal-or-better speed, ~1 GB less residency. Two preconditions before promotion: pin output language in the enrichment prompts (3.5 drifted to English on one bilingual task), and keep `"think": false` on every triage/enrichment call (thinking mode costs ~144x tokens). Voice-chain promotion still goes through the HomeHub model-profile gates.
+
+
+## Local decision-model bake-off + routed pipeline — 2026-10-09 (voice chain paused with owner authorization, restored and verified after)
+
+Setup: fresh llama.cpp built on-device (CUDA, arch 87; gbrain's bundled build predates decision support). Decision API = `/v1/systemone` (Jev-compatible: choice / score / noul), one forward pass, zero generated tokens.
+
+### Candidate results (4-file real triage: core code / deps / docs / trivial marker)
+
+| Candidate | Size | Load | Decision latency | Triage quality | think-gate signal |
+| --- | --- | --- | --- | --- | --- |
+| **Laya official Q8 (ggml-org/Laya-GGUF, 421M)** | 449MB | 2s | 43-497ms | 3/4 (README over-triaged to deep) | **clean bimodal: 0.00 vs 0.95** |
+| Kev-4B Q4 (ggml-org) | 3.0GB | ~10s | 337-927ms | 3/4 (same README miss) | weak/mushy 0.17-0.39 |
+| Kev-0.8B Q8 | 812MB | 6s | 149-483ms | 2/4 (missed core file) | weak |
+| GLiNER2.5-multi-Decide | 1.1GB | — | — | **not loadable locally**: custom Gliner2ForSchemaExtraction arch ships no modeling code; official skill pushes hosted API only. Dropped. |
+| Laya 3rd-party GGUF (mys/) | — | — | — | rejected: nonstandard arch tag 'ggmlc' | use ggml-org official only |
+
+**Winner: Laya official Q8** — 9x smaller than Kev-4B, 2s load, cleanest think-gate signal.
+
+### Routed pipeline end-to-end (Laya decides -> qwen3.5:4b executes)
+
+| file | Laya verdict | execution | tokens | time |
+| --- | --- | --- | --- | --- |
+| core app.py | deep, noul=0.94 | think=true | 3362 | 222s, JSON-OK |
+| requirements | skip, noul=0.00 | skipped | 0 | 39ms |
+| README | deep, noul=0.91 | think=true | 3578 | 226s, BAD format* |
+| py.typed | skip, noul=0.00 | skipped | 0 | 39ms |
+
+Totals vs baselines: routed 448s/6940 tok | all-think-false ~60s/950 tok | all-think-true ~520s/8300 tok.
+*thinking mode occasionally wraps JSON — needs a brace-extraction fallback (engineering fix, queued).
+
+Reading: on this small sample routing saves little vs all-true (Laya sent both real files deep — its known README over-triage). The win scales with corpus composition: at ~60% skip/structure-only (typical repo deps/generated), a 678-file first index projects to ~4.5h routed vs ~22.6h all-thinking vs ~2.8h all-fast — deep quality only where the gate says it matters. Calibration on our own labeled files (the known Laya zero-shot caveat) is the next quality lever.
+
+### Placement (already in this repo)
+
+- llama.cpp build + all weights live on the Jetson at `~/dev/uyp/models/` (Laya-Q8 449MB, Kev-4B Q4, Kev-0.8B Q8; GLiNER dir can be deleted)
+- Production shape: resident Laya (0.5GB) beside qwen3.5:4b (3.1GB) = 3.6GB total, less than today's single route model (5.7GB)
