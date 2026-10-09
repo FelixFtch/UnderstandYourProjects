@@ -143,3 +143,18 @@ Reading: on this small sample routing saves little vs all-true (Laya sent both r
 
 - llama.cpp build + all weights live on the Jetson at `~/dev/uyp/models/` (Laya-Q8 449MB, Kev-4B Q4, Kev-0.8B Q8; GLiNER dir can be deleted)
 - Production shape: resident Laya (0.5GB) beside qwen3.5:4b (3.1GB) = 3.6GB total, less than today's single route model (5.7GB)
+
+
+### Addendum: full six-candidate matrix (same 4-file probe, on-device)
+
+| Model | Size | Triage | Think-gate | Status |
+| --- | --- | --- | --- | --- |
+| Laya official Q8 | 449MB | 3/4 | **clean bimodal 0.00/0.95** | **resident pick** |
+| lev-4B Q4 | 3.0GB | 3/4, higher confidence (0.71-0.95) | weak gate (all-low, never fires) | alternate |
+| Kev-4B Q4 | 3.0GB | 3/4 | mushy 0.17-0.39 | alternate |
+| Kev-0.8B Q8 | 812MB | 2/4 (misses core) | weak | rejected |
+| Julia-1 Q8 | 168MB | degenerate: everything quick-summary at 1.00 conf | chaotic | rejected |
+| GLiNER2.5-Decide | 1.1GB | not locally loadable | — | rejected |
+| OpenJev / Clef 27B | 8.6GB+ | cannot co-reside with qwen3.5 on NX16; OpenJev is CC BY-NC | — | not for the resident slot (possible 4090 deep-judge later) |
+
+README over-triage is universal across the 4B class → prompt/calibration issue, not model choice. Final ranking should be settled on a 30-file labeled set; the /v1/systemone API makes swapping a one-line config change. Ops note: pkill patterns for llama-server must exclude /usr/local/lib/ollama (ollama's internal runner shares the name).
