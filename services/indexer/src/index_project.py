@@ -109,7 +109,6 @@ def main():
     root = man["root_name"]
     os.makedirs(f"{STATE}", exist_ok=True)
     os.makedirs(f"{OUT}/{root}", exist_ok=True)
-    print(f"indexing {root}: {len(files)} files (of {man['total']})", flush=True)
 
     stats = {"rule_skip": 0, "rule_structure": 0, "laya_skip": 0, "laya_structure": 0,
              "quick": 0, "deep": 0, "json_ok": 0, "json_bad": 0, "tokens": 0}
@@ -140,6 +139,7 @@ def main():
             print(f"resume: skipping {skipped} already-processed files", flush=True)
     else:
         files = all_files[:a.limit]
+    print(f"indexing {root}: {len(files)} files (of {man['total']})", flush=True)
     for f in files:
         rel, size = f["relpath"], f["size"]
         head = api(a.host, token,
