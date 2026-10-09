@@ -101,6 +101,7 @@ def main():
     ap.add_argument("--token-file", default=os.path.expanduser("~/.config/uyp/token"))
     ap.add_argument("--grant", required=True)
     ap.add_argument("--limit", type=int, default=20)
+    ap.add_argument("--force", action="store_true", help="re-analyze even if same-version output exists")
     a = ap.parse_args()
     token = open(a.token_file).read().strip()
 
@@ -108,6 +109,11 @@ def main():
     root = man["root_name"]
     os.makedirs(f"{STATE}", exist_ok=True)
     os.makedirs(f"{OUT}/{root}", exist_ok=True)
+    print(f"indexing {root}: {len(files)} files (of {man['total']})", flush=True)
+
+    stats = {"rule_skip": 0, "rule_structure": 0, "laya_skip": 0, "laya_structure": 0,
+             "quick": 0, "deep": 0, "json_ok": 0, "json_bad": 0, "tokens": 0}
+    t_start = time.time()
     def worth(f):
         rel, ext = f["relpath"], os.path.splitext(f["relpath"])[1].lower()
         if ext in {".py", ".ts", ".tsx", ".js", ".swift", ".rs", ".go", ".m"}: rank = 0
@@ -116,12 +122,24 @@ def main():
         elif ext in {".json", ".plist", ".cfg", ".ini", ".txt"}: rank = 3
         else: rank = 4
         return (rank, rel.count("/"), rel)
-    files = sorted([f for f in man["files"] if f["kind"] == "file"], key=worth)[:a.limit]
-    print(f"indexing {root}: {len(files)} files (of {man['total']})", flush=True)
-
-    stats = {"rule_skip": 0, "rule_structure": 0, "laya_skip": 0, "laya_structure": 0,
-             "quick": 0, "deep": 0, "json_ok": 0, "json_bad": 0, "tokens": 0}
-    t_start = time.time()
+    all_files = sorted([f for f in man["files"] if f["kind"] == "file"], key=worth)
+    # 增量/续跑: 同版本已有产出则跳过 (首扫幂等化的关键)
+    def done_before(f):
+        safe = f["relpath"].replace("/", "__") + ".knowledge.json"
+        path = f"{OUT}/{root}/{safe}"
+        if not os.path.exists(path):
+            return False
+        try:
+            return json.load(open(path)).get("version", {}).get("mtime") == f["mtime"]
+        except Exception:
+            return False
+    if not a.force:
+        skipped = sum(1 for f in all_files if done_before(f))
+        files = [f for f in all_files if not done_before(f)][:a.limit]
+        if skipped:
+            print(f"resume: skipping {skipped} already-processed files", flush=True)
+    else:
+        files = all_files[:a.limit]
     for f in files:
         rel, size = f["relpath"], f["size"]
         head = api(a.host, token,
