@@ -38,7 +38,7 @@ def score(item: dict, tokens: list[str]) -> float:
     syn = {"签名": ["sign", "hmac", "signature"], "记忆": ["memory", "brain", "falkordb"],
            "路由": ["router", "route", "intent"], "预约": ["clinic", "booking"],
            "语音": ["voice", "tts", "stt"], "委托": ["delegation", "agent", "contracts"],
-           "密码": ["key", "password", "secret"], "图谱": ["graph", "graphiti"]}
+           "密码": ["key", "password", "secret"], "端口": ["port", "listen"], "服务": ["service", "plist", "launchagent"], "图谱": ["graph", "graphiti"]}
     for k, vs in syn.items():
         if k in "".join(tokens) or any(v in "".join(tokens) for v in vs):
             for v in vs:
