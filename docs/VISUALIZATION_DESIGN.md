@@ -128,6 +128,48 @@ The graph being renderable is not the same as the project being synchronized. Th
 
 This order lets collaborators review a useful project cockpit while the backend contracts are still being hardened. It also keeps the existing graph viewer valuable during the migration.
 
+## Data boundary and install target
+
+The Studio now has a typed adapter boundary in
+`packages/dashboard/src/studio-contracts.ts`. It defines `ProjectSummary`,
+`KnowledgeHealth`, `EvidenceRef`, `IndexJob`, `SourceSummary`, and the
+server-projected HomeHub `AccessContextProjection`. Until the read-only
+knowledge API exists, `createStudioSnapshotFromGraph` maps the existing
+`KnowledgeGraph` into a clearly labelled `partial` snapshot. This fallback is
+useful for review, but it must never be called synchronized source truth.
+
+The build and the appliance runtime are separate steps:
+
+| Environment | Responsibility | Command or artifact |
+| --- | --- | --- |
+| Mac or CI | install dashboard dependencies, build, run browser review | `pnpm install --frozen-lockfile`; `pnpm build` in the vendored dashboard workspace |
+| Jetson Agent Box | run indexer, retrieval API, model services, state, and logs | `~/dev/uyp/indexer/`, `~/dev/uyp/state/`, `~/dev/uyp/output/` |
+| Jetson Studio serving | serve the prebuilt static dashboard through the controlled knowledge service | release artifact from the Mac/CI build; a dedicated `jetson/deploy` unit is still pending |
+
+`pnpm build` is therefore a Mac/CI development and release step, not a model
+installation command. The Jetson can run the same Node toolchain later if an
+all-in-one appliance is chosen, but the first deployment should copy a tested
+static artifact and keep indexing/inference resource ownership explicit. The
+Mac connector remains on each source computer; the browser can be on the Mac,
+another workstation, or a NAS client while the Jetson serves the project
+knowledge API.
+
+## Readability gate before backend wiring
+
+The Studio uses progressive disclosure: one decision per page, three or four
+summary metrics, one primary visualization, then evidence or job details in
+cards. Evidence starts with five result cards and keeps path, line range,
+knowledge version, and freshness in a readable secondary row. Raw JSON, model
+logs, and full manifests do not belong in the first viewport. The current
+implementation uses explicit partial/unsupported/awaiting states and an
+indeterminate scheduler card rather than a fabricated progress percentage.
+
+Before calling the UI production-ready, capture desktop 1440 px, laptop 1280
+px, and mobile 390 px screenshots on a networked Mac after dependencies are
+available. Check line wrapping, contrast, focus rings, card clipping, evidence
+path readability, and the mobile project table. The source-level transpile
+check can pass while browser-level visual QA is still outstanding.
+
 ## Verification checklist
 
 - Desktop and mobile screenshots show the project purpose, state, and next action within the first viewport.
