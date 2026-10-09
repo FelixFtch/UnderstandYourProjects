@@ -49,6 +49,12 @@ function formatDate(value: string): string {
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" }).format(date);
 }
 
+function formatDateTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Unknown time";
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
+}
+
 function stateLabel(state: StudioSnapshot["health"]["state"]): string {
   return state === "current" ? "Current" : state === "partial" ? "Partial" : state[0].toUpperCase() + state.slice(1);
 }
@@ -59,6 +65,14 @@ function humanNodeType(type: string): string {
 
 function jobLabel(job: IndexJob): string {
   return job.phase === "retry_wait" ? "Retry waiting" : job.phase.replace(/_/g, " ").replace(/^./, (value) => value.toUpperCase());
+}
+
+function accessState(access: NonNullable<StudioSnapshot["access"]>): string {
+  if (access.validation === "revoked" || access.revoked) return "Revoked by HomeHub";
+  if (access.validation === "expired") return "Expired";
+  if (access.validation === "active") return "Active projection from HomeHub";
+  if (access.validation === "unknown") return "Validation unavailable";
+  return "Validation unavailable";
 }
 
 function getNodeCounts(graph: KnowledgeGraph) {
@@ -207,26 +221,28 @@ function ProjectsSection({ snapshot, onOpenGraph }: { snapshot: StudioSnapshot; 
 
 function EvidenceSection({ graph, snapshot, onOpenGraph }: { graph: KnowledgeGraph; snapshot: StudioSnapshot; onOpenGraph: () => void }) {
   const [query, setQuery] = useState("");
+  const [resultLimit, setResultLimit] = useState(5);
   const selectNode = useDashboardStore((s) => s.selectNode);
   const graphEvidence = useMemo(() => graph.nodes.map((node): EvidenceRef => ({
     evidenceId: `graph-node:${node.id}`,
     projectId: snapshot.project.projectId,
-    knowledgeVersion: snapshot.project.knowledgeVersion,
     locator: { path: node.filePath, lineStart: node.lineRange?.[0], lineEnd: node.lineRange?.[1], symbol: node.name },
     kind: node.filePath ? "structure" : "unavailable",
     summary: node.summary || "No semantic summary has been published for this graph node.",
     freshness: snapshot.health.state,
   })), [graph.nodes, snapshot.health.state, snapshot.project.knowledgeVersion, snapshot.project.projectId]);
-  const results = useMemo(() => {
-    const evidence = snapshot.evidence.length > 0 ? snapshot.evidence : graphEvidence;
-    if (!query.trim()) return evidence.slice(0, 5);
+  const filteredResults = useMemo(() => {
+    const evidence = snapshot.evidenceOrigin === "graph-fallback" ? graphEvidence : snapshot.evidence;
+    if (!query.trim()) return evidence;
     const normalized = query.toLowerCase();
-    return evidence.filter((item) => [item.summary, item.locator.path ?? "", item.locator.symbol ?? "", item.kind].join(" ").toLowerCase().includes(normalized)).slice(0, 5);
-  }, [graphEvidence, query, snapshot.evidence]);
+    return evidence.filter((item) => [item.summary, item.locator.path ?? "", item.locator.symbol ?? "", item.kind].join(" ").toLowerCase().includes(normalized));
+  }, [graphEvidence, query, snapshot.evidence, snapshot.evidenceOrigin]);
+  const results = filteredResults.slice(0, resultLimit);
+  const evidenceOrigin = snapshot.evidenceOrigin === "graph-fallback" ? "Graph fallback" : "Evidence service";
   return (
     <SectionFrame kicker="Evidence search" title="Ask a question. Keep the source attached." description="Every result is a bounded graph or source anchor. Semantic confidence and access provenance will be supplied by the retrieval service when connected." action={<div className="studio-evidence-scope"><span className="studio-chip studio-chip-positive">Current project</span><span className="studio-chip">ACL filter pending</span></div>}>
       <div className="studio-evidence-layout">
-        <div className="studio-panel studio-evidence-list"><div className="studio-evidence-query"><Icon name="search" size={17} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search files, symbols, tags, or summaries" aria-label="Search project evidence" /><span className="studio-key">⌘ K</span></div><div className="studio-evidence-list-head"><span>{results.length} of {snapshot.evidence.length || graph.nodes.length} results</span><span>{snapshot.evidence.length > 0 ? "Evidence service" : "Graph fallback"}</span></div>{results.map((evidence) => { const graphNodeId = evidence.evidenceId.startsWith("graph-node:") ? evidence.evidenceId.slice("graph-node:".length) : undefined; const graphNode = graphNodeId ? graph.nodes.find((node) => node.id === graphNodeId) : undefined; return <button key={evidence.evidenceId} type="button" className="studio-evidence-result" onClick={() => { if (graphNode) selectNode(graphNode.id); onOpenGraph(); }}><div className="studio-evidence-result-top"><span className="studio-status-pill studio-status-pill-neutral">{evidence.kind}</span><span className="studio-table-muted">{stateLabel(evidence.freshness)}</span></div><strong>{evidence.locator.symbol || evidence.locator.path || "Evidence reference"}</strong><p>{evidence.summary}</p><div className="studio-evidence-meta"><span>{evidence.locator.path || "Graph relationship"}{evidence.locator.lineStart ? `:${evidence.locator.lineStart}–${evidence.locator.lineEnd ?? evidence.locator.lineStart}` : ""}</span><span>{evidence.knowledgeVersion ? `v${evidence.knowledgeVersion}` : "Version pending"}</span></div></button>; })}{results.length === 0 && <div className="studio-empty"><Icon name="search" size={18} /><p>No evidence reference matches this query.</p></div>}</div>
+        <div className="studio-panel studio-evidence-list"><div className="studio-evidence-query"><Icon name="search" size={17} /><input value={query} onChange={(event) => { setQuery(event.target.value); setResultLimit(5); }} placeholder="Search files, symbols, or summaries" aria-label="Search project evidence" /><span className="studio-key">⌘ K</span></div><div className="studio-evidence-list-head"><span>{results.length} of {filteredResults.length} results</span><span>{evidenceOrigin}</span></div>{results.map((evidence) => { const graphNodeId = evidence.evidenceId.startsWith("graph-node:") ? evidence.evidenceId.slice("graph-node:".length) : undefined; const graphNode = graphNodeId ? graph.nodes.find((node) => node.id === graphNodeId) : undefined; return <button key={evidence.evidenceId} type="button" className="studio-evidence-result" onClick={() => { if (graphNode) selectNode(graphNode.id); onOpenGraph(); }}><div className="studio-evidence-result-top"><span className="studio-status-pill studio-status-pill-neutral">{evidence.kind}</span><span className="studio-table-muted">{stateLabel(evidence.freshness)}</span></div><strong>{evidence.locator.symbol || evidence.locator.path || "Evidence reference"}</strong><p>{evidence.summary}</p><div className="studio-evidence-meta"><span>{evidence.locator.path || "Graph relationship"}{evidence.locator.lineStart ? `:${evidence.locator.lineStart}–${evidence.locator.lineEnd ?? evidence.locator.lineStart}` : ""}</span><span>{evidence.knowledgeVersion ? `v${evidence.knowledgeVersion}` : "Knowledge version pending"}</span></div></button>; })}{results.length === 0 && <div className="studio-empty"><Icon name="search" size={18} /><p>{snapshot.evidenceOrigin === "graph-fallback" ? "No graph evidence matches this query." : "No evidence reference matches this query."}</p></div>}{filteredResults.length > results.length && <button type="button" className="studio-link-button" onClick={() => setResultLimit((limit) => limit + 5)}>Show more evidence <Icon name="arrow" size={14} /></button>}</div>
         <div className="studio-panel studio-evidence-inspector"><span className="studio-section-kicker">Evidence contract</span><h2>What a trusted result will show</h2><div className="studio-trust-stack"><div><span className="studio-trust-index">01</span><p><strong>Conclusion</strong><small>What Jarvis believes the evidence says.</small></p></div><div><span className="studio-trust-index">02</span><p><strong>Source range</strong><small>File, symbol, line range, or graph relationship.</small></p></div><div><span className="studio-trust-index">03</span><p><strong>Version anchor</strong><small>Source commit and knowledge epoch.</small></p></div><div><span className="studio-trust-index">04</span><p><strong>Access trace</strong><small>HomeHub grant, freshness, and audit trace.</small></p></div></div><div className="studio-evidence-warning"><Icon name="shield" size={16} /><p>Raw source stays behind the connector grant. The dashboard never becomes an ACL authority.</p></div></div>
       </div>
     </SectionFrame>
@@ -237,7 +253,7 @@ function ActivitySection({ snapshot }: { snapshot: StudioSnapshot }) {
   const jobs = snapshot.jobs.slice(0, 3);
   return (
     <SectionFrame kicker="Index activity" title="See what changed, and what still needs work." description="The activity surface separates graph availability from connector freshness, semantic enrichment, and publishing state." action={<span className={`studio-chip ${snapshot.health.state === "current" ? "studio-chip-positive" : ""}`}><span className="studio-chip-dot" />{stateLabel(snapshot.health.state)} knowledge</span>}>
-      <div className="studio-activity-grid"><div className="studio-panel studio-activity-timeline"><div className="studio-panel-heading"><div><span className="studio-section-kicker">Knowledge timeline</span><h2>Current epoch</h2></div><span className="studio-panel-caption">{formatDate(snapshot.project.updatedAt)}</span></div>{jobs.map((job) => <div className="studio-job-line" key={job.jobId}><span className={`studio-job-marker ${job.phase === "published" ? "studio-job-marker-done" : "studio-job-marker-pending"}`} /><div><strong>{jobLabel(job)}</strong><p>{job.error || (job.progress?.total ? `${job.progress.processed} of ${job.progress.total} units processed.` : "Waiting for the index service to publish progress." )}</p></div><span className={`studio-status-pill ${job.phase === "published" ? "studio-status-pill-success" : "studio-status-pill-neutral"}`}>{jobLabel(job)}</span></div>)}</div><div className="studio-panel studio-resource-panel"><span className="studio-section-kicker">Index budget</span><h2>Make background work visible.</h2><div className="studio-indeterminate-state"><span className="studio-indeterminate-dot" /><strong>Scheduler data unavailable</strong></div><div className="studio-resource-label"><span>Resident Jetson queue</span><strong>Awaiting IndexJob metrics</strong></div><p>CPU, memory, queue age, and batch priority appear here only after the HomeHub inference scheduler exposes an IndexJob resource budget.</p><button type="button" className="studio-button studio-button-quiet">View job contract <Icon name="arrow" size={14} /></button></div></div>
+      <div className="studio-activity-grid"><div className="studio-panel studio-activity-timeline"><div className="studio-panel-heading"><div><span className="studio-section-kicker">Knowledge timeline</span><h2>Current epoch</h2></div><span className="studio-panel-caption">{formatDate(snapshot.project.updatedAt)}</span></div>{jobs.length > 0 ? jobs.map((job) => <div className="studio-job-line" key={job.jobId}><span className={`studio-job-marker ${job.phase === "published" ? "studio-job-marker-done" : "studio-job-marker-pending"}`} /><div><strong>{jobLabel(job)}</strong><p>{job.error || (job.progress?.total ? `${job.progress.processed} of ${job.progress.total} units processed.` : "Waiting for the index service to publish progress.")}</p></div><span className={`studio-status-pill ${job.phase === "published" ? "studio-status-pill-success" : "studio-status-pill-neutral"}`}>{jobLabel(job)}</span></div>) : <div className="studio-empty"><Icon name="pulse" size={18} /><p>No IndexJob records are attached. The graph snapshot is available, but job history has not been published.</p></div>}</div><div className="studio-panel studio-resource-panel"><span className="studio-section-kicker">Index budget</span><h2>Make background work visible.</h2><div className="studio-indeterminate-state"><span className="studio-indeterminate-dot" /><strong>Scheduler data unavailable</strong></div><div className="studio-resource-label"><span>Resident Jetson queue</span><strong>Awaiting IndexJob metrics</strong></div><p>CPU, memory, queue age, and batch priority appear here only after the HomeHub inference scheduler exposes an IndexJob resource budget.</p><button type="button" className="studio-button studio-button-quiet">View job contract <Icon name="arrow" size={14} /></button></div></div>
     </SectionFrame>
   );
 }
@@ -257,7 +273,7 @@ function SourcesSection({ snapshot }: { snapshot: StudioSnapshot }) {
 
 function PrivacySection({ snapshot }: { snapshot: StudioSnapshot }) {
   const access = snapshot.access;
-  return <SectionFrame kicker="Privacy & audit" title="Make every answer explainable." description="This surface visualizes the HomeHub access trace that allowed a project query to return evidence."><div className="studio-panel studio-trace-panel"><div className="studio-trace-chain">{["Identity context", "HomeHub policy", "Project scope", "Retrieval", "Evidence answer"].map((step, index) => <div key={step} className="studio-trace-step"><span>{String(index + 1).padStart(2, "0")}</span><strong>{step}</strong>{index < 4 && <b>→</b>}</div>)}</div><div className="studio-trace-fields"><span><small>Grant epoch</small><strong>{access?.grantEpoch || "Awaiting AccessContext"}</strong></span><span><small>Policy digest</small><strong>{access?.policyDigest || "Not exposed"}</strong></span><span><small>Audit trace</small><strong>{access?.auditId || "Created by HomeHub"}</strong></span></div></div><div className="studio-source-callout"><Icon name="shield" size={18} /><div><strong>Visual trust is a projection, not a permission engine.</strong><p>{access ? `Context expires ${formatDate(access.expiresAt)} and is ${access.revoked ? "revoked" : "server-valid"}.` : "Raw source, revocation, and audit decisions remain server-side until HomeHub provides an AccessContext projection."}</p></div></div></SectionFrame>;
+  return <SectionFrame kicker="Privacy & audit" title="Make every answer explainable." description="This surface visualizes the HomeHub access trace that allowed a project query to return evidence."><div className="studio-panel studio-trace-panel"><div className="studio-trace-chain">{["Identity context", "HomeHub policy", "Project scope", "Retrieval", "Evidence answer"].map((step, index) => <div key={step} className="studio-trace-step"><span>{String(index + 1).padStart(2, "0")}</span><strong>{step}</strong>{index < 4 && <b>→</b>}</div>)}</div><div className="studio-trace-fields"><span><small>HomeHub status</small><strong>{access ? accessState(access) : "Awaiting AccessContext"}</strong></span><span><small>Grant epoch</small><strong>{access?.grantEpoch || "Not exposed"}</strong></span><span><small>Expires</small><strong>{access ? formatDateTime(access.expiresAt) : "Not exposed"}</strong></span></div></div><div className="studio-source-callout"><Icon name="shield" size={18} /><div><strong>Visual trust is a projection, not a permission engine.</strong><p>{access ? `HomeHub supplied this context at audit ${access.auditId}; Studio does not infer authorization from its presence.` : "Raw source, revocation, and audit decisions remain server-side until HomeHub provides an AccessContext projection."}</p></div></div></SectionFrame>;
 }
 
 function CommandPalette({ graph, onClose, onOpenGraph, onOpenEvidence }: { graph: KnowledgeGraph; onClose: () => void; onOpenGraph: () => void; onOpenEvidence: () => void }) {
@@ -313,7 +329,7 @@ function Overview({ graph, snapshot, onOpenGraph, onAsk }: { graph: KnowledgeGra
           <p>{graph.project.description || "A living map of the code, systems, and evidence behind this project."}</p>
           <div className="studio-chip-row">
             <span className={`studio-chip ${snapshot.health.state === "current" ? "studio-chip-positive" : ""}`}><span className="studio-chip-dot" />{stateLabel(snapshot.health.state)} knowledge</span>
-            <span className="studio-chip">{snapshot.health.reason || "Connector freshness supplied by the knowledge service"}</span>
+            <span className="studio-chip" title={snapshot.health.reason || "Connector freshness supplied by the knowledge service"}>Source freshness: {stateLabel(snapshot.health.connectorStatus)}</span>
             <span className="studio-chip">Analyzed {formatDate(graph.project.analyzedAt)}</span>
             {graph.project.gitCommitHash && <span className="studio-chip studio-chip-mono">{graph.project.gitCommitHash.slice(0, 8)}</span>}
           </div>

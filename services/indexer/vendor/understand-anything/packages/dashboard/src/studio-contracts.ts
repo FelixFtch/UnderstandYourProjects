@@ -44,7 +44,9 @@ export interface ProjectSummary {
   frameworks: string[];
   counts: ProjectCounts;
   entryPoints: string[];
-  knowledgeVersion: string;
+  /** Server-published knowledge epoch/version. The graph schema version is separate. */
+  knowledgeVersion?: string;
+  schemaVersion?: string;
   sourceEpoch?: string;
   freshness: ConnectionState;
   updatedAt: string;
@@ -114,6 +116,8 @@ export interface AccessContextProjection {
   expiresAt: string;
   auditId: string;
   revoked: boolean;
+  /** Optional HomeHub validation result. Studio must not infer authorization from UI state. */
+  validation?: "active" | "expired" | "revoked" | "unknown";
 }
 
 export interface SourceSummary {
@@ -132,6 +136,8 @@ export interface StudioSnapshot {
   jobs: IndexJob[];
   sources: SourceSummary[];
   access?: AccessContextProjection;
+  /** Identifies whether evidence came from the service or the graph-only fallback. */
+  evidenceOrigin: "service" | "graph-fallback";
 }
 
 /**
@@ -146,16 +152,6 @@ export function createStudioSnapshotFromGraph(graph: KnowledgeGraph): StudioSnap
     .map((node) => node.name)
     .slice(0, 4);
   const projectId = `graph:${graph.project.name}`;
-  const evidence = graph.nodes.slice(0, 8).map((node): EvidenceRef => ({
-    evidenceId: `graph-node:${node.id}`,
-    projectId,
-    knowledgeVersion: graph.version,
-    locator: { path: node.filePath, lineStart: node.lineRange?.[0], lineEnd: node.lineRange?.[1], symbol: node.name },
-    kind: node.filePath ? "structure" : "unavailable",
-    summary: node.summary || "No semantic summary has been published for this graph node.",
-    freshness: "partial",
-  }));
-
   return {
     project: {
       projectId,
@@ -165,30 +161,25 @@ export function createStudioSnapshotFromGraph(graph: KnowledgeGraph): StudioSnap
       frameworks: graph.project.frameworks,
       counts: { files, nodes: graph.nodes.length, relations: graph.edges.length, layers: graph.layers.length },
       entryPoints,
-      knowledgeVersion: graph.version,
+      schemaVersion: graph.version,
       freshness: "partial",
       updatedAt: graph.project.analyzedAt,
       visibility: "private",
     },
     health: {
       state: "partial",
-      knowledgeVersion: graph.version,
       coverage: { filesIndexed: files },
       lastSuccessfulAt: graph.project.analyzedAt,
       connectorStatus: "unsupported",
       reason: "The current viewer has a graph snapshot; connector freshness and HomeHub context are not attached yet.",
     },
-    evidence,
-    jobs: [{
-      jobId: `graph-publish:${graph.version}`,
-      projectId,
-      phase: "published",
-      progress: { processed: graph.nodes.length, total: graph.nodes.length },
-      knowledgeVersion: graph.version,
-      finishedAt: graph.project.analyzedAt,
-    }],
+    evidence: [],
+    evidenceOrigin: "graph-fallback",
+    // A graph file is not an IndexJob record. Leave job history unavailable
+    // until the index service publishes real phases and progress.
+    jobs: [],
     sources: [
-      { sourceId: "graph-snapshot", label: "Current graph snapshot", kind: "graph", state: "partial", detail: `${graph.nodes.length} nodes · commit ${graph.project.gitCommitHash || "unavailable"}` },
+      { sourceId: "graph-snapshot", label: "Current graph snapshot", kind: "graph", state: "partial", detail: `${graph.nodes.length} nodes · schema ${graph.version} · commit ${graph.project.gitCommitHash || "unavailable"}` },
       { sourceId: "nas", label: "NAS connector", kind: "nas", state: "unsupported", detail: "Waiting for a HomeHub-owned source grant" },
       { sourceId: "github", label: "GitHub connector", kind: "github", state: "unsupported", detail: "Waiting for repository manifest and source scope" },
     ],

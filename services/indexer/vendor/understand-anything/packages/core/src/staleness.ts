@@ -125,7 +125,7 @@ function parseNulDelimitedPaths(output: Buffer): string[] {
   if (value.length === 0) return [];
 
   const paths = value.split("\0");
-  if (paths.at(-1) === "") paths.pop();
+  if (paths[paths.length - 1] === "") paths.pop();
   return paths.filter((path) => path.length > 0);
 }
 
