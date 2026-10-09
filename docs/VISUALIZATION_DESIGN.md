@@ -254,3 +254,29 @@ scope editor: a group can be selected, messages can be sent to its Jarvis draft,
 and layer or item overrides update that group's draft only. A group override
 never changes the global map and never grants access; the final decision still
 comes from HomeHub.
+
+## Agent boxes, connectors, and Jarvis discovery
+
+The project surface is now organized around four distinct layers of the
+product model:
+
+1. **Agent Boxes** answer which Jarvis is responsible for understanding a
+   source. The Sources surface shows discovered, pairing-pending, paired, and
+   offline states separately, with last-seen and capability information.
+2. **Connectors** answer what that Agent Box may read. NAS, GitHub, workstation,
+   and device sources each have their own manifest, freshness, grant, and
+   revocation lifecycle. Adding a connector creates a draft; it does not grant
+   access or move files.
+3. **Project knowledge** contains the graph, evidence, timeline, retrieval, and
+   coding-agent handoff that UnderstandYourProjects owns.
+4. **NandaTown contacts and groups** answer which other Jarvis nodes may be
+   invited into a conversation. The directory displays advertised metadata,
+   capabilities, and last-seen status only. An invite remains pending until
+   HomeHub supplies the audience, source/project scope, TTL, grant epoch, and
+   audit context.
+
+The V1 pairing path is intentionally explicit: discovery offer → one-time code
+or QR → HomeHub ownership review → connector manifest → scoped IndexJob. LAN
+mDNS or a Cloudflare endpoint may describe transport reachability, but neither
+replaces HomeHub ownership or authorization. NandaTown carries discovery and
+transport; it never becomes a second policy or revocation authority.

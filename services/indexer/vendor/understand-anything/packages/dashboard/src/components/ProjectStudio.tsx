@@ -6,6 +6,7 @@ import { createStudioSnapshotFromGraph } from "../studio-contracts";
 import type { EvidenceRef, IndexJob, StudioSnapshot } from "../studio-contracts";
 import PrivacyWorkspace, { SharingScopePanel } from "./PrivacyWorkspace";
 import GroupWorkspace from "./GroupWorkspace";
+import SourcesWorkspace from "./SourcesWorkspace";
 import { PrivacyWorkspaceProvider } from "./privacy-model";
 
 type StudioSection = "overview" | "projects" | "conversation" | "evidence" | "activity" | "collaborate" | "sources" | "privacy";
@@ -339,8 +340,7 @@ function GroupsSection({ onOpenPrivacy }: { onOpenPrivacy: () => void }) {
 }
 
 function SourcesSection({ snapshot }: { snapshot: StudioSnapshot }) {
-  const sourceIcon = (kind: string) => kind === "graph" ? "spark" : kind === "github" ? "arrow" : kind === "device" ? "grid" : "folder";
-  return <SectionFrame kicker="Sources & devices" title="Know what the box can see." description="Connector cards expose source scope, manifest state, and health without duplicating HomeHub ownership or revocation logic."><div className="studio-panel studio-source-list">{snapshot.sources.map((row) => <div className="studio-source-row" key={row.sourceId}><span className="studio-source-icon"><Icon name={sourceIcon(row.kind) as "grid" | "folder" | "spark" | "arrow"} size={17} /></span><div><strong>{row.label}</strong><small>{row.detail}</small></div><span className={`studio-status-pill ${row.state === "current" ? "studio-status-pill-success" : "studio-status-pill-neutral"}`}>{stateLabel(row.state)}</span><Icon name="chevron" size={15} /></div>)}</div><div className="studio-source-callout"><Icon name="shield" size={18} /><div><strong>HomeHub supplies the authority.</strong><p>UnderstandYourProjects displays the result of a grant and its epoch. It does not create a second ownership database.</p></div></div></SectionFrame>;
+  return <SectionFrame kicker="Sources & devices" title="Know which Jarvis can see which sources." description="Agent Boxes are the compute and identity boundary. Connectors are the individually scoped Mac, NAS, GitHub, or workstation sources that a Jetson may analyze. Every state below is a local design preview until HomeHub returns its projection."><SourcesWorkspace sources={snapshot.sources} /><div className="studio-source-callout"><Icon name="shield" size={18} /><div><strong>HomeHub supplies the authority.</strong><p>UnderstandYourProjects displays discovery, pairing, grants, manifests, and health. It does not create a second ownership database or turn a local pair code into authorization.</p></div></div></SectionFrame>;
 }
 
 function PrivacySection({ snapshot, onOpenConversations }: { snapshot: StudioSnapshot; onOpenConversations: () => void }) {
@@ -510,7 +510,7 @@ function ProjectStudioSurface({ onOpenGraph, snapshot: suppliedSnapshot }: Proje
       <aside className="studio-sidebar">
         <div className="studio-brand"><div className="studio-brand-mark"><Icon name="spark" size={17} /></div><div><strong>Understand</strong><span>Your Projects</span></div></div>
         <div className="studio-workspace-label">Workspace</div>
-        <button className="studio-workspace-switcher" type="button" onClick={() => setActiveSection("projects")}><span className="studio-workspace-avatar">U</span><span><strong>Current workspace</strong><small>Project catalog pending</small></span><Icon name="chevron" size={14} /></button>
+        <button className="studio-workspace-switcher" type="button" onClick={() => setActiveSection("sources")}><span className="studio-workspace-avatar">J</span><span><strong>Current Jarvis box</strong><small>Jetson target · pairing draft</small></span><Icon name="chevron" size={14} /></button>
         <nav className="studio-nav" aria-label="Project studio navigation">
           {(Object.keys(sectionLabels) as StudioSection[]).map((section) => (
             <button key={section} type="button" className={`studio-nav-item ${activeSection === section ? "is-active" : ""} ${section === "conversation" || section === "collaborate" || section === "privacy" ? "studio-nav-priority" : ""}`} onClick={() => setActiveSection(section)}><Icon name={section === "overview" ? "grid" : section === "projects" || section === "sources" ? "folder" : section === "evidence" ? "search" : section === "activity" ? "pulse" : section === "privacy" ? "shield" : section === "conversation" ? "message" : "users"} size={17} /><span>{sectionLabels[section].label}</span>{section === "overview" && <span className="studio-nav-badge">Now</span>}{section === "collaborate" && <span className="studio-nav-badge studio-nav-badge-warn">New</span>}</button>

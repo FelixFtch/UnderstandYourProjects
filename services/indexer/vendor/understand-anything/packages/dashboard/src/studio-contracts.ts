@@ -136,6 +136,60 @@ export interface SourceSummary {
   lastSyncAt?: string;
 }
 
+/** Read-only projections for the Agent Box and multi-connector surfaces. */
+export type PairingState = "discovered" | "pairing" | "paired" | "offline" | "revoked";
+
+export interface AgentNodeSummary {
+  nodeId: string;
+  label: string;
+  transport: "lan" | "cloudflare" | "local" | "unknown";
+  pairing: PairingState;
+  lastSeen?: string;
+  capabilities: string[];
+  connectorIds: string[];
+  grantEpoch?: string;
+  auditId?: string;
+}
+
+export interface ConnectorSummary {
+  connectorId: string;
+  nodeId: string;
+  kind: "local" | "nas" | "github" | "device";
+  label: string;
+  state: ConnectionState;
+  manifestState: "ready" | "pending" | "unavailable";
+  sourceIds: string[];
+  sourceEpoch?: string;
+  grantEpoch?: string;
+  auditId?: string;
+}
+
+/** Public NandaTown metadata; it is not a HomeHub grant or a source listing. */
+export interface PeerJarvisSummary {
+  peerId: string;
+  nodeId: string;
+  displayLabel: string;
+  handle?: string;
+  transport: "nandatown";
+  trust: "advertised" | "invited" | "verified" | "revoked";
+  status: "available" | "recent" | "offline";
+  lastSeen?: string;
+  capabilities: string[];
+  advertisedProjectCount?: number;
+}
+
+export interface GroupMemberProjection {
+  memberId: string;
+  nodeId: string;
+  displayLabel: string;
+  status: "pending" | "active" | "offline" | "revoked";
+  projectScopes: string[];
+  sourceScopes: string[];
+  grantEpoch?: string;
+  expiresAt?: string;
+  auditId?: string;
+}
+
 export interface StudioSnapshot {
   project: ProjectSummary;
   health: KnowledgeHealth;

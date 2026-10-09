@@ -901,3 +901,44 @@ body {
   .studio-conversation-composer .studio-composer-status { display: none; }
   .studio-conversation-composer .studio-button { order: 3; width: 100%; }
 }
+
+/* Direct Ask Jarvis shares the warm, readable room language used by Groups.
+   The chat remains visually distinct through its focused bordered panel, not
+   through a separate dark theme that makes the quick actions low contrast. */
+.studio-chip-positive,
+.studio-status-pill-success,
+.studio-context-chip-scope {
+  color: #6f5825;
+  background: #fff4bf;
+  border-color: #e5ca65;
+}
+.studio-conversation-layout { background: #f8f0cf; border-color: #ecd98b; box-shadow: 0 16px 32px rgba(125,100,38,.08); }
+.studio-conversation-thread { color: #2f2818; background: #fffaf0; border-color: #e2c869; box-shadow: 0 18px 34px rgba(92,70,24,.12); }
+.studio-conversation-header { border-bottom-color: #e5d8bb; }
+.studio-conversation-header h2 { color: #2f2818; }
+.studio-conversation-header .studio-section-kicker { color: #9a781f; }
+.studio-conversation-subtitle { color: #756b55; }
+.studio-conversation-live { color: #7d6426; background: #fff4bf; border-color: #e5ca65; }
+.studio-conversation-scope-row { color: #756b55; background: #fff8db; border-color: #e5d8bb; }
+.studio-scope-lock { color: #80651d; }
+.studio-message-body { color: #3b3325; background: #fffdf7; border-color: #e5d8bb; box-shadow: 0 7px 16px rgba(92,70,24,.08); }
+.studio-message-user .studio-message-body { color: #2f2818; background: #f2d24b; border-color: #d6b33b; box-shadow: 0 7px 16px rgba(80,60,12,.12); }
+.studio-message-meta { color: #9a8b70; }
+.studio-message-meta strong { color: #5d491c; }
+.studio-message-user .studio-message-meta { color: #80651d; }
+.studio-message-user .studio-message-meta strong { color: #4e3d12; }
+.studio-message-avatar { color: #fff9e8; background: #7d6426; }
+.studio-message-avatar-user { color: #4e3d12; background: #f2d24b; }
+.studio-answer-citations button,
+.studio-evidence-visibility { color: #80651d; background: #fff8db; border-color: #e5ca65; }
+.studio-answer-citations button:hover { background: #ffefaa; }
+.studio-evidence-visibility { color: #756b55; background: #f8f0cf; border-color: #e5d8bb; }
+.studio-quick-actions { border-top-color: #e5d8bb; }
+.studio-quick-actions button { color: #80651d; border-bottom-color: #eee2c8; }
+.studio-quick-actions button:hover { color: #5d491c; }
+.studio-quick-actions button svg { color: #c49a2e; }
+.studio-direct-typing { color: #80651d; }
+.studio-conversation-composer { background: #fffdf5; border-color: #c49a2e; box-shadow: 0 10px 24px rgba(92,70,24,.12); }
+.studio-conversation-composer > svg { color: #7d6426; }
+.studio-conversation-composer input { color: #2f2818; }
+.studio-conversation-note { color: #80651d; }
