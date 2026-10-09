@@ -31,6 +31,16 @@ The graph conversion is deliberate: `GraphView` remains the structural map, `Dom
 
 Privacy is visible at three levels: a global trust bar below the command bar, a scope chip on each answer/evidence/group card, and the full `Privacy & audit` trace page. The UI can display `Private project`, `Owner group`, and `External group` as HomeHub projections with grant epoch, expiry, and audit trace. It cannot create, infer, or revoke a permission. The iPhone Jarvis patterns we reuse are the central Jarvis entry point, left/right chat bubbles, voice/identity status, a bottom composer, privacy rings, sync/device status, and `Will see / Won't see` approval cards from the existing HomeHub designs.
 
+### Visual hierarchy for trust-sensitive actions
+
+The three trust-sensitive surfaces intentionally use different visual treatments:
+
+- **Ask Jarvis** is a dark, high-contrast conversation stage. The transcript, producing Jarvis, scope lock, evidence chips, and composer read as one focused room instead of another dashboard card.
+- **Groups** begins with a dark boundary rail, then a three-step group builder: invite Jarvis, set the visibility window, and review the HomeHub approval. The form is a draft until HomeHub returns a grant.
+- **Privacy & audit** uses three permission cards with explicit content rows: project summaries, evidence references, and raw source ranges. Each row has an allowed/grant/hidden/never state, so the user can understand what will be shared before reading the epoch and audit trace.
+
+The surface hierarchy is part of the product contract. A user should recognize the action type from the visual treatment before reading every label, while the actual authority and decision remain in HomeHub.
+
 ## Product information architecture
 
 ### Global workspace
