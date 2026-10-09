@@ -85,3 +85,25 @@ Three prompts matching the A/B criteria (bilingual module summary, constrained J
 | API `"think": false` | **20** | **0.1 s** | clean JSON, ~144x faster |
 
 Implication for the resident profile: **run triage/enrichment with `"think": false`** (est. well under 1 s/task even on Orin NX) and reserve thinking mode for the queued deep-maintenance tier. `/nothink` prefix is not a reliable control; always use the API parameter. The three different judgements of the same snippet across modes also confirm the memo's split: small-model fast opinions for bulk work, thinking mode for judgement calls.
+
+
+## On-device A/B: qwen3.5:4b (think:false) vs qwen3-4b-route — 2026-10-09
+
+Method: same box, same six bilingual prompts, `num_ctx 2048`, one model resident at a time (route model was unloaded for the 3.5 leg, then restored; voice chain verified healthy after the swap — guest turn answered normally).
+
+| # | Task | qwen3.5:4b nothink | qwen3-4b-route | Verdict |
+| --- | --- | --- | --- | --- |
+| 1 | intent routing (production job) | correct, 0.2s eval | correct, 0.2s eval | tie — routing correctness is not a reason to switch, nor a risk |
+| 2 | one-line Chinese module summary | correct, 10 tok | correct (mentions "signature"), 13 tok | route slightly more precise |
+| 3 | constrained JSON | valid, `risk:"low"` | valid, `risk:"medium"` | tie; route slightly more conservative |
+| 4 | English evidence answer (guard name) | honest "not mentioned" | honest "not mentioned" | tie (question was ambiguous; neither hallucinated) |
+| 5 | Chinese architecture judgement (planner vs avoidance authority) | **layered answer: low-level motion controller holds instantaneous authority, planner supplies verified trajectories** | classic "planner holds authority" | **qwen3.5 clearly better** — nuanced, closer to modern safety architecture |
+| 6 | compound split to JSON array | correct but drifted to English | correct, kept Chinese | route better on language consistency (fixable with a prompt pin) |
+
+Speed (Jetson, think:false): comparable; eval 0.2-6.6s vs 0.2-5.1s, 3.5 emits fewer tokens for the same answers (10/24/9 vs 13/27/20).
+
+Memory at ctx 2048: **qwen3.5:4b resident 3.1 GB vs route 4.2 GB** — the candidate is ~1.1 GB cheaper at equal context (5.7 GB figure for route is its production ctx-4096 residency).
+
+### Verdict
+
+Switching the resident profile to qwen3.5:4b is justified for the UnderstandYourProjects workload: clearly better Chinese/architectural reasoning, equal routing, equal-or-better speed, ~1 GB less residency. Two preconditions before promotion: pin output language in the enrichment prompts (3.5 drifted to English on one bilingual task), and keep `"think": false` on every triage/enrichment call (thinking mode costs ~144x tokens). Voice-chain promotion still goes through the HomeHub model-profile gates.
