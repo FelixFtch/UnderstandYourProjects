@@ -1,0 +1,76 @@
+#!/usr/bin/env node
+/**
+ * Build a vendored Understand Anything graph from bridge-owned extraction
+ * results. The project root is intentionally not read here: the Python bridge
+ * has already staged only Connector-authorized bytes in a temporary directory.
+ */
+import { readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+
+const [, , inputPath, outputPath] = process.argv;
+if (!inputPath || !outputPath) {
+  process.stderr.write("Usage: node ua_graph_builder.mjs <input.json> <output.json>\n");
+  process.exit(1);
+}
+
+const uaRoot = process.env.UYP_UA_ROOT;
+if (!uaRoot) throw new Error("UYP_UA_ROOT is required");
+const { GraphBuilder } = await import(
+  pathToFileURL(resolve(uaRoot, "packages/core/dist/index.js")).href,
+);
+
+const input = JSON.parse(readFileSync(inputPath, "utf8"));
+const results = Array.isArray(input.results) ? input.results : [];
+const builder = new GraphBuilder(
+  String(input.projectName || "authorized-project"),
+  String(input.contentDigest || "unknown"),
+);
+
+const knownFiles = new Set(results.map((file) => file.path));
+
+for (const file of results) {
+  const functions = (file.functions || []).map((fn) => ({
+    name: fn.name,
+    lineRange: [fn.startLine || 1, fn.endLine || fn.startLine || 1],
+    params: fn.params || [],
+  }));
+  const classes = (file.classes || []).map((cls) => ({
+    name: cls.name,
+    lineRange: [cls.startLine || 1, cls.endLine || cls.startLine || 1],
+    methods: cls.methods || [],
+    properties: cls.properties || [],
+  }));
+  const analysis = { functions, classes, imports: [], exports: [] };
+  const summary = `Deterministic structure extracted from ${file.path}`;
+  const meta = {
+    summary,
+    tags: [file.language, file.fileCategory].filter(Boolean),
+    complexity: "simple",
+    fileSummary: summary,
+    summaries: {},
+  };
+  for (const item of [...functions, ...classes]) {
+    meta.summaries[item.name] = `${item.name} in ${file.path}`;
+  }
+  if (functions.length || classes.length) builder.addFileWithAnalysis(file.path, analysis, meta);
+  else builder.addFile(file.path, { summary, tags: meta.tags, complexity: "simple" });
+
+  // compute-batches may provide resolved import paths. Only create edges to
+  // files present in this authorized batch; unresolved imports stay metadata.
+  const imports = input.importsByPath?.[file.path] || [];
+  for (const target of imports) {
+    const targetPath = typeof target === "string" ? target : target?.resolvedPath;
+    if (knownFiles.has(targetPath)) builder.addImportEdge(file.path, targetPath);
+  }
+
+  for (const call of file.callGraph || []) {
+    const caller = String(call.caller || "");
+    const callee = String(call.callee || "");
+    if (functions.some((fn) => fn.name === caller) && functions.some((fn) => fn.name === callee)) {
+      builder.addCallEdge(file.path, caller, file.path, callee);
+    }
+  }
+}
+
+writeFileSync(outputPath, JSON.stringify(builder.build(), null, 2));

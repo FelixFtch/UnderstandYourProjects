@@ -29,8 +29,21 @@ class QueryApiProjectionTests(unittest.TestCase):
             "projectScopes": ["demo-project"], "sourceScopes": ["connector:demo-project"], "grantEpoch": "g1",
             "policyDigest": "pd1", "expiresAt": "2099-01-01T00:00:00Z", "auditId": "a1",
         }), encoding="utf-8")
-        self.old = {key: os.environ.get(key) for key in ("UYP_OUTPUT_ROOT", "UYP_ACCESS_CONTEXT_FILE")}
+        state_project = root / "state" / "demo-project" / "ua"
+        state_project.mkdir(parents=True)
+        (state_project / "knowledge-graph.json").write_text(json.dumps({
+            "version": "1.0.0",
+            "project": {"name": "demo-project", "languages": ["python"], "frameworks": []},
+            "nodes": [
+                {"id": "file:src/main.py", "type": "file", "filePath": "src/main.py"},
+                {"id": "function:src/main.py:main", "type": "function", "filePath": "src/main.py"},
+            ],
+            "edges": [{"source": "file:src/main.py", "target": "function:src/main.py:main", "type": "contains"}],
+            "layers": [], "tour": [],
+        }), encoding="utf-8")
+        self.old = {key: os.environ.get(key) for key in ("UYP_OUTPUT_ROOT", "UYP_STATE_ROOT", "UYP_ACCESS_CONTEXT_FILE")}
         os.environ["UYP_OUTPUT_ROOT"] = str(root / "output")
+        os.environ["UYP_STATE_ROOT"] = str(root / "state")
         os.environ["UYP_ACCESS_CONTEXT_FILE"] = str(self.context)
 
     def tearDown(self):
@@ -49,6 +62,13 @@ class QueryApiProjectionTests(unittest.TestCase):
         self.assertEqual(len(snapshot["evidence"]), 1)
         self.assertEqual(len(snapshot["agentNodes"]), 1)
 
+    def test_snapshot_projects_authorized_ua_graph(self):
+        snapshot = query_api.project_snapshot()
+        self.assertEqual(snapshot["project"]["counts"], {"files": 1, "nodes": 2, "relations": 1, "layers": 0})
+        self.assertEqual(snapshot["project"]["languages"], ["python"])
+        self.assertIn("graph", snapshot)
+        self.assertEqual(len(snapshot["graph"]["nodes"]), 2)
+
     def test_scope_filter_rejects_other_project(self):
         context = query_api.load_access_context()
         item = {"file": "src/main.py", "_out_path": "/tmp/output/other-project/file.knowledge.json"}
@@ -66,6 +86,7 @@ class QueryApiProjectionTests(unittest.TestCase):
         self.assertEqual(snapshot["health"]["coverage"]["filesIndexed"], 0)
         self.assertEqual(snapshot["evidence"], [])
         self.assertEqual(snapshot["project"]["name"], "Project scope unavailable")
+        self.assertNotIn("graph", snapshot)
 
 
 if __name__ == "__main__":

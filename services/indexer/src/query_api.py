@@ -52,6 +52,31 @@ def state_root() -> str:
     return configured_path("UYP_STATE_ROOT", DEFAULT_STATE)
 
 
+def safe_state_project(project: str) -> str | None:
+    """Return a state-root component, never an arbitrary filesystem path."""
+    value = str(project or "")
+    if not value or value in {".", ".."} or "/" in value or "\\" in value or "\x00" in value:
+        return None
+    return value
+
+
+def load_ua_graph(project: str) -> dict | None:
+    """Load only the bridge-published UA graph for an authorized project."""
+    component = safe_state_project(project)
+    if component is None:
+        return None
+    root = os.path.realpath(state_root())
+    candidate = os.path.realpath(os.path.join(root, component, "ua", "knowledge-graph.json"))
+    try:
+        if os.path.commonpath([root, candidate]) != root:
+            return None
+        with open(candidate, encoding="utf-8") as fh:
+            value = json.load(fh)
+        return value if isinstance(value, dict) and isinstance(value.get("nodes"), list) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def load_access_context() -> dict | None:
     path = os.environ.get("UYP_ACCESS_CONTEXT_FILE")
     if not path:
@@ -149,10 +174,16 @@ def project_snapshot(project_id: str | None = None) -> dict:
     connector = configured_connector_status()
     updated = max((str(item.get("analyzed_at", "")) for item in items), default=now_iso())
     visible_project = context is not None and root not in {"Access context pending", "No authorized project"}
+    ua_graph = load_ua_graph(root) if visible_project else None
+    graph_project = ua_graph.get("project", {}) if ua_graph else {}
+    graph_nodes = ua_graph.get("nodes", []) if ua_graph else []
+    graph_edges = ua_graph.get("edges", []) if ua_graph else []
+    graph_layers = ua_graph.get("layers", []) if ua_graph else []
+    graph_files = sum(1 for node in graph_nodes if node.get("type") == "file")
     source_id = f"connector:{root}" if visible_project else "source:pending"
     project_key = f"project:{root}" if visible_project else "project:unavailable"
     enriched = sum(1 for item in items if item.get("derived", {}).get("purpose"))
-    layers = len({item.get("verdict", "unknown") for item in items}) if items else 0
+    layers = len(graph_layers) if ua_graph else (len({item.get("verdict", "unknown") for item in items}) if items else 0)
     evidence = []
     for index, item in enumerate(sorted(items, key=lambda value: value.get("file", ""))[:200]):
         derived = item.get("derived") or {}
@@ -175,11 +206,12 @@ def project_snapshot(project_id: str | None = None) -> dict:
     snapshot = {
         "project": {
             "projectId": project_key, "sourceId": source_id, "name": root if visible_project else "Project scope unavailable",
-            "description": f"{len(items)} authorized KnowledgeItems from the Agent Box output store." if visible_project else "HomeHub has not supplied a project scope to Studio.",
-            "languages": [], "frameworks": [],
-            "counts": {"files": len(items), "nodes": len(items), "relations": 0, "layers": layers},
+            "description": f"{len(items)} authorized KnowledgeItems with a vendored UA structure graph." if visible_project and ua_graph else (f"{len(items)} authorized KnowledgeItems from the Agent Box output store." if visible_project else "HomeHub has not supplied a project scope to Studio."),
+            "languages": graph_project.get("languages", []) if visible_project else [], "frameworks": graph_project.get("frameworks", []) if visible_project else [],
+            "counts": {"files": graph_files or len(items), "nodes": len(graph_nodes) or len(items), "relations": len(graph_edges), "layers": layers},
             "entryPoints": [item.get("file") for item in items[:4] if item.get("file")] if visible_project else [],
             "knowledgeVersion": updated, "sourceEpoch": updated, "freshness": state, "updatedAt": updated,
+            "schemaVersion": graph_project.get("graphVersion") or ua_graph.get("version") if ua_graph else None,
             "visibility": "private" if visible_project else None,
             "grantEpoch": context.get("grantEpoch") if context else None,
             "policyDigest": context.get("policyDigest") if context else None,
@@ -199,6 +231,15 @@ def project_snapshot(project_id: str | None = None) -> dict:
         "connectors": [connector_projection],
         "peers": load_nandatown_peers(),
     }
+    if visible_project and ua_graph:
+        snapshot["graph"] = {
+            "version": ua_graph.get("version"),
+            "project": graph_project,
+            "nodes": graph_nodes[:500],
+            "edges": graph_edges[:1000],
+            "layers": graph_layers,
+            "tour": ua_graph.get("tour", []),
+        }
     if context:
         snapshot["access"] = context
     return snapshot
@@ -251,6 +292,18 @@ class QueryHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/studio/snapshot":
             self.json_response(project_snapshot((query.get("projectId") or [None])[0]), audit=audit)
+            return
+        if parsed.path == "/api/knowledge-graph":
+            context = load_access_context()
+            if context is None:
+                self.json_response({"ok": False, "error": "access_context_unavailable", "message": "HomeHub must provide an AccessContext before the UA graph can be published."}, 503, audit)
+                return
+            snapshot = project_snapshot((query.get("projectId") or [None])[0])
+            graph = snapshot.get("graph")
+            if graph is None:
+                self.json_response({"ok": False, "error": "knowledge_graph_unavailable"}, 404, audit)
+            else:
+                self.json_response(graph, audit=audit)
             return
         if parsed.path == "/api/sources":
             self.json_response({"sources": project_snapshot((query.get("projectId") or [None])[0])["sources"]}, audit=audit)
