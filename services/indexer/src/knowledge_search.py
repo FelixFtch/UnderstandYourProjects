@@ -8,11 +8,12 @@
 from __future__ import annotations
 import json, os, re, subprocess, sys, glob
 
-OUT_ROOT = os.path.expanduser("~/dev/uyp/output")
+OUT_ROOT = os.path.expanduser(os.environ.get("UYP_OUTPUT_ROOT", "~/dev/uyp/output"))
 
-def load_items() -> list[dict]:
+def load_items(root: str | None = None) -> list[dict]:
     items = []
-    for path in glob.glob(f"{OUT_ROOT}/*/*.knowledge.json"):
+    root = root or OUT_ROOT
+    for path in glob.glob(f"{root}/*/*.knowledge.json"):
         d = json.load(open(path, encoding="utf-8"))
         d["_out_path"] = path
         items.append(d)
@@ -70,7 +71,12 @@ def answer(question: str, items: list[dict]) -> dict:
                        "messages": [{"role": "user", "content": prompt}]})
     r = subprocess.run(["curl", "-s", "127.0.0.1:11434/api/chat", "-d", body, "--max-time", "120"],
                        capture_output=True, text=True)
-    d = json.loads(r.stdout)
+    if r.returncode != 0 or not r.stdout.strip():
+        return {"answer": "本地模型服务暂不可用，无法生成带出处的回答。", "sources": [{"file": i["file"], "match": round(s, 1)} for s, i in top], "confidence": "unavailable"}
+    try:
+        d = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        return {"answer": "本地模型返回了无法解析的结果，无法生成带出处的回答。", "sources": [{"file": i["file"], "match": round(s, 1)} for s, i in top], "confidence": "unavailable"}
     return {"answer": (d.get("message", {}) or {}).get("content", "").strip(),
             "sources": [{"file": i["file"], "match": round(s, 1)} for s, i in top],
             "confidence": "high" if top[0][0] >= 4 else "medium"}

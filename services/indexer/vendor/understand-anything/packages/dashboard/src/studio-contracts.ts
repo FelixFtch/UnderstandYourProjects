@@ -196,6 +196,10 @@ export interface StudioSnapshot {
   evidence: EvidenceRef[];
   jobs: IndexJob[];
   sources: SourceSummary[];
+  /** Optional server projections. Empty means the adapter has not published them. */
+  agentNodes?: AgentNodeSummary[];
+  connectors?: ConnectorSummary[];
+  peers?: PeerJarvisSummary[];
   access?: AccessContextProjection;
   /** Identifies whether evidence came from the service or the graph-only fallback. */
   evidenceOrigin: "service" | "graph-fallback";

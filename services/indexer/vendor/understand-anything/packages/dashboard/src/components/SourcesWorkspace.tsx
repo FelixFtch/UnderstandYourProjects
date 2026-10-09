@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import type { FormEvent } from "react";
-import type { ConnectionState, SourceSummary } from "../studio-contracts";
+import type { AgentNodeSummary, ConnectionState, ConnectorSummary, SourceSummary } from "../studio-contracts";
 import "./sources-workspace.css";
 
 type PairingState = "discovered" | "pairing" | "paired" | "offline";
@@ -44,7 +44,25 @@ function SourceGlyph({ kind }: { kind: string }) {
   return <span className="sw-source-glyph" aria-hidden="true">{mark}</span>;
 }
 
-function initialDevices(sources: SourceSummary[]): DeviceRecord[] {
+function initialDevices(sources: SourceSummary[], agentNodes: AgentNodeSummary[] = [], connectors: ConnectorSummary[] = []): DeviceRecord[] {
+  if (agentNodes.length > 0) {
+    return agentNodes.map((node) => ({
+      id: node.nodeId,
+      label: node.label,
+      detail: `${node.nodeId} · server projection`,
+      pairing: node.pairing === "revoked" ? "offline" : node.pairing,
+      lastSeen: node.lastSeen ?? "Not supplied",
+      capabilities: node.capabilities,
+      connectors: connectors.filter((connector) => connector.nodeId === node.nodeId).map((connector) => ({
+        id: connector.connectorId,
+        label: connector.label,
+        kind: connector.kind === "github" ? "GitHub repository" : connector.kind === "nas" ? "Folder / NAS" : connector.kind === "device" ? "Jetson device" : "Workstation",
+        detail: `${connector.state} · ${connector.sourceIds.length} source${connector.sourceIds.length === 1 ? "" : "s"}`,
+        state: connector.state,
+        manifest: connector.manifestState,
+      })),
+    }));
+  }
   const nas = sources.find((source) => source.kind === "nas");
   const github = sources.find((source) => source.kind === "github");
   return [
@@ -81,15 +99,15 @@ function initialDevices(sources: SourceSummary[]): DeviceRecord[] {
   ];
 }
 
-export default function SourcesWorkspace({ sources }: { sources: SourceSummary[] }) {
-  const [devices, setDevices] = useState<DeviceRecord[]>(() => initialDevices(sources));
+export default function SourcesWorkspace({ sources, agentNodes, connectors, live = false }: { sources: SourceSummary[]; agentNodes?: AgentNodeSummary[]; connectors?: ConnectorSummary[]; live?: boolean }) {
+  const [devices, setDevices] = useState<DeviceRecord[]>(() => initialDevices(sources, agentNodes, connectors));
   const [selectedDeviceId, setSelectedDeviceId] = useState("jetson-us-cf");
   const [scanState, setScanState] = useState<"idle" | "scanned">("idle");
   const [connectorOpen, setConnectorOpen] = useState(false);
   const [connectorKind, setConnectorKind] = useState<ConnectorKind>("Folder / NAS");
   const [connectorLabel, setConnectorLabel] = useState("");
   const [manifestId, setManifestId] = useState<string | null>(null);
-  const [notice, setNotice] = useState("No HomeHub ownership or grant has been issued in this demo.");
+  const [notice, setNotice] = useState(live ? "Server projection loaded. Pairing and source grants still require HomeHub." : "No HomeHub ownership or grant has been issued in this demo.");
 
   const selectedDevice = devices.find((device) => device.id === selectedDeviceId) ?? devices[0];
   const connectorCount = useMemo(() => devices.reduce((total, device) => total + device.connectors.length, 0), [devices]);
@@ -119,7 +137,7 @@ export default function SourcesWorkspace({ sources }: { sources: SourceSummary[]
       <div><span className="sw-kicker">AGENT BOX REGISTRY</span><h2>Pair the box, then add the sources it can understand.</h2><p>One Jetson can serve several authorized connectors. This surface shows discovery, pairing, manifest preview, and health as separate states.</p></div>
       <div className="sw-hero-actions"><button type="button" className="sw-button sw-button-primary" onClick={scan}><span aria-hidden="true">⌁</span>{scanState === "idle" ? "Find Jetson boxes" : "Scan again"}</button><button type="button" className="sw-button sw-button-quiet" onClick={() => setConnectorOpen((open) => !open)}>＋ Add connector</button></div>
     </div>
-    <div className="sw-boundary"><span className="sw-boundary-mark">⌁</span><span><strong>HomeHub boundary</strong> supplies device ownership, pairing approval, grants, revocation, and audit.</span><span className="sw-boundary-state">{scanState === "scanned" ? "Discovery draft" : "Waiting for discovery"}</span></div>
+    <div className="sw-boundary"><span className="sw-boundary-mark">⌁</span><span><strong>HomeHub boundary</strong> supplies device ownership, pairing approval, grants, revocation, and audit.</span><span className="sw-boundary-state">{live ? "Server projection" : scanState === "scanned" ? "Discovery draft" : "Waiting for discovery"}</span></div>
     <div className="sw-notice"><span aria-hidden="true">●</span>{notice}</div>
     {connectorOpen && <form className="sw-connector-form" onSubmit={submitConnector}><div><span className="sw-kicker">ADD SOURCE CONNECTOR</span><h3>Choose what this Agent Box may analyze.</h3><p>A local draft only. The manifest and requested scope go to HomeHub before any read.</p></div><label><span>Connector type</span><select value={connectorKind} onChange={(event) => setConnectorKind(event.target.value as ConnectorKind)}><option>Folder / NAS</option><option>GitHub repository</option><option>Jetson device</option><option>Workstation</option></select></label><label><span>Label or endpoint</span><input value={connectorLabel} onChange={(event) => setConnectorLabel(event.target.value)} placeholder="e.g. research NAS / org/repository" /></label><button type="submit" className="sw-button sw-button-primary">Create draft <span aria-hidden="true">→</span></button></form>}
     <div className="sw-layout">

@@ -8,6 +8,7 @@ import PrivacyWorkspace, { SharingScopePanel } from "./PrivacyWorkspace";
 import GroupWorkspace from "./GroupWorkspace";
 import SourcesWorkspace from "./SourcesWorkspace";
 import { PrivacyWorkspaceProvider } from "./privacy-model";
+import { searchProjectKnowledge, studioApiConfigured } from "../studio-api";
 
 type StudioSection = "overview" | "projects" | "conversation" | "evidence" | "activity" | "collaborate" | "sources" | "privacy";
 
@@ -235,32 +236,50 @@ function StudioContextBar({ snapshot, onOpenPrivacy, onOpenGroups }: { snapshot:
 function ConversationSection({ snapshot, onOpenGraph, onOpenEvidence, onOpenPrivacy }: { snapshot: StudioSnapshot; onOpenGraph: () => void; onOpenEvidence: () => void; onOpenPrivacy: () => void }) {
   const [draft, setDraft] = useState("");
   const [isListening, setIsListening] = useState(false);
-  const [messages, setMessages] = useState<Array<{ id: string; role: "user" | "jarvis"; author: string; body: string; time: string }>>([
+  const [pending, setPending] = useState(false);
+  const liveAnswerLabel = snapshot.evidenceOrigin === "service" ? "Jetson knowledge service" : "Graph-derived preview";
+  const [messages, setMessages] = useState<Array<{ id: string; role: "user" | "jarvis"; author: string; body: string; time: string; sources?: string[] }>>([
     { id: "direct-user-1", role: "user", author: "You", body: "How is this project shaped, and where should I start?", time: "09:08" },
-    { id: "direct-jarvis-1", role: "jarvis", author: "Local Jarvis draft", body: `This graph has ${snapshot.project.counts.nodes} indexed entities across ${snapshot.project.counts.layers} logical layers. Start with the most connected entry points, then open the map when you need to follow a dependency path.`, time: "09:09" },
+    { id: "direct-jarvis-1", role: "jarvis", author: snapshot.evidenceOrigin === "service" ? "Local Jarvis" : "Local Jarvis draft", body: `This project has ${snapshot.project.counts.nodes} indexed entities across ${snapshot.project.counts.layers} logical layers. Start with the most connected entry points, then open the map when you need to follow a dependency path.`, time: "09:09" },
   ]);
   const scopeLabel = audienceLabel(snapshot.access?.audience);
-  const send = () => {
+  const send = async () => {
     const question = draft.trim();
-    if (!question) return;
+    if (!question || pending) return;
     const time = new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-    setMessages((current) => [...current,
-      { id: `direct-user-${Date.now()}`, role: "user", author: "You", body: question, time },
-      { id: `direct-jarvis-${Date.now() + 1}`, role: "jarvis", author: "Local Jarvis draft", body: "I prepared a graph-derived preview for this question. The answer remains bounded by the current project scope until HomeHub returns an approved AccessContext.", time },
-    ]);
+    const messageId = Date.now();
+    setMessages((current) => [...current, { id: `direct-user-${messageId}`, role: "user", author: "You", body: question, time }]);
     setDraft("");
+    setPending(true);
+    try {
+      let body = "I prepared a graph-derived preview for this question. The answer remains bounded by the current project scope until HomeHub returns an approved AccessContext.";
+      let author = "Local Jarvis draft";
+      let sources: string[] | undefined;
+      if (studioApiConfigured()) {
+        const result = await searchProjectKnowledge(question, snapshot.project.projectId);
+        body = result.answer || result.message || "The knowledge service returned no answer.";
+        author = result.confidence === "unavailable" ? "Jetson knowledge service" : "Local Jarvis";
+        sources = result.sources.map((source) => source.file);
+      }
+      setMessages((current) => [...current, { id: `direct-jarvis-${messageId + 1}`, role: "jarvis", author, body, time: new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }), sources }]);
+    } catch (error) {
+      const body = error instanceof Error && error.message ? error.message : "The knowledge service is unavailable.";
+      setMessages((current) => [...current, { id: `direct-error-${messageId + 1}`, role: "jarvis", author: "Jetson query unavailable", body: `I could not complete this query: ${body}. HomeHub access and the Jetson query API must be available before source-backed answers are returned.`, time: new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) }]);
+    } finally {
+      setPending(false);
+    }
   };
   return (
     <SectionFrame kicker="Jarvis conversation" title="Ask your project memory in context." description="Keep the question, the selected scope, and the evidence trail in one workspace. Answers are attributed to the producing Jarvis and remain bounded by HomeHub context." action={<span className="studio-chip studio-chip-positive"><span className="studio-chip-dot" />{scopeLabel}</span>}>
       <div className="studio-conversation-layout">
         <div className="studio-panel studio-conversation-thread">
-          <div className="studio-conversation-header"><div><span className="studio-section-kicker">Direct conversation</span><h2>Ask Jarvis about this project</h2><p className="studio-conversation-subtitle">A focused room for questions, evidence, and the Jarvis that answered.</p></div><span className="studio-conversation-live"><span className="studio-live-dot" />Graph-derived preview</span></div>
-          <div className="studio-conversation-scope-row"><span className="studio-scope-lock"><Icon name="shield" size={13} />Sharing status unavailable</span><span>HomeHub access context is not connected</span></div>
-          <div className="studio-direct-messages" role="log" aria-live="polite" aria-label="Ask Jarvis conversation">{messages.map((message) => <div className={`studio-message studio-message-${message.role === "user" ? "user" : "agent"}`} key={message.id}><span className={`studio-message-avatar ${message.role === "user" ? "studio-message-avatar-user" : ""}`}><Icon name={message.role === "user" ? "spark" : "spark"} size={14} /></span><div className="studio-message-body"><div className="studio-message-meta"><strong>{message.author}</strong><span>{message.role === "user" ? "Project scope" : "Graph-derived preview"}</span><time>{message.time}</time></div><p>{message.body}</p>{message.role === "jarvis" && <div className="studio-answer-citations"><button type="button" onClick={onOpenGraph}><Icon name="grid" size={12} />Project map</button><button type="button" onClick={onOpenEvidence}><Icon name="folder" size={12} />Evidence</button><span className="studio-evidence-visibility"><Icon name="shield" size={12} />{scopeLabel}</span></div>}</div></div>)}</div>
-          <div className="studio-direct-typing"><span className="studio-typing-dots"><i /><i /><i /></span>Jarvis answers stay inside the selected project scope</div>
+          <div className="studio-conversation-header"><div><span className="studio-section-kicker">Direct conversation</span><h2>Ask Jarvis about this project</h2><p className="studio-conversation-subtitle">A focused room for questions, evidence, and the Jarvis that answered.</p></div><span className="studio-conversation-live"><span className="studio-live-dot" />{liveAnswerLabel}</span></div>
+          <div className="studio-conversation-scope-row"><span className="studio-scope-lock"><Icon name="shield" size={13} />{snapshot.access ? "HomeHub context supplied" : "HomeHub access context pending"}</span><span>{snapshot.access ? `Grant ${snapshot.access.grantEpoch} · expires ${formatDateTime(snapshot.access.expiresAt)}` : "Source-backed answers require an AccessContext projection"}</span></div>
+          <div className="studio-direct-messages" role="log" aria-live="polite" aria-label="Ask Jarvis conversation">{messages.map((message) => <div className={`studio-message studio-message-${message.role === "user" ? "user" : "agent"}`} key={message.id}><span className={`studio-message-avatar ${message.role === "user" ? "studio-message-avatar-user" : ""}`}><Icon name={message.role === "user" ? "spark" : "spark"} size={14} /></span><div className="studio-message-body"><div className="studio-message-meta"><strong>{message.author}</strong><span>{message.role === "user" ? "Project scope" : liveAnswerLabel}</span><time>{message.time}</time></div><p>{message.body}</p>{message.sources && message.sources.length > 0 && <div className="studio-answer-source-list">{message.sources.slice(0, 3).map((source) => <span key={source}>{source}</span>)}</div>}{message.role === "jarvis" && <div className="studio-answer-citations"><button type="button" onClick={onOpenGraph}><Icon name="grid" size={12} />Project map</button><button type="button" onClick={onOpenEvidence}><Icon name="folder" size={12} />Evidence</button><span className="studio-evidence-visibility"><Icon name="shield" size={12} />{scopeLabel}</span></div>}</div></div>)}</div>
+          <div className="studio-direct-typing"><span className="studio-typing-dots"><i /><i /><i /></span>{pending ? "Jetson is searching approved project knowledge…" : "Jarvis answers stay inside the selected project scope"}</div>
           <div className="studio-quick-actions"><span className="studio-section-kicker">Quick questions</span><button type="button" onClick={() => setDraft("Which project can I reuse for this feature?")}>Find reusable work <Icon name="arrow" size={13} /></button><button type="button" onClick={() => setDraft("What changed since the last knowledge update?")}>Explain recent changes <Icon name="arrow" size={13} /></button><button type="button" onClick={() => setDraft("Create an onboarding path for a new contributor.")}>Build onboarding path <Icon name="arrow" size={13} /></button></div>
-          <form className="studio-conversation-composer" onSubmit={(event) => { event.preventDefault(); send(); }}><button type="button" className={`studio-voice-button ${isListening ? "is-listening" : ""}`} onClick={() => setIsListening((value) => !value)} aria-pressed={isListening} aria-label={isListening ? "Stop voice input" : "Start voice input"}>{isListening ? "■" : "◉"}</button><Icon name="message" size={17} /><input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={isListening ? "Listening…" : "Ask Jarvis about this project"} aria-label="Ask Jarvis about this project" /><span className="studio-composer-status">Draft only</span><button type="submit" className="studio-button studio-button-primary" disabled={!draft.trim()}>Ask Jarvis <span className="studio-key">⌘ ↵</span></button></form>
-          <p className="studio-conversation-note"><span aria-hidden="true">✦</span> Local demo responses are graph-derived previews; source ranges remain gated by HomeHub.</p>
+          <form className="studio-conversation-composer" onSubmit={(event) => { event.preventDefault(); void send(); }}><button type="button" className={`studio-voice-button ${isListening ? "is-listening" : ""}`} onClick={() => setIsListening((value) => !value)} aria-pressed={isListening} aria-label={isListening ? "Stop voice input" : "Start voice input"}>{isListening ? "■" : "◉"}</button><Icon name="message" size={17} /><input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={isListening ? "Listening…" : "Ask Jarvis about this project"} aria-label="Ask Jarvis about this project" /><span className="studio-composer-status">{pending ? "Searching" : studioApiConfigured() ? "Jetson API" : "Demo fallback"}</span><button type="submit" className="studio-button studio-button-primary" disabled={!draft.trim() || pending}>Ask Jarvis <span className="studio-key">⌘ ↵</span></button></form>
+          <p className="studio-conversation-note"><span aria-hidden="true">✦</span> {snapshot.evidenceOrigin === "service" ? "Answers are returned by the Jetson query service with cited KnowledgeItems." : "Demo responses are graph-derived previews; source ranges remain gated by HomeHub."}</p>
         </div>
         <div className="studio-conversation-side"><SharingScopePanel conversationId="direct:current-project" kind="direct" recipientLabel="One-to-one Jarvis draft" onOpenPrivacy={onOpenPrivacy} /><div className="studio-conversation-trust"><Icon name="shield" size={15} /><p><strong>HomeHub controls access.</strong> Studio only displays the returned audience, scope, expiry, epoch, and audit trace.</p></div></div>
       </div>
@@ -326,7 +345,7 @@ function ActivitySection({ snapshot }: { snapshot: StudioSnapshot }) {
   );
 }
 
-function GroupsSection({ onOpenPrivacy }: { onOpenPrivacy: () => void }) {
+function GroupsSection({ snapshot, onOpenPrivacy }: { snapshot: StudioSnapshot; onOpenPrivacy: () => void }) {
   return (
     <SectionFrame
       kicker="Jarvis groups"
@@ -334,13 +353,14 @@ function GroupsSection({ onOpenPrivacy }: { onOpenPrivacy: () => void }) {
       description="Choose a group from the inbox, continue the conversation in the center, and adjust this group's local sharing draft on the right. HomeHub remains the authority for identity, policy, revocation, and audit."
       action={<span className="studio-chip"><span className="studio-chip-dot" />Draft conversations</span>}
     >
-      <GroupWorkspace onOpenPrivacy={onOpenPrivacy} />
+      <GroupWorkspace onOpenPrivacy={onOpenPrivacy} peers={snapshot.peers} directoryLive={snapshot.evidenceOrigin === "service"} />
     </SectionFrame>
   );
 }
 
 function SourcesSection({ snapshot }: { snapshot: StudioSnapshot }) {
-  return <SectionFrame kicker="Sources & devices" title="Know which Jarvis can see which sources." description="Agent Boxes are the compute and identity boundary. Connectors are the individually scoped Mac, NAS, GitHub, or workstation sources that a Jetson may analyze. Every state below is a local design preview until HomeHub returns its projection."><SourcesWorkspace sources={snapshot.sources} /><div className="studio-source-callout"><Icon name="shield" size={18} /><div><strong>HomeHub supplies the authority.</strong><p>UnderstandYourProjects displays discovery, pairing, grants, manifests, and health. It does not create a second ownership database or turn a local pair code into authorization.</p></div></div></SectionFrame>;
+  const live = snapshot.evidenceOrigin === "service";
+  return <SectionFrame kicker="Sources & devices" title="Know which Jarvis can see which sources." description="Agent Boxes are the compute and identity boundary. Connectors are the individually scoped Mac, NAS, GitHub, or workstation sources that a Jetson may analyze. Server projections are displayed with their freshness and HomeHub boundary; local actions remain drafts until the authority returns a grant."><SourcesWorkspace sources={snapshot.sources} agentNodes={snapshot.agentNodes} connectors={snapshot.connectors} live={live} /><div className="studio-source-callout"><Icon name="shield" size={18} /><div><strong>HomeHub supplies the authority.</strong><p>UnderstandYourProjects displays discovery, pairing, grants, manifests, and health. It does not create a second ownership database or turn a local pair code into authorization.</p></div></div></SectionFrame>;
 }
 
 function PrivacySection({ snapshot, onOpenConversations }: { snapshot: StudioSnapshot; onOpenConversations: () => void }) {
@@ -521,7 +541,7 @@ function ProjectStudioSurface({ onOpenGraph, snapshot: suppliedSnapshot }: Proje
       <main className="studio-main">
         <header className="studio-topbar"><div className="studio-breadcrumb"><span>Workspace</span><b>/</b><strong>{sectionLabels[activeSection].label}</strong></div><button className="studio-global-search" type="button" onClick={() => setCommandOpen(true)}><Icon name="search" size={17} /><span>Ask about this project…</span><span className="studio-key">⌘ K</span></button><div className="studio-topbar-actions"><span className="studio-sync-status"><span className="studio-live-dot" />{stateLabel(snapshot.health.state)} knowledge</span><button className="studio-avatar" type="button" title="HomeHub access context" aria-label="HomeHub access context" onClick={() => setActiveSection("privacy")}>F</button></div></header>
         <StudioContextBar snapshot={snapshot} onOpenPrivacy={() => setActiveSection("privacy")} onOpenGroups={() => setActiveSection("collaborate")} />
-        {activeSection === "overview" ? <Overview graph={graph} snapshot={snapshot} onOpenGraph={onOpenGraph} onAsk={() => setActiveSection("conversation")} /> : activeSection === "projects" ? <ProjectsSection snapshot={snapshot} onOpenGraph={onOpenGraph} /> : activeSection === "conversation" ? <ConversationSection snapshot={snapshot} onOpenGraph={onOpenGraph} onOpenEvidence={() => setActiveSection("evidence")} onOpenPrivacy={() => setActiveSection("privacy")} /> : activeSection === "evidence" ? <EvidenceSection graph={graph} snapshot={snapshot} onOpenGraph={onOpenGraph} /> : activeSection === "activity" ? <ActivitySection snapshot={snapshot} /> : activeSection === "collaborate" ? <GroupsSection onOpenPrivacy={() => setActiveSection("privacy")} /> : activeSection === "sources" ? <SourcesSection snapshot={snapshot} /> : <PrivacySection snapshot={snapshot} onOpenConversations={() => setActiveSection("conversation")} />}
+        {activeSection === "overview" ? <Overview graph={graph} snapshot={snapshot} onOpenGraph={onOpenGraph} onAsk={() => setActiveSection("conversation")} /> : activeSection === "projects" ? <ProjectsSection snapshot={snapshot} onOpenGraph={onOpenGraph} /> : activeSection === "conversation" ? <ConversationSection snapshot={snapshot} onOpenGraph={onOpenGraph} onOpenEvidence={() => setActiveSection("evidence")} onOpenPrivacy={() => setActiveSection("privacy")} /> : activeSection === "evidence" ? <EvidenceSection graph={graph} snapshot={snapshot} onOpenGraph={onOpenGraph} /> : activeSection === "activity" ? <ActivitySection snapshot={snapshot} /> : activeSection === "collaborate" ? <GroupsSection snapshot={snapshot} onOpenPrivacy={() => setActiveSection("privacy")} /> : activeSection === "sources" ? <SourcesSection snapshot={snapshot} /> : <PrivacySection snapshot={snapshot} onOpenConversations={() => setActiveSection("conversation")} />}
       </main>
       {commandOpen && <CommandPalette graph={graph} onClose={() => setCommandOpen(false)} onOpenGraph={() => { setCommandOpen(false); onOpenGraph(); }} onOpenEvidence={() => { setCommandOpen(false); setActiveSection("evidence"); }} />}
     </div>

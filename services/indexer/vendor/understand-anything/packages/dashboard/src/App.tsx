@@ -18,6 +18,8 @@ import WarningBanner from "./components/WarningBanner";
 import StalenessBanner from "./components/StalenessBanner";
 import TokenGate from "./components/TokenGate";
 import ProjectStudio from "./components/ProjectStudio";
+import { fetchStudioSnapshot } from "./studio-api";
+import type { StudioSnapshot } from "./studio-contracts";
 import MobileLayout from "./components/MobileLayout";
 import { useIsMobile } from "./hooks/useIsMobile";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
@@ -126,6 +128,20 @@ function Dashboard({ accessToken }: { accessToken: string }) {
     useState<DashboardFreshnessReport | null>(null);
   const [metaTheme, setMetaTheme] = useState<ThemeConfig | null>(null);
   const [outputLanguage, setOutputLanguage] = useState<string | undefined>();
+  const [studioSnapshot, setStudioSnapshot] = useState<StudioSnapshot | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchStudioSnapshot(controller.signal)
+      .then((snapshot) => { if (snapshot) setStudioSnapshot(snapshot); })
+      .catch((error) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        // The graph viewer remains useful when the Jetson API is offline; the
+        // Studio will label this state as a graph-derived partial projection.
+        console.info("Studio API unavailable; using graph fallback", error);
+      });
+    return () => controller.abort();
+  }, []);
 
   useEffect(() => {
     fetch(dataUrl("meta.json", accessToken))
@@ -266,6 +282,7 @@ function Dashboard({ accessToken }: { accessToken: string }) {
           loadError={loadError}
           graphIssues={graphIssues}
           graphFreshness={graphFreshness}
+          studioSnapshot={studioSnapshot}
         />
       </ThemeProvider>
     </I18nProvider>
@@ -277,11 +294,13 @@ function DashboardContent({
   loadError,
   graphIssues,
   graphFreshness,
+  studioSnapshot,
 }: {
   accessToken: string;
   loadError: string | null;
   graphIssues: GraphIssue[];
   graphFreshness: DashboardFreshnessReport | null;
+  studioSnapshot: StudioSnapshot | null;
 }) {
   const graph = useDashboardStore((s) => s.graph);
   const selectedNodeId = useDashboardStore((s) => s.selectedNodeId);
@@ -484,7 +503,7 @@ function DashboardContent({
   );
 
   if (studioMode) {
-    return <ProjectStudio onOpenGraph={() => setStudioMode(false)} />;
+    return <ProjectStudio onOpenGraph={() => setStudioMode(false)} snapshot={studioSnapshot ?? undefined} />;
   }
 
   if (isMobile) {

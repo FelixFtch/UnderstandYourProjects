@@ -942,3 +942,5 @@ body {
 .studio-conversation-composer > svg { color: #7d6426; }
 .studio-conversation-composer input { color: #2f2818; }
 .studio-conversation-note { color: #80651d; }
+.studio-answer-source-list { display:flex; flex-wrap:wrap; gap:5px; margin:8px 0 0; }
+.studio-answer-source-list span { max-width:100%; padding:4px 6px; border:1px solid #e8d494; border-radius:6px; background:#fff6c9; color:#6e5824; font-size:9px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
