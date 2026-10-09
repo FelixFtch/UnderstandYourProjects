@@ -245,3 +245,12 @@ identity, ownership, policy, revocation, and audit.
 The rings are intentionally unfilled dashed outlines. The three yellow tones
 identify the vault, trusted, and shareable boundaries without turning the
 center into a solid color block.
+
+The current Studio prototype makes that contract visible rather than symbolic:
+each inventory item is rendered as a named, draggable bubble inside its actual
+ring, and the three responsive trays below the map are synchronized with the
+same item records. The Groups surface is a real inbox, conversation, and local
+scope editor: a group can be selected, messages can be sent to its Jarvis draft,
+and layer or item overrides update that group's draft only. A group override
+never changes the global map and never grants access; the final decision still
+comes from HomeHub.

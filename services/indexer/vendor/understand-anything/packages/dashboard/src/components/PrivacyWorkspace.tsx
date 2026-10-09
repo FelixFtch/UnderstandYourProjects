@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { DragEvent } from "react";
+import type { CSSProperties } from "react";
 import type { ConversationKind, PrivacyItem, PrivacyLayer } from "./privacy-model";
 import { privacyLayers, usePrivacyWorkspace } from "./privacy-model";
 import "./privacy-workspace.css";
@@ -27,6 +28,19 @@ function ringLayerForPoint(event: { clientX: number; clientY: number }, element:
   if (radius < 0.48) return "vault";
   if (radius < 0.72) return "trusted";
   return "shareable";
+}
+
+/** Keep each item's visual position inside the matching dashed band. The position
+ * is deterministic so a rerender never makes a bubble jump around the map. */
+function ringBubbleStyle(layer: PrivacyLayer, index: number, total: number): CSSProperties {
+  const radii: Record<PrivacyLayer, number> = { vault: 20, trusted: 34, shareable: 46 };
+  const phase: Record<PrivacyLayer, number> = { vault: -Math.PI / 2, trusted: -Math.PI / 2 + Math.PI / 5, shareable: -Math.PI / 2 + (2 * Math.PI) / 5 };
+  const angle = phase[layer] + (index / Math.max(total, 1)) * Math.PI * 2;
+  const radius = radii[layer];
+  return {
+    left: `${50 + Math.cos(angle) * radius}%`,
+    top: `${50 + Math.sin(angle) * radius}%`,
+  };
 }
 
 export default function PrivacyWorkspace({ onOpenConversations }: { onOpenConversations: () => void }) {
@@ -76,6 +90,22 @@ export default function PrivacyWorkspace({ onOpenConversations }: { onOpenConver
         <div className="pv-ring-stage">
           <div className={`pv-ring ${dragOverLayer ? `is-drop-${dragOverLayer}` : ""}`} onDragOver={handleRingDragOver} onDrop={handleRingDrop} onDragLeave={handleRingDragLeave} aria-label="Privacy layers drop target">
             <div className="pv-ring-core" aria-hidden="true"><strong>{items.length}</strong><span>{dragOverLayer ? `Drop in ${privacyLayers.find((layer) => layer.id === dragOverLayer)?.short}` : "indexed items"}</span></div>
+            {privacyLayers.map((layer) => items.filter((item) => item.layer === layer.id).map((item, index, layerItems) => <button
+              key={item.id}
+              type="button"
+              draggable
+              className={`pv-ring-bubble pv-ring-bubble-${layer.id} ${selectedId === item.id ? "is-selected" : ""}`}
+              style={ringBubbleStyle(layer.id, index, layerItems.length)}
+              title={`${item.title} · ${layer.label}`}
+              aria-label={`${item.title}, ${layer.label}. Drag to another privacy layer.`}
+              onClick={() => setSelectedId(selectedId === item.id ? null : item.id)}
+              onDragStart={(event) => {
+                event.dataTransfer.setData("text/plain", item.id);
+                event.dataTransfer.effectAllowed = "move";
+                setSelectedId(item.id);
+              }}
+              onDragEnd={() => setDragOverLayer(null)}
+            ><KindIcon kind={item.kind} /><span>{item.title}</span></button>))}
           </div>
           <button className="pv-ring-label pv-ring-label-vault" onClick={() => setSelectedLayer("vault")} aria-label={`Show private vault items, ${count("vault")} items`}><LayerGlyph layer="vault" /><span><strong>{count("vault")}</strong> private</span></button>
           <button className="pv-ring-label pv-ring-label-trusted" onClick={() => setSelectedLayer("trusted")} aria-label={`Show trusted circle items, ${count("trusted")} items`}><LayerGlyph layer="trusted" /><span><strong>{count("trusted")}</strong> trusted</span></button>
