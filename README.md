@@ -144,6 +144,11 @@ The first version is intended for code and text-based project material. Image, v
 
 The existing Jarvis HomeHub voice, identity, pairing, policy, audit, scheduling, gbrain, and Agent communication foundations are valuable infrastructure for this product. UnderstandYourProjects should add a dedicated project-knowledge plane instead of replacing the protected voice runtime.
 
+The detailed review documents are:
+
+- [Execution Plan](docs/EXECUTION_PLAN.md) — staged delivery, gates, evidence, collaboration, and release boundaries.
+- [AgentFlow Architecture](docs/AGENTFLOW_ARCHITECTURE.md) — voiceprint, HomeHub policy, project knowledge, Studio, Coding Agent, and Jarvis Group integration.
+
 The first hardware deployment is one Jetson Agent Box serving multiple authorized source devices. Additional boxes should be introduced when workload, network locality, privacy isolation, or availability requirements justify them—not as a requirement for every computer.
 
 ## Collaboration
@@ -153,4 +158,3 @@ This repository is intended for collaboration with MIT, Harvard, and other contr
 The central research and engineering question is:
 
 > Can a local Agent Box maintain a useful, source-traceable, incrementally updated understanding of a person's projects while allowing both coding agents and other Jarvis boxes to use that knowledge under explicit permissions?
-
