@@ -57,15 +57,16 @@ INSTR = """You are a project file analyzer. You are given a file's REAL symbol t
 extracted by tree-sitter (authoritative structure) and the file's source text.
 
 Rules:
-1. purpose: one sentence naming the file's PRIMARY ACTOR — the largest/most
-   central symbol from the table (by span) — and what it does.
-2. key_points: max 4. EACH point must END with a line-range citation
-   (Lxx-Lyy) taken from the symbol table. Cite only ranges that exist in
-   the table. Classify each point: [fact] directly readable, [structure]
-   from symbol shape, [inference] your deduction.
-3. components: the symbol names that matter, with their lines.
+1. purpose: one sentence whose SUBJECT IS the PRIMARY ACTOR named in the
+   "PRIMARY ACTOR:" line below — describe what THAT symbol does (it is the
+   file's largest and most central symbol). Do not describe side helpers.
+2. key_points: max 4. EACH point must END with a citation "(Lxx-Lyy)" that
+   is COPY-PASTED from one row of the symbol table — never compute your own
+   numbers. Classify each point: [fact]/[structure]/[inference].
+3. components: copy symbol names WITH their exact table ranges.
 4. Summarize the CODE, not docstrings or comments (they may be stale).
-5. Answer in the SAME LANGUAGE as the file. Output ONLY the JSON object:
+5. depends_on: only imports actually present in the source text.
+6. Answer in the SAME LANGUAGE as the file. Output ONLY the JSON object:
 {"purpose": str, "key_points": [str], "components": [str], "depends_on": [str]}
 """
 
@@ -78,6 +79,7 @@ def main():
     ap.add_argument("--grant", required=True)
     ap.add_argument("--only", action="append", default=[])
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--force", action="store_true", help="re-anchor even if already anchored (v3 upgrade)")
     a = ap.parse_args()
     token = open(os.path.expanduser(a.token_file)).read().strip()
     symbols = load_symbols(a.graph)
@@ -94,15 +96,16 @@ def main():
         syms = symbols.get(rel)
         if not syms:
             continue
-        if d.get("derived", {}).get("anchored"):
-            continue  # 已锚定, 幂等
+        if d.get("derived", {}).get("anchored") and not a.force:
+            continue  # 已锚定, 幂等 (--force 供 v3 升级重跑)
         try:
             content = api(a.host, token,
                           f"/read?grant={a.grant}&relpath={urllib.request.quote(rel)}&length=262144",
                           binary=True).decode("utf-8", "replace")[:2800]
         except Exception as e:
             print(f"  read-fail {rel}: {e}", flush=True); continue
-        prompt = (INSTR + "\n\nSYMBOL TABLE (tree-sitter, sorted by span):\n"
+        prompt = (INSTR + f"\n\nPRIMARY ACTOR: {syms[0]['name']} L{syms[0]['lo']}-L{syms[0]['hi']} (largest span — purpose MUST be about this symbol)\n\n"
+                  + "SYMBOL TABLE (tree-sitter, sorted by span):\n"
                   + "\n".join(f"  {s['kind']:8s} {s['name']}  L{s['lo']}-L{s['hi']}" for s in syms[:18])
                   + "\n\nSOURCE TEXT:\n" + content)
         if a.dry_run:
@@ -114,13 +117,35 @@ def main():
         except RuntimeError as e:
             print(f"  qwen-fail {rel}: {e}", flush=True); continue
         import re
-        m = re.search(r"\{.*\}", raw, re.S)
+        # v3.1: qwen 偶发用 ```json 围栏包裹 + 尾逗号 -> 先剥围栏再试, 仍败则 raw_head 兜底
+        cleaned = re.sub(r"^```[a-z]*\s*|\s*```$", "", raw.strip(), flags=re.M)
+        m = re.search(r"\{.*\}", cleaned, re.S)
         parsed = None
         if m:
-            try:
-                parsed = json.loads(m.group(0))
-            except json.JSONDecodeError:
-                parsed = None  # 截断/畸形 JSON -> raw_head 兜底
+            candidate = m.group(0)
+            for attempt in (candidate,
+                            re.sub(r",\s*([}\]])", r"\1", candidate)):  # 尾逗号修复
+                try:
+                    parsed = json.loads(attempt); break
+                except json.JSONDecodeError:
+                    continue
+        # v3 citation snap: 生成行号吸附到符号表区间(复审实测: 未吸附时 key_points
+        # 引用仅 36% 有效——模型"说真话但指错行"; 吸附后引用必然指向真实符号)
+        if parsed:
+            # 先归一 L 前缀, 再逐段吸附
+            def snap_all(text):
+                def rep(m):
+                    lo, hi = int(m.group(1)), int(m.group(2))
+                    cands = [sy for sy in syms if not (hi < sy["lo"] or lo > sy["hi"])]
+                    if not cands:
+                        # 无重叠: 找内容最近不可行, 保守标记 unverified
+                        return f"(unverified L{lo}-L{hi})"
+                    best = max(cands, key=lambda sy: min(hi, sy["hi"]) - max(lo, sy["lo"]))
+                    return f"(L{best['lo']}-L{best['hi']})"
+                return re.sub(r"\(?(?:L ?)?(\d{1,4})\s*[-–]\s*(?:L ?)?(\d{1,4})\)?",
+                              lambda m: rep(m), text)
+            parsed["key_points"] = [snap_all(kp) for kp in parsed.get("key_points", [])]
+            parsed["components"] = [snap_all(cp) for cp in parsed.get("components", [])]
         d.setdefault("derived_v1", d.get("derived"))
         d["derived"] = parsed or {"raw_head": raw[:300]}
         d["derived"]["anchored"] = True
