@@ -127,6 +127,82 @@ class IndexJobTests(unittest.TestCase):
             )
         self.assertEqual(result["phase"], "retry_wait")
 
+    def test_source_epoch_is_captured_when_manifest_has_none(self):
+        # P7 acceptance finding 2: the Connector manifest carries no explicit
+        # epoch, so authorization must pin a derived one instead of null.
+        job = self.make_job()
+        output = self.root / "output"
+
+        def fake_runner(command, env):
+            candidate = Path(env["UYP_OUTPUT_ROOT"]) / "demo"
+            candidate.mkdir(parents=True)
+            (candidate / "main.py.knowledge.json").write_text(json.dumps({"file": "main.py"}), encoding="utf-8")
+
+        def fake_ua(**kwargs):
+            graph_dir = Path(kwargs["state_root"]) / "demo" / "ua"
+            graph_dir.mkdir(parents=True)
+            (graph_dir / "knowledge-graph.json").write_text(json.dumps({"nodes": [], "edges": []}), encoding="utf-8")
+            return {"stagedFiles": 1, "nodes": 0, "edges": 0}
+
+        manifest = {"root_name": "demo", "total": 2, "has_more": False, "files": [
+            {"id": "f_a", "relpath": "a.py", "size": 10, "mtime": 100, "kind": "file"},
+            {"id": "f_b", "relpath": "b.py", "size": 20, "mtime": 200, "kind": "file"},
+        ]}
+        with patch.object(index_job, "connector_call", return_value=manifest):
+            result = index_job.run_job(
+                self.store, job["jobId"], context=access_context(), connector_host="http://connector",
+                token_file=str(self.token), ua_root=str(self.root / "ua"), output_root=str(output),
+                runner=fake_runner, ua_runner=fake_ua,
+            )
+        self.assertEqual(result["phase"], "published")
+        epoch = index_job.derive_source_epoch(manifest)
+        self.assertTrue(epoch)
+        self.assertEqual(result["sourceEpoch"], epoch)
+        events = read_events(self.store, job["jobId"])
+        authorized = next(event for event in events if event["phase"] == "authorized")
+        self.assertEqual(authorized["details"]["sourceEpoch"], epoch)
+        published = next(event for event in events if event["phase"] == "published")
+        self.assertEqual(published["details"]["sourceEpoch"], epoch)
+        self.assertEqual(published["details"]["knowledgeVersion"], epoch)
+        registry = connector_registry.load_registry(self.root / "state" / "connectors" / "registry.json")
+        self.assertEqual(registry["connectors"][0]["sourceEpoch"], epoch)
+
+    def test_captured_epoch_requeues_when_source_drifts(self):
+        first = {"root_name": "demo", "total": 1, "files": [
+            {"relpath": "a.py", "size": 10, "mtime": 100},
+        ]}
+        second = {"root_name": "demo", "total": 1, "files": [
+            {"relpath": "a.py", "size": 10, "mtime": 900},
+        ]}
+        job = self.make_job(source_epoch=index_job.derive_source_epoch(first))
+        with patch.object(index_job, "connector_call", return_value=second):
+            result = index_job.run_job(
+                self.store, job["jobId"], context=access_context(), connector_host="http://connector",
+                token_file=str(self.token), ua_root=str(self.root / "ua"), output_root=str(self.root / "output"),
+            )
+        self.assertEqual(result["phase"], "retry_wait")
+        self.assertEqual(result["reason"], "source_epoch_changed")
+
+    def test_derive_source_epoch_is_deterministic_and_fail_closed(self):
+        a = {"total": 2, "files": [
+            {"relpath": "b.py", "size": 2, "mtime": 20},
+            {"relpath": "a.py", "size": 1, "mtime": 10},
+        ]}
+        b = {"total": 2, "files": [
+            {"relpath": "a.py", "size": 1, "mtime": 10},
+            {"relpath": "b.py", "size": 2, "mtime": 20},
+        ]}
+        self.assertEqual(index_job.derive_source_epoch(a), index_job.derive_source_epoch(b))
+        changed_mtime = {"total": 2, "files": [
+            {"relpath": "a.py", "size": 1, "mtime": 11},
+            {"relpath": "b.py", "size": 2, "mtime": 20},
+        ]}
+        self.assertNotEqual(index_job.derive_source_epoch(a), index_job.derive_source_epoch(changed_mtime))
+        added_file = {"total": 3, "files": b["files"] + [{"relpath": "c.py", "size": 3, "mtime": 30}]}
+        self.assertNotEqual(index_job.derive_source_epoch(a), index_job.derive_source_epoch(added_file))
+        self.assertIsNone(index_job.derive_source_epoch({"total": 0, "files": []}))
+        self.assertIsNone(index_job.derive_source_epoch({"total": 1, "files": [{"size": 1}]}))
+
     def test_source_capability_id_may_be_github_style(self):
         record = self.store.create(
             project_id="repo",

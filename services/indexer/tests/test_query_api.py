@@ -94,6 +94,39 @@ class QueryApiProjectionTests(unittest.TestCase):
         self.assertEqual(snapshot["evidence"], [])
         self.assertEqual(snapshot["jobs"], [])
 
+    def test_health_count_is_scope_filtered_like_search(self):
+        # P7 acceptance finding 1: health must report the same scope-filtered
+        # count search would query, never the unscoped output total.
+        other = Path(query_api.output_root()) / "other-project"
+        other.mkdir(parents=True)
+        (other / "lib__py.knowledge.json").write_text(json.dumps({
+            "file": "lib.py",
+            "version": {"mtime": "2026-10-09T12:00:00Z"},
+            "verdict": "quick-summary",
+            "analyzed_at": "2026-10-09T12:00:00Z",
+        }), encoding="utf-8")
+        context = query_api.load_access_context()
+        self.assertEqual(len(query_api.scoped_items(context)), 1)
+        health = query_api.health_payload()
+        self.assertEqual(health["knowledgeItems"], 1)
+        self.assertTrue(health["accessContext"])
+        # Narrow the HomeHub scope the way a revocation would: search sees
+        # nothing, so health must not keep reporting the on-disk total.
+        narrowed = json.loads(self.context.read_text(encoding="utf-8"))
+        narrowed["projectScopes"] = ["somewhere-else"]
+        narrowed["sourceScopes"] = ["connector:somewhere-else"]
+        self.context.write_text(json.dumps(narrowed), encoding="utf-8")
+        self.assertEqual(query_api.scoped_items(query_api.load_access_context()), [])
+        narrowed_health = query_api.health_payload()
+        self.assertEqual(narrowed_health["knowledgeItems"], 0)
+        self.assertTrue(narrowed_health["accessContext"])
+
+    def test_health_reports_zero_without_access_context(self):
+        os.environ.pop("UYP_ACCESS_CONTEXT_FILE", None)
+        health = query_api.health_payload()
+        self.assertEqual(health["knowledgeItems"], 0)
+        self.assertFalse(health["accessContext"])
+
 
 if __name__ == "__main__":
     unittest.main()

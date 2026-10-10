@@ -20,6 +20,7 @@ never mints grants, extends expiry, changes policy, or writes audit decisions.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -112,6 +113,34 @@ def connector_grant_id(job: dict[str, Any]) -> str:
     return value.strip()
 
 
+def derive_source_epoch(manifest: dict[str, Any]) -> str | None:
+    """Derive a deterministic source epoch from the observed manifest page.
+
+    The Connector protocol does not yet carry an explicit epoch for a grant,
+    so authorization pins the manifest observation itself: a digest over the
+    page's (relpath, size, mtime) entries plus the connector's total.  A listed
+    file changing, appearing, or disappearing moves the epoch, which is the
+    drift ``sourceEpoch`` exists to detect on the next run.  A malformed or
+    empty manifest yields ``None`` rather than an invented epoch; entries are
+    hashed in relpath order so connector-side ordering cannot shift the value.
+    """
+    if not isinstance(manifest, dict):
+        return None
+    files = manifest.get("files")
+    if not isinstance(files, list):
+        return None
+    entries = [entry for entry in files if isinstance(entry, dict) and str(entry.get("relpath", ""))]
+    if not entries:
+        return None
+    digest = hashlib.sha256()
+    for entry in sorted(entries, key=lambda item: str(item.get("relpath", ""))):
+        line = f"{entry.get('relpath')}\x1f{entry.get('size')}\x1f{entry.get('mtime')}"
+        digest.update(line.encode("utf-8", "surrogatepass"))
+        digest.update(b"\x1e")
+    digest.update(f"total={manifest.get('total')}".encode("utf-8"))
+    return digest.hexdigest()[:32]
+
+
 def _registry_connector_id(source_id: str) -> str:
     """Map a capability id to a stable registry id without persisting paths."""
     raw = str(source_id)
@@ -124,7 +153,7 @@ def _registry_connector_id(source_id: str) -> str:
     return f"connector:{slug or 'pending'}"
 
 
-def _observe_connector(store: "IndexJobStore", job: dict[str, Any], context: dict[str, Any], manifest: dict[str, Any], connector_host: str) -> None:
+def _observe_connector(store: "IndexJobStore", job: dict[str, Any], context: dict[str, Any], manifest: dict[str, Any], connector_host: str, source_epoch: Any = None) -> None:
     """Persist connector health/manifest metadata after a scoped read.
 
     This is a status projection only.  The grant id, token, file entries, and
@@ -139,7 +168,8 @@ def _observe_connector(store: "IndexJobStore", job: dict[str, Any], context: dic
     transport = os.environ.get("UYP_AGENT_TRANSPORT", "unknown")
     total = manifest.get("total") if isinstance(manifest.get("total"), int) else None
     has_more = bool(manifest.get("has_more"))
-    source_epoch = manifest.get("source_epoch")
+    if source_epoch is None:
+        source_epoch = manifest.get("source_epoch")
     record = {
         "connectorId": connector_id,
         "nodeId": str(context.get("jarvisNodeId", "node:pending")),
@@ -363,6 +393,7 @@ def publish_staged(job: dict[str, Any], *, stage_root: Path, output_root: Path, 
     return {
         "publishedAt": now_iso(),
         "knowledgeVersion": str(job.get("sourceEpoch") or job.get("updatedAt") or now_iso()),
+        "sourceEpoch": job.get("sourceEpoch"),
         "publishedArtifacts": published,
         "outputPath": str(target_output),
         "graphPath": str(target_state / "knowledge-graph.json"),
@@ -434,16 +465,18 @@ def run_job(
         _observe_connector_health(store, job, state="failed", detail="manifest_project_mismatch")
         store.event(job_id, "failed", {"reason": "manifest_project_mismatch"})
         return store.get(job_id)
-    manifest_epoch = manifest.get("source_epoch")
+    manifest_epoch = manifest.get("source_epoch") or derive_source_epoch(manifest)
     if job.get("sourceEpoch") and str(job["sourceEpoch"]) != str(manifest_epoch or ""):
         # The source changed between discovery and authorization.  Requeueing
         # requires a fresh manifest and is safer than indexing a stale grant.
         store.event(job_id, "retry_wait", {"reason": "source_epoch_changed", "manifestEpoch": manifest_epoch})
         return store.get(job_id)
 
-    _observe_connector(store, job, context, manifest, connector_host)
+    _observe_connector(store, job, context, manifest, connector_host, source_epoch=manifest_epoch)
 
-    store.event(job_id, "authorized", {"auditId": context.get("auditId"), "grantEpoch": context.get("grantEpoch")})
+    # Pin the observed epoch in the durable record at authorization time so
+    # publish metadata and the next run's drift check share one lineage value.
+    store.event(job_id, "authorized", {"auditId": context.get("auditId"), "grantEpoch": context.get("grantEpoch"), "sourceEpoch": manifest_epoch})
     store.event(job_id, "queued", {"queue": "background-index"})
     stage_root = Path(store.root) / "index-jobs" / safe_component(job_id, "job id") / "staged"
     if stage_root.exists():

@@ -405,6 +405,38 @@ def scope_allows(context: dict, item: dict) -> bool:
     return project_allowed and source_allowed
 
 
+def scoped_items(context: dict | None) -> list[dict]:
+    """Apply the search scope filter; fail closed without an AccessContext.
+
+    ``/api/knowledge/search`` and ``/api/health`` must never disagree about
+    how much knowledge is visible, so both go through this one helper.  A
+    missing, revoked, or narrowed context yields the same empty set here that
+    search would query (P7 acceptance finding 1).
+    """
+    if context is None:
+        return []
+    return [item for values in grouped_items().values() for item in values if scope_allows(context, item)]
+
+
+def health_payload() -> dict:
+    """Health card whose knowledge count is scope-filtered like search.
+
+    No AccessContext means no counts: the payload reports zero items and
+    ``accessContext: false`` instead of leaking the unscoped output total.
+    """
+    context = load_access_context()
+    return {
+        "ok": True,
+        "service": "uyp-query-api",
+        "version": VERSION,
+        "knowledgeItems": len(scoped_items(context)),
+        "accessContext": bool(context),
+        "connector": configured_connector_status(),
+        "connectorRegistry": registry_health(),
+        "indexJobs": index_jobs_health(context),
+    }
+
+
 class QueryHandler(BaseHTTPRequestHandler):
     def _headers(self, audit: str) -> None:
         allowed = os.environ.get("UYP_CORS_ORIGIN", "http://127.0.0.1:4173,http://localhost:4173")
@@ -434,9 +466,7 @@ class QueryHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         query = parse_qs(parsed.query)
         if parsed.path == "/api/health":
-            items = sum(len(value) for value in grouped_items().values())
-            context = load_access_context()
-            self.json_response({"ok": True, "service": "uyp-query-api", "version": VERSION, "knowledgeItems": items if context else 0, "accessContext": bool(context), "connector": configured_connector_status(), "connectorRegistry": registry_health(), "indexJobs": index_jobs_health(context)}, audit=audit)
+            self.json_response(health_payload(), audit=audit)
             return
         if parsed.path == "/api/studio/snapshot":
             self.json_response(project_snapshot((query.get("projectId") or [None])[0]), audit=audit)
@@ -505,7 +535,7 @@ class QueryHandler(BaseHTTPRequestHandler):
         if not question:
             self.json_response({"ok": False, "error": "query_required"}, 400, audit)
             return
-        allowed_items = [item for values in grouped_items().values() for item in values if scope_allows(context, item)]
+        allowed_items = scoped_items(context)
         result = search_answer(question, allowed_items)
         result.update({"ok": True, "auditId": audit, "projectId": payload.get("projectId"), "access": {"grantEpoch": context.get("grantEpoch"), "expiresAt": context.get("expiresAt")}})
         self.json_response(result, audit=audit)
