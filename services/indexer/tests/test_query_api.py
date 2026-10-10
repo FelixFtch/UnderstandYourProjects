@@ -88,6 +88,12 @@ class QueryApiProjectionTests(unittest.TestCase):
         self.assertEqual(snapshot["project"]["name"], "Project scope unavailable")
         self.assertNotIn("graph", snapshot)
 
+    def test_snapshot_does_not_fallback_to_another_project(self):
+        snapshot = query_api.project_snapshot("project:other-project")
+        self.assertEqual(snapshot["project"]["name"], "Project scope unavailable")
+        self.assertEqual(snapshot["evidence"], [])
+        self.assertEqual(snapshot["jobs"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -308,7 +308,13 @@ def project_snapshot(project_id: str | None = None) -> dict:
         # HomeHub supplies an AccessContext projection.
         groups = {}
     requested_root = project_id.removeprefix("project:") if project_id else None
-    root = requested_root if requested_root in groups else next(iter(groups), "Access context pending" if context is None else "No authorized project")
+    if requested_root:
+        # An explicit project selection must never silently fall back to a
+        # different authorized project.  That would make a stale/forged UI
+        # project id display another project's knowledge.
+        root = requested_root if requested_root in groups else "No authorized project"
+    else:
+        root = next(iter(groups), "Access context pending" if context is None else "No authorized project")
     items = groups.get(root, [])
     connector = configured_connector_status()
     updated = max((str(item.get("analyzed_at", "")) for item in items), default=now_iso())
