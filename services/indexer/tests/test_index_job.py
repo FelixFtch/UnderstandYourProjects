@@ -99,6 +99,7 @@ class IndexJobTests(unittest.TestCase):
         self.assertTrue((output / "demo" / "main.py.knowledge.json").exists())
         self.assertTrue((self.root / "state" / "demo" / "ua" / "knowledge-graph.json").exists())
         registry = connector_registry.load_registry(self.root / "state" / "connectors" / "registry.json")
+        self.assertEqual(registry["connectors"][0]["connectorId"], "connector:demo")
         self.assertEqual(registry["connectors"][0]["sourceIds"], ["connector:demo"])
         self.assertEqual(registry["connectors"][0]["manifestState"], "ready")
         self.assertNotIn("grantId", json.dumps(registry))

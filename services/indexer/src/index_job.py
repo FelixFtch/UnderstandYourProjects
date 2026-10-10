@@ -119,7 +119,13 @@ def scope_allows(context: dict[str, Any], job: dict[str, Any]) -> bool:
 
 def _registry_connector_id(source_id: str) -> str:
     """Map a capability id to a stable registry id without persisting paths."""
-    slug = re.sub(r"[^A-Za-z0-9_.:-]+", "-", str(source_id)).strip("-")[:140]
+    raw = str(source_id)
+    # Keep the canonical connector capability spelling used by Studio when it
+    # is already safe; this lets the durable observation merge with the
+    # project snapshot's connector projection instead of duplicating it.
+    if raw.startswith("connector:") and re.fullmatch(r"[A-Za-z0-9_.:-]{1,160}", raw):
+        return raw
+    slug = re.sub(r"[^A-Za-z0-9_.:-]+", "-", raw).strip("-")[:140]
     return f"connector:{slug or 'pending'}"
 
 
