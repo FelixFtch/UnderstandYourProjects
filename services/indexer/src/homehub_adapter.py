@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
@@ -99,17 +101,54 @@ def validate_context(value: Mapping[str, Any], *, now: datetime | None = None) -
     return normalized
 
 
-def load_context(path: str | None = None) -> dict[str, Any] | None:
-    """Load a local HomeHub projection, returning ``None`` on any failure."""
-    configured = path or os.environ.get("UYP_ACCESS_CONTEXT_FILE")
-    if not configured:
-        return None
+def _load_file(path: str) -> dict[str, Any] | None:
     try:
-        with open(os.path.expanduser(configured), encoding="utf-8") as handle:
-            raw = json.load(handle)
-        return validate_context(raw)
+        with open(os.path.expanduser(path), encoding="utf-8") as handle:
+            return validate_context(json.load(handle))
     except (OSError, json.JSONDecodeError, AccessContextError, TypeError):
         return None
+
+
+def _load_url(url: str, token_file: str | None = None) -> dict[str, Any] | None:
+    """Read a HomeHub projection over an approved local transport.
+
+    HomeHub remains the issuer and policy authority.  UYP only sends the
+    bearer stored in a separately permissioned file and validates the returned
+    projection; it never exchanges, mints, or refreshes credentials.
+    """
+    try:
+        headers = {"Accept": "application/json"}
+        configured_token_file = token_file or os.environ.get("UYP_HOMEHUB_TOKEN_FILE")
+        if configured_token_file:
+            with open(os.path.expanduser(configured_token_file), encoding="utf-8") as handle:
+                token = handle.read().strip()
+            if not token:
+                return None
+            headers["Authorization"] = f"Bearer {token}"
+        request = urllib.request.Request(url, headers=headers, method="GET")
+        with urllib.request.urlopen(request, timeout=3) as response:
+            return validate_context(json.loads(response.read()))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, AccessContextError, TypeError, ValueError):
+        return None
+
+
+def load_context(path: str | None = None) -> dict[str, Any] | None:
+    """Load a HomeHub projection, returning ``None`` on any failure.
+
+    A configured file remains the preferred deployment projection.  If it is
+    absent or invalid and ``UYP_HOMEHUB_ACCESS_CONTEXT_URL`` is configured,
+    the adapter tries the approved HomeHub transport once.  There is no
+    fallback to caller-supplied identity or generic data-sharing grants.
+    """
+    configured = path or os.environ.get("UYP_ACCESS_CONTEXT_FILE")
+    if configured:
+        loaded = _load_file(configured)
+        if loaded is not None:
+            return loaded
+    url = os.environ.get("UYP_HOMEHUB_ACCESS_CONTEXT_URL")
+    if url:
+        return _load_url(url)
+    return None
 
 
 def scope_allows(context: Mapping[str, Any], project_id: str, source_id: str) -> bool:

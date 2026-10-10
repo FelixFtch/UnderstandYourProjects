@@ -2,6 +2,7 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from federation_protocol import (  # noqa: E402
 )
 from homehub_adapter import (  # noqa: E402
     AccessContextError,
+    load_context,
     public_projection,
     scope_allows,
     validate_context,
@@ -60,6 +62,44 @@ class HomeHubContextTests(unittest.TestCase):
         del value["auditId"]
         with self.assertRaises(AccessContextError):
             validate_context(value)
+
+    def test_http_projection_uses_token_file_and_validates_homehub_shape(self):
+        payload = json.dumps(self.context()).encode("utf-8")
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return payload
+
+        with tempfile.TemporaryDirectory() as directory:
+            token_file = Path(directory) / "homehub.token"
+            token_file.write_text("session-token\n", encoding="utf-8")
+            with patch.dict(
+                "os.environ",
+                {
+                    "UYP_HOMEHUB_ACCESS_CONTEXT_URL": "http://127.0.0.1:5120/api/uyp/access-context",
+                    "UYP_HOMEHUB_TOKEN_FILE": str(token_file),
+                    "UYP_ACCESS_CONTEXT_FILE": "",
+                },
+                clear=False,
+            ), patch("homehub_adapter.urllib.request.urlopen", return_value=Response()) as opened:
+                checked = load_context()
+            self.assertEqual(checked["principalId"], "p1")
+            request = opened.call_args.args[0]
+            self.assertEqual(request.headers.get("Authorization"), "Bearer session-token")
+
+    def test_http_projection_failure_remains_unavailable(self):
+        with patch.dict(
+            "os.environ",
+            {"UYP_HOMEHUB_ACCESS_CONTEXT_URL": "http://127.0.0.1:5120/api/uyp/access-context", "UYP_ACCESS_CONTEXT_FILE": ""},
+            clear=False,
+        ), patch("homehub_adapter.urllib.request.urlopen", side_effect=OSError("offline")):
+            self.assertIsNone(load_context())
 
 
 class ConnectorRegistryContractTests(unittest.TestCase):
