@@ -6,6 +6,8 @@ It connects user-authorized computers, NAS storage, GitHub repositories, and dev
 
 It also lets independent Jarvis boxes join groups and communicate. Each Jarvis searches its own local project knowledge and shares only the information permitted by its owner and the group. This creates a privacy-aware project knowledge network without requiring participants to merge their complete databases or expose their original files.
 
+> **Project status:** This is an active engineering prototype. The single-Jetson UYP/Understand Anything path and the read-only Query API are being integrated, while production GBrain publishing, automatic pairing/discovery, and multi-Jarvis federation are still in progress.
+
 ## The problem
 
 Coding agents make it possible for one person or a small team to produce many more prototypes, repositories, experiments, and documents. That productivity creates a new problem:
@@ -34,14 +36,15 @@ The first product slice should focus on individual developers and small teams. L
 
 ## Product model
 
-The product has four separate concepts:
+The product has five separate concepts:
 
 1. **Source devices** hold the original files: a Mac, PC, Linux workstation, NAS, external drive, or GitHub repository.
 2. **Connectors** expose only the directories and repositories explicitly authorized by the user. They provide manifests, controlled reads, version information, and change notifications.
-3. **Jarvis Agent Boxes** perform local parsing, indexing, embedding, semantic analysis, knowledge retrieval, and project management. A Jetson is the first hardware platform for this role.
-4. **Jarvis Studio and Agent Groups** provide visual project management, conversation, coding-agent access, and collaboration between independent Jarvis boxes.
+3. **HomeHub** is the control plane for identity, voiceprint evidence, device ownership, pairing, policy, grants, revocation, and audit. UYP consumes its short-lived access context; it does not replace HomeHub or issue permissions.
+4. **Jarvis Agent Boxes** perform local parsing, indexing, embedding, semantic analysis, knowledge retrieval, and project management. A Jetson is the first hardware platform for this role.
+5. **Jarvis Studio and Agent Groups** provide visual project management, conversation, coding-agent access, and collaboration between independent Jarvis boxes.
 
-The original project files remain authoritative on their source devices. The Agent Box stores derived knowledge such as file manifests, code structure, project summaries, relations, source references, versions, and index state. Full source files are not copied into a persistent mirror by default.
+The original project files remain authoritative on their source devices. The Agent Box stores derived knowledge such as file manifests, code structure, project summaries, relations, source references, versions, and index state. Full source files are not copied into a persistent mirror by default. HomeHub remains the authority for who may access each derived result.
 
 ## What users can do
 
@@ -54,6 +57,22 @@ UnderstandYourProjects is organized around five actions:
 5. **Maintain** — When a source changes, Jarvis updates the affected knowledge incrementally and shows what is current, queued, stale, failed, or unsupported.
 
 The same knowledge can be exposed to a coding agent through a controlled MCP or API surface. The coding agent can discover relevant projects and files outside its current sandbox without receiving unrestricted access to the user's devices.
+
+## Understand Anything and GBrain
+
+Understand Anything is the project's **structural understanding engine**. It scans authorized source bytes in a Jetson staging area, extracts files, symbols, imports, calls, layers, and guided tours, and produces a source-linked project graph. It is deliberately not the chat model and it never writes analysis artifacts into a source repository.
+
+GBrain is the existing long-term knowledge and retrieval foundation. It is useful for cross-project search, timelines, embeddings, graph links, and MCP access. UYP places a project-specific boundary in front of it so that HomeHub scopes and source epochs are checked before retrieval, and evidence and freshness are checked before an answer is returned.
+
+The intended split is:
+
+```text
+Understand Anything = current-project structure, dependencies, layers, and evidence
+GBrain              = long-term semantic retrieval, timelines, and cross-project memory
+HomeHub             = identity, ownership, policy, revocation, and audit
+```
+
+The Jetson UYP path currently publishes to its own state and output stores and exposes the Query API. A durable UYP-to-GBrain adapter is planned; the repository does not claim that the GBrain production publish path is complete.
 
 ## Jarvis Agent Groups
 
@@ -82,6 +101,9 @@ Mac / PC / NAS / GitHub
           |
           v
   Authorized Source Connector
+          |
+          v
+  HomeHub access context
           |
           v
   Jarvis Agent Box (Jetson first)
@@ -142,7 +164,7 @@ The first version is intended for code and text-based project material. Image, v
 
 ## Current direction
 
-The existing Jarvis HomeHub voice, identity, pairing, policy, audit, scheduling, gbrain, and Agent communication foundations are valuable infrastructure for this product. UnderstandYourProjects should add a dedicated project-knowledge plane instead of replacing the protected voice runtime.
+The existing Jarvis HomeHub voice, identity, pairing, policy, audit, scheduling, gbrain, and Agent communication foundations are valuable infrastructure for this product. UnderstandYourProjects adds a dedicated project-knowledge plane instead of replacing the protected voice runtime. A project question still follows the existing voice path — speaker evidence, HomeHub principal resolution, HomeHub policy, Jarvis intent routing — and then enters the Project Knowledge domain.
 
 The detailed review documents are:
 
@@ -153,6 +175,27 @@ The detailed review documents are:
 - [Visualization Design](docs/VISUALIZATION_DESIGN.md) — Project Studio information architecture, evidence language, visual tokens, states, and migration sequence.
 
 The first hardware deployment is one Jetson Agent Box serving multiple authorized source devices. Additional boxes should be introduced when workload, network locality, privacy isolation, or availability requirements justify them—not as a requirement for every computer.
+
+## Current implementation boundary
+
+The repository contains working code slices for the single-node path:
+
+- a Connector contract with manifest and controlled-read operations;
+- HomeHub `AccessContext` validation and fail-closed project queries;
+- a durable `IndexJob` state machine with separate HomeHub and Connector capabilities;
+- a vendored Understand Anything bridge that keeps analysis state outside source projects;
+- Jetson Query API projections for Studio, sources, jobs, evidence, and project search;
+- Studio views for project structure, freshness, privacy, and Jarvis groups.
+
+The following are still integration work and must not be inferred from the UI alone:
+
+- a stable production Laya service and a newly published end-to-end Jetson IndexJob;
+- durable UYP-to-GBrain publishing and invalidation after revocation;
+- persistent multi-Connector registration;
+- LAN/mDNS or Cloudflare pairing and automatic discovery;
+- NandaTown invite/group APIs and multi-Jetson federation.
+
+In the current development topology, HomeHub is local to Jetson on `:5120`, UYP Query API is on `:8787`, the existing GBrain service is on `:8790`, and the Mac Connector may be reached through an SSH reverse tunnel on Jetson `127.0.0.1:7121`. The reverse tunnel is a development transport, not the final pairing design.
 
 ## Collaboration
 
