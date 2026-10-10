@@ -93,7 +93,11 @@ ALLOWED_TRANSITIONS = {
     "discovered": {"authorized", "retry_wait", "blocked", "revoked", "failed", "offline"},
     "authorized": {"queued", "blocked", "revoked", "failed", "offline"},
     "queued": {"running", "offline", "retry_wait", "revoked", "failed"},
-    "running": {"staged", "offline", "retry_wait", "revoked", "failed"},
+    # "discovered" added 2026-10-10: a worker that dies mid-run leaves the
+    # job stranded in running; the recovery sweep needs to push it back to
+    # discovered for a clean re-entry (field evidence: three separate
+    # livelocks tonight from this missing edge).
+    "running": {"staged", "offline", "retry_wait", "revoked", "failed", "discovered"},
     "staged": {"published", "failed", "revoked", "offline"},
     # ``blocked`` is reachable from retry_wait because a resumed job can find
     # its scope narrowed between attempts; it must block, not crash.
@@ -702,6 +706,7 @@ def _retry_attempt_due(job: dict[str, Any], stamp: datetime) -> bool:
     return due <= stamp
 
 
+
 def _recover_failed_jobs(store: IndexJobStore) -> int:
     """Requeue terminal jobs whose failure reason is retryable.
 
@@ -812,6 +817,8 @@ def main() -> None:
     run_parser.add_argument("job_id")
     pending = sub.add_parser("run-pending", help="run the next queued jobs once; safe to call from a timer")
     pending.add_argument("--max-jobs", type=int, default=1)
+    sub.add_parser("recover-stranded",
+                    help="Push stranded running jobs (dead worker) back to discovered")
     sub.add_parser("list")
     args = parser.parse_args()
     store = IndexJobStore(args.state_root)
@@ -831,6 +838,14 @@ def main() -> None:
             total=args.total,
             metadata={"limit": args.limit},
         )
+    elif args.action == "recover-stranded":
+        count = 0
+        for job_id, job in store.list_jobs().items():
+            if job.get("phase") == "running":
+                store.event(job_id, "discovered",
+                            {"reason": "stranded_running_recovered"})
+                count += 1
+        print(json.dumps({"recovered": count}))
     elif args.action == "list":
         result = store.list()
     elif args.action == "run-pending":
