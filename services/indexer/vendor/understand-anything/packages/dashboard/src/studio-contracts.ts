@@ -85,6 +85,8 @@ export interface EvidenceRef {
   };
   kind: EvidenceKind;
   summary: string;
+  /** v3.2 anchored enrichment primary actor, e.g. "route_fast L97-L215". */
+  anchorTop?: string;
   score?: number;
   freshness: ConnectionState;
   visibility?: "private" | "group" | "shared";
