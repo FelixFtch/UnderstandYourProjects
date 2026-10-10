@@ -1,0 +1,10 @@
+{"file": "packages/orchestrator/orchestrator/intent_router.py", "expected": "deep-analysis", "reason": "15-tool deterministic router, route_fast is the central actor", "gate_expected": 0.9}
+{"file": "packages/orchestrator/platform_policy.py", "expected": "deep-analysis", "reason": "LocalPolicyEngine: principal/tool-risk/ledger logic", "gate_expected": 0.9}
+{"file": "services/chat-bridge/chat_bridge.py", "expected": "deep-analysis", "reason": "838-line HTTP service, orchestrator host", "gate_expected": 0.85}
+{"file": "packages/agent_contracts/src/agent_contracts/signing.py", "expected": "deep-analysis", "reason": "wire math single source + VECTORS", "gate_expected": 0.95}
+{"file": "README.md", "expected": "quick-summary", "reason": "docs: one-line summary suffices; Laya over-triages to deep", "gate_expected": 0.5}
+{"file": "docs/m3-contract-endpoint-design.md", "expected": "quick-summary", "reason": "design doc; enrichment should capture decisions not full analysis", "gate_expected": 0.5}
+{"file": "requirements-runtime.txt", "expected": "structure-only", "reason": "dep list", "gate_expected": 0.0}
+{"file": "deploy/launchagents/com.mofang.jarvis-memory-live.bridge.plist", "expected": "structure-only", "reason": "launch config; extract key/values deterministically, no LLM", "gate_expected": 0.0}
+{"file": "services/page/public/force-graph.min.js", "expected": "skip", "reason": "vendored minified bundle", "gate_expected": 0.0}
+{"file": "verification/*.png", "expected": "skip", "reason": "binary screenshots", "gate_expected": 0.0}
