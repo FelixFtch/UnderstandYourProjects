@@ -135,19 +135,18 @@ def _load_url(url: str, token_file: str | None = None) -> dict[str, Any] | None:
 def load_context(path: str | None = None) -> dict[str, Any] | None:
     """Load a HomeHub projection, returning ``None`` on any failure.
 
-    A configured file remains the preferred deployment projection.  If it is
-    absent or invalid and ``UYP_HOMEHUB_ACCESS_CONTEXT_URL`` is configured,
-    the adapter tries the approved HomeHub transport once.  There is no
-    fallback to caller-supplied identity or generic data-sharing grants.
+    When the approved HomeHub URL is configured it is authoritative for every
+    read.  A URL failure therefore fails closed instead of falling back to a
+    stale but locally valid projection that could survive a revocation.  The
+    file path is retained for offline tests and deployments that deliberately
+    provision a projection without the URL transport.
     """
-    configured = path or os.environ.get("UYP_ACCESS_CONTEXT_FILE")
-    if configured:
-        loaded = _load_file(configured)
-        if loaded is not None:
-            return loaded
     url = os.environ.get("UYP_HOMEHUB_ACCESS_CONTEXT_URL")
     if url:
         return _load_url(url)
+    configured = path or os.environ.get("UYP_ACCESS_CONTEXT_FILE")
+    if configured:
+        return _load_file(configured)
     return None
 
 

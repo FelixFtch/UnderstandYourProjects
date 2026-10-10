@@ -13,8 +13,10 @@ UYP_ACCESS_CONTEXT_FILE=~/.config/uyp/access-context.json \
 python3 services/indexer/src/query_api.py --port 8787
 ```
 
-For the production Jetson service, HomeHub can be the live policy transport
-instead of a copied projection file:
+For the production Jetson service, configure HomeHub as the live policy
+transport. When this URL is present it takes precedence over any copied
+projection file, so a transport failure cannot accidentally keep using a
+stale context after revocation:
 
 ```bash
 export UYP_HOMEHUB_ACCESS_CONTEXT_URL=http://127.0.0.1:5120/api/uyp/access-context

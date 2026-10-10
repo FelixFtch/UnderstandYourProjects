@@ -101,6 +101,37 @@ class HomeHubContextTests(unittest.TestCase):
         ), patch("homehub_adapter.urllib.request.urlopen", side_effect=OSError("offline")):
             self.assertIsNone(load_context())
 
+    def test_http_projection_takes_precedence_over_local_projection(self):
+        remote = self.context()
+        remote["grantEpoch"] = "remote-epoch"
+        payload = json.dumps(remote).encode("utf-8")
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return payload
+
+        with tempfile.TemporaryDirectory() as directory:
+            local_file = Path(directory) / "access-context.json"
+            local = self.context()
+            local["grantEpoch"] = "stale-local-epoch"
+            local_file.write_text(json.dumps(local), encoding="utf-8")
+            with patch.dict(
+                "os.environ",
+                {
+                    "UYP_ACCESS_CONTEXT_FILE": str(local_file),
+                    "UYP_HOMEHUB_ACCESS_CONTEXT_URL": "http://127.0.0.1:5120/api/uyp/access-context",
+                },
+                clear=False,
+            ), patch("homehub_adapter.urllib.request.urlopen", return_value=Response()):
+                checked = load_context()
+            self.assertEqual(checked["grantEpoch"], "remote-epoch")
+
 
 class ConnectorRegistryContractTests(unittest.TestCase):
     def test_registry_is_atomic_and_refuses_secrets_or_paths(self):

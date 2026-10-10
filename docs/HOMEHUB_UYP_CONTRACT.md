@@ -25,7 +25,9 @@ epoch check when the worker refreshes policy.
 ## Jetson transport
 
 On Jetson, the UYP worker reads the projection from HomeHub over the local
-Companion API when the file projection is absent or invalid:
+Companion API. When this URL is configured it is authoritative for every
+read; a stale local projection is never used as a fallback after a transport
+failure:
 
 ```ini
 UYP_HOMEHUB_ACCESS_CONTEXT_URL=http://127.0.0.1:5120/api/uyp/access-context
