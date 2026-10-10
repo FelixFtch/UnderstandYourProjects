@@ -719,9 +719,13 @@ def _recover_failed_jobs(store: IndexJobStore) -> int:
     """
     recovered = 0
     for job in store.list():
-        if str(job.get("phase")) not in {"failed", "offline"}:
+        # running 也算孤儿: run_pending 是同步的, 它在跑说明上一个已死
+        # (field evidence: 三次 running->authorized 转换错误)
+        if str(job.get("phase")) not in {"failed", "offline", "running"}:
             continue
         reason = str(job.get("reason") or "")
+        if str(job.get("phase")) == "running":
+            reason = "worker_command_failed"  # 孤儿running 按可重试处理, 不吃预算
         if reason not in RETRYABLE_REASONS:
             continue
         retries_used = int(job.get("retryCount") or 0)
