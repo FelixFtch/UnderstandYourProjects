@@ -151,9 +151,9 @@ def _manifest(value: Any) -> dict[str, Any]:
     generated = _text(value.get("generatedAt"), limit=MAX_TEXT)
     if generated:
         result["generatedAt"] = generated
-    cursor = _text(value.get("cursor"), limit=MAX_TEXT)
-    if cursor:
-        result["cursor"] = cursor
+    # Connector cursors are intentionally not durable here: protocol cursors
+    # may embed a relative path. The indexing worker owns its private cursor
+    # state under the job directory instead.
     for key in ("fileCount", "total", "deletedCount"):
         number = value.get(key)
         if isinstance(number, int) and 0 <= number <= 10_000_000:

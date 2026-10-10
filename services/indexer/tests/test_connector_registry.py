@@ -54,6 +54,7 @@ class ConnectorRegistryTests(unittest.TestCase):
         self.assertEqual(record["manifestState"], "ready")
         self.assertEqual(record["manifest"]["fileCount"], 4)
         self.assertNotIn("files", record["manifest"])
+        self.assertNotIn("cursor", record["manifest"])
         self.assertEqual(record["sourceEpoch"], "e-2")
 
     def test_invalid_document_is_non_authorizing_and_public_projection_redacts_sources(self):
