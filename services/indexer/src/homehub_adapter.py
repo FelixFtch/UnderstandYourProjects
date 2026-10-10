@@ -121,22 +121,27 @@ def _load_file(path: str) -> dict[str, Any] | None:
         return None
 
 
-def _load_url(url: str, token_file: str | None = None) -> dict[str, Any] | None:
+def _load_url(url: str, token_file: str | None = None,
+              token: str | None = None) -> dict[str, Any] | None:
     """Read a HomeHub projection over an approved local transport.
 
-    HomeHub remains the issuer and policy authority.  UYP only sends the
-    bearer stored in a separately permissioned file and validates the returned
-    projection; it never exchanges, mints, or refreshes credentials.
+    HomeHub remains the issuer and policy authority.  UYP only sends a
+    bearer it was handed (the service token file, or a caller-presented
+    token) and validates the returned projection; it never exchanges,
+    mints, or refreshes credentials.
     """
     try:
         headers = {"Accept": "application/json"}
-        configured_token_file = token_file or os.environ.get("UYP_HOMEHUB_TOKEN_FILE")
-        if configured_token_file:
-            with open(os.path.expanduser(configured_token_file), encoding="utf-8") as handle:
-                token = handle.read().strip()
-            if not token:
-                return None
-            headers["Authorization"] = f"Bearer {token}"
+        if token:
+            headers["Authorization"] = f"Bearer {token.strip()}"
+        else:
+            configured_token_file = token_file or os.environ.get("UYP_HOMEHUB_TOKEN_FILE")
+            if configured_token_file:
+                with open(os.path.expanduser(configured_token_file), encoding="utf-8") as handle:
+                    token = handle.read().strip()
+                if not token:
+                    return None
+                headers["Authorization"] = f"Bearer {token}"
         request = urllib.request.Request(url, headers=headers, method="GET")
         with urllib.request.urlopen(request, timeout=3) as response:
             return validate_context(_unwrap_response(json.loads(response.read())))
@@ -160,6 +165,24 @@ def load_context(path: str | None = None) -> dict[str, Any] | None:
     if configured:
         return _load_file(configured)
     return None
+
+
+def load_context_for_token(token: str) -> dict[str, Any] | None:
+    """Resolve a projection for a caller-presented Companion bearer.
+
+    Same approved transport, envelope handling, and strict validation as
+    :func:`load_context`; only the credential differs - the caller's own
+    token instead of the service token file.  A caller bearer can never be
+    validated against a local projection file, so the HomeHub URL transport
+    is required.  Fails closed on any failure and never falls back to the
+    service-level context: a request that presented credentials resolves to
+    its own principal or to nothing.
+    """
+    value = str(token or "").strip()
+    url = os.environ.get("UYP_HOMEHUB_ACCESS_CONTEXT_URL")
+    if not value or not url:
+        return None
+    return _load_url(url, token=value)
 
 
 def scope_allows(context: Mapping[str, Any], project_id: str, source_id: str) -> bool:

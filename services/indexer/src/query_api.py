@@ -29,7 +29,10 @@ from urllib.parse import parse_qs, urlparse
 
 from knowledge_search import answer as search_answer, load_items
 from connector_registry import load_registry, public_projection, registry_health
-from homehub_adapter import load_context as load_homehub_context
+from homehub_adapter import (
+    load_context as load_homehub_context,
+    load_context_for_token as load_homehub_context_for_token,
+)
 
 
 VERSION = "0.1.0"
@@ -87,6 +90,43 @@ def load_access_context() -> dict | None:
     # A local file is only a transport projection from HomeHub.  Use the same
     # strict validator as IndexJob and federation code, and fail closed.
     return load_homehub_context()
+
+
+def load_request_context(headers, *, loopback_voice: bool = False) -> dict | None:
+    """Per-request HomeHub context resolution (voice handshake, 2026-10-10).
+
+    Resolution order for ``POST /api/knowledge/search``:
+
+    (a) ``Authorization: Bearer <token>`` - the caller presents its own
+        HomeHub Companion bearer (a Studio session; the future per-member
+        voice pass).  The service resolves THAT caller's projection over
+        the same approved transport and strict validation as every other
+        path (``homehub_adapter``).  Fail closed: a request that presented
+        credentials never falls back to the box context.
+    (b) loopback-voice mode - no Bearer, but ``X-Agent-Member`` is present:
+        the voice runtime (the box's agent-runtime) must never hold this
+        service's credentials, so the SERVICE acts as the box, exactly
+        like the indexer worker does, loading the box projection through
+        ``UYP_HOMEHUB_ACCESS_CONTEXT_URL`` + ``UYP_HOMEHUB_TOKEN_FILE``
+        (standard env names, no new ones).  The fetched box context scopes
+        the search by its ``projectScopes``.  The member header is an
+        identity HINT only, never an authority: per-MEMBER enforcement
+        (HomeHub resolving the speaking member to her own grant scopes)
+        is a TODO for the future per-member pass - until then any member
+        the box grant covers is served under the box scopes.
+        ``loopback_voice`` is set ONLY by ``main()`` for a loopback bind:
+        header-asserted voice identity must never be admitted on a
+        ``--lan`` bind (this adds no network exposure).
+    (c) no Bearer, no member header - today's service-level resolution
+        (env/file), unchanged: ``None`` (and a 503) when nothing is
+        configured.
+    """
+    auth = str(headers.get("Authorization") or "")
+    if auth[:7].lower() == "bearer " and auth[7:].strip():
+        return load_homehub_context_for_token(auth[7:])
+    if str(headers.get("X-Agent-Member") or "").strip() and loopback_voice:
+        return load_homehub_context()
+    return load_access_context()
 
 
 def access_context_valid(context: dict) -> bool:
@@ -527,7 +567,14 @@ class QueryHandler(BaseHTTPRequestHandler):
         if parsed.path != "/api/knowledge/search":
             self.json_response({"ok": False, "error": "not_found"}, 404, audit)
             return
-        context = load_access_context()
+        # Voice handshake (2026-10-10): per-request resolution - caller
+        # Bearer, loopback X-Agent-Member voice mode, or today's
+        # service-level env/file path.  The loopback guard flag is set by
+        # main() only for a loopback bind (fail closed otherwise).
+        context = load_request_context(
+            self.headers,
+            loopback_voice=getattr(self.server, "loopback_voice", False),
+        )
         if context is None:
             self.json_response({"ok": False, "error": "access_context_unavailable", "message": "HomeHub must provide an AccessContext before project knowledge can be searched."}, 503, audit)
             return
@@ -552,6 +599,11 @@ def main() -> None:
     args = parser.parse_args()
     host = "0.0.0.0" if args.lan else args.host
     server = ThreadingHTTPServer((host, args.port), QueryHandler)
+    # Loopback-voice handshake guard (2026-10-10): the X-Agent-Member
+    # fallback in load_request_context is valid ONLY while this API is
+    # loopback-bound - a --lan deployment must never admit header-asserted
+    # voice identity without the approved transport in front of it.
+    server.loopback_voice = host in {"127.0.0.1", "localhost", "::1"}
     print(f"uyp-query-api v{VERSION} on {host}:{args.port} output={output_root()}", flush=True)
     try:
         server.serve_forever()
