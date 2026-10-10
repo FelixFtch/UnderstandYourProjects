@@ -60,7 +60,7 @@ ALLOWED_TRANSITIONS = {
     "running": {"staged", "offline", "retry_wait", "revoked", "failed"},
     "staged": {"published", "failed", "revoked"},
     "retry_wait": {"authorized", "queued", "running", "offline", "revoked", "failed"},
-    "offline": {"queued", "retry_wait", "revoked", "failed"},
+    "offline": {"authorized", "queued", "retry_wait", "revoked", "failed"},
     "blocked": {"authorized", "revoked", "failed"},
     "revoked": set(),
     "failed": {"authorized", "queued", "revoked"},
