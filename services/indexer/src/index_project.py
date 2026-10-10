@@ -293,8 +293,29 @@ def main():
     if skipped:
         print(f"resume: skipping {skipped} already-processed files", flush=True)
     print(f"indexing {root}: {len(files)} files (of {man['total']})", flush=True)
-    for f in files:
+    READ_CAP = 16 * 1024 * 1024  # connector /read per-file cap
+
+    def safe_read(rel, size, maxb):
+        if size > READ_CAP:
+            return None
+        try:
+            return api(a.host, token,
+                       f"/read?grant={a.grant}&relpath={rel}&length={maxb}",
+                       binary=True).decode("utf-8", "replace")
+        except urllib.error.HTTPError as e:
+            if e.code == 413:
+                return None
+            raise
+
+    stats_lock = threading.Lock()
+
+    def bump(key, n=1):
+        with stats_lock:
+            stats[key] = stats.get(key, 0) + n
+
+    def process_file(f):
         rel, size = f["relpath"], f["size"]
+
         try:
             # 2048B read for a 600-char window: slack for multibyte (CJK ~3B/char)
             head = api(a.host, token,
@@ -324,52 +345,46 @@ def main():
         item = {"file": rel, "version": {"mtime": f["mtime"], "size": size},
                 "verdict": verdict, "think_gate": round(gate, 2),
                 "source": "mac-connector", "analyzed_at": time.strftime("%FT%T")}
-        READ_CAP = 16 * 1024 * 1024  # connector /read per-file cap
-        def safe_read(rel, size, maxb):
-            # 超限文件不读字节, 只回空串(下游走 metadata-only)
-            if size > READ_CAP:
-                return None
-            try:
-                return api(a.host, token,
-                           f"/read?grant={a.grant}&relpath={rel}&length={maxb}",
-                           binary=True).decode("utf-8", "replace")
-            except urllib.error.HTTPError as e:
-                if e.code == 413:
-                    return None
-                raise
         if verdict == "skip":
-            stats["rule_skip" if rule_verdict is not None else "laya_skip"] += 1
+            bump("rule_skip" if rule_verdict is not None else "laya_skip")
         elif verdict == "structure-only":
             full = safe_read(rel, size, min(size, 262144))
             item["derived"] = structure_only_summary(full or "")
             if full is None:
                 item["derived"]["too_large"] = True
-            stats["rule_structure" if rule_verdict is not None else "laya_structure"] += 1
+            bump("rule_structure" if rule_verdict is not None else "laya_structure")
         else:
             full = safe_read(rel, size, min(size, 262144))
             if full is None:
                 item["derived"] = {"too_large": True, "size": size}
                 item["verdict"] = "structure-only"
-                stats["rule_structure"] += 1
+                bump("rule_structure")
                 safe = rel.replace("/", "__") + ".knowledge.json"
                 with open(f"{OUT}/{root}/{safe}", "w", encoding="utf-8") as fh:
                     json.dump(item, fh, ensure_ascii=False, indent=1)
                 print(f"  too-large->{verdict:15s} {rel[:70]}", flush=True)
-                continue
+                return
             t0 = time.time()
             raw, tok = qwen_enrich(full, think)
-            stats["tokens"] += tok
+            bump("tokens", tok)
             parsed = brace_json(raw)
             item["derived"] = parsed or {"raw_head": raw[:400]}
             item["think_used"] = think
             item["eval_tokens"] = tok
             item["enrich_s"] = round(time.time() - t0, 1)
-            stats["deep" if think else "quick"] += 1
-            stats["json_ok" if parsed else "json_bad"] += 1
+            bump("deep" if think else "quick")
+            bump("json_ok" if parsed else "json_bad")
         safe = rel.replace("/", "__") + ".knowledge.json"
         with open(f"{OUT}/{root}/{safe}", "w", encoding="utf-8") as fh:
             json.dump(item, fh, ensure_ascii=False, indent=1)
         print(f"  {verdict:15s} {'think' if think else '     '} {rel[:70]}", flush=True)
+
+    workers = max(1, min(int(os.environ.get("UYP_ENRICH_WORKERS", "4")), 4))
+    print(f"parallel enrichment: {workers} workers", flush=True)
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        list(pool.map(process_file, files))
+
     json.dump({"grant": a.grant, "root": root, "ran_at": time.strftime("%FT%T"), "stats": stats},
               open(f"{STATE}/{root}.json", "w"))
     print(f"\nDONE in {time.time()-t_start:.0f}s | {json.dumps(stats)}")
