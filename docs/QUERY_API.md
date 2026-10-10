@@ -145,6 +145,24 @@ policy-plane outage into a grant or a permanent denial. `run-pending` is a
 single bounded pass so the deployment layer controls cadence and resource
 limits.
 
+The Jetson deployment includes user-level systemd units under
+`jetson/systemd/`. Install them without root after copying the indexer to
+`~/dev/uyp/indexer`:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp ~/dev/uyp/indexer/jetson/systemd/uyp-query-api.service ~/.config/systemd/user/
+cp ~/dev/uyp/indexer/jetson/systemd/uyp-indexjob.service ~/.config/systemd/user/
+cp ~/dev/uyp/indexer/jetson/systemd/uyp-indexjob.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now uyp-query-api.service uyp-indexjob.timer
+```
+
+The timer invokes one bounded pass per minute. Without a valid HomeHub
+`AccessContext`, the service exits successfully with a skipped result and does
+not mutate the queue; a policy-plane outage therefore cannot become an
+implicit grant.
+
 The UA bridge now feeds the staged Laya/Qwen `KnowledgeItem` summaries into the
 vendored graph, retains Connector-resolved import edges, and computes
 heuristic layers and a guided tour with the UA core APIs. These are published

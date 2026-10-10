@@ -1,0 +1,11 @@
+[Unit]
+Description=Run UnderstandYourProjects durable IndexJob scheduler
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+Persistent=true
+Unit=uyp-indexjob.service
+
+[Install]
+WantedBy=timers.target

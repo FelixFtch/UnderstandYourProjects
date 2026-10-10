@@ -1,0 +1,14 @@
+[Unit]
+Description=UnderstandYourProjects durable IndexJob pass
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/dev/uyp/indexer
+Environment=UYP_OUTPUT_ROOT=%h/dev/uyp/output
+Environment=UYP_STATE_ROOT=%h/dev/uyp/state
+Environment=UYP_CONNECTOR_HOST=http://127.0.0.1:7121
+ExecStart=/usr/bin/python3 %h/dev/uyp/indexer/index_job.py --state-root %h/dev/uyp/state --output-root %h/dev/uyp/output --access-context %h/.config/uyp/access-context.json --connector-host http://127.0.0.1:7121 --token-file %h/.config/uyp/token --ua-root %h/dev/uyp/understand-anything-src-20261009 run-pending --max-jobs 1
+NoNewPrivileges=true
+PrivateTmp=true

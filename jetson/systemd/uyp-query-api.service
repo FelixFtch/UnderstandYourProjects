@@ -1,0 +1,19 @@
+[Unit]
+Description=UnderstandYourProjects Query API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/dev/uyp/indexer
+Environment=UYP_OUTPUT_ROOT=%h/dev/uyp/output
+Environment=UYP_STATE_ROOT=%h/dev/uyp/state
+Environment=UYP_CONNECTOR_HOST=http://127.0.0.1:7121
+ExecStart=/usr/bin/python3 %h/dev/uyp/indexer/query_api.py --host 127.0.0.1 --port 8787
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
