@@ -13,10 +13,13 @@ Requires: Laya llama-server on :8901 (start_laya.sh), ollama qwen3.5:4b.
 from __future__ import annotations
 import argparse, json, os, re, subprocess, sys, time, urllib.request
 
-MODELS = "/home/jetson/dev/uyp/models"
-BIN = "/home/jetson/dev/uyp/llama.cpp-build/build/bin"
-STATE = os.path.expanduser("~/dev/uyp/state")
-OUT = os.path.expanduser("~/dev/uyp/output")
+MODELS = os.environ.get("UYP_MODELS_ROOT", "/home/jetson/dev/uyp/models")
+BIN = os.environ.get("UYP_LLAMACPP_BIN", "/home/jetson/dev/uyp/llama.cpp-build/build/bin")
+# A worker can point one run at an isolated staging root.  Keeping these as
+# environment-controlled paths is also what prevents a failed candidate from
+# replacing the last published knowledge version.
+STATE = os.path.realpath(os.path.expanduser(os.environ.get("UYP_STATE_ROOT", "~/dev/uyp/state")))
+OUT = os.path.realpath(os.path.expanduser(os.environ.get("UYP_OUTPUT_ROOT", "~/dev/uyp/output")))
 
 def api(host, token, path, binary=False, timeout=90):
     req = urllib.request.Request(host.rstrip("/") + path,
@@ -106,7 +109,12 @@ def main():
     token = open(a.token_file).read().strip()
 
     man = api(a.host, token, f"/manifest?grant={a.grant}")
-    root = man["root_name"]
+    root = str(man["root_name"])
+    # Connector root names are metadata, never filesystem paths.  Rejecting
+    # separators here keeps a malformed manifest from escaping the configured
+    # output/state roots.
+    if not root or root in {".", ".."} or "/" in root or "\\" in root or "\x00" in root:
+        raise ValueError(f"unsafe connector root name: {root!r}")
     os.makedirs(f"{STATE}", exist_ok=True)
     os.makedirs(f"{OUT}/{root}", exist_ok=True)
 
@@ -134,11 +142,15 @@ def main():
             return False
     if not a.force:
         skipped = sum(1 for f in all_files if done_before(f))
-        files = [f for f in all_files if not done_before(f)][:a.limit]
+        pending = [f for f in all_files if not done_before(f)]
+        # ``--limit 0`` is the worker's explicit full-project mode.  The
+        # interactive CLI keeps its historical default of 20, but a durable
+        # IndexJob must be able to request all pending files.
+        files = pending if a.limit <= 0 else pending[:a.limit]
         if skipped:
             print(f"resume: skipping {skipped} already-processed files", flush=True)
     else:
-        files = all_files[:a.limit]
+        files = all_files if a.limit <= 0 else all_files[:a.limit]
     print(f"indexing {root}: {len(files)} files (of {man['total']})", flush=True)
     for f in files:
         rel, size = f["relpath"], f["size"]

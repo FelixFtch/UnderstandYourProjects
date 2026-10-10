@@ -27,6 +27,7 @@ development session. The Studio build variable is `VITE_STUDIO_API_URL`.
 | `GET /api/knowledge-graph` | vendored Understand Anything graph projection | returns `503` until HomeHub supplies an AccessContext |
 | `GET /api/sources` | source projection for the Agent Box surface | source grant is not created here |
 | `GET /api/connectors` | durable multi-connector health and manifest projection | metadata-only without HomeHub; never mints pairing or grants |
+| `GET /api/index/jobs` | persisted IndexJob phase/progress projection | requires HomeHub scopes; grant IDs and filesystem paths are omitted |
 | `POST /api/knowledge/search` | bounded lexical retrieval plus Qwen synthesis | requires a HomeHub AccessContext and filters before synthesis |
 
 `POST /api/knowledge/search` accepts `{ "query": "...", "projectId": "..." }`.
@@ -38,9 +39,10 @@ are not published. Every response carries `X-UYP-Audit-Id`. Model calls remain
 `think:false` through the existing search implementation.
 
 This adapter does not implement pairing, grants, revocation, NandaTown
-invites, or IndexJob mutation. Those operations belong behind the HomeHub and
-connector adapters described in `docs/EXECUTION_PLAN.md` and must be added with
-their own durable state and audit contracts.
+invites, or browser-triggered IndexJob mutation. Pairing, grants, revocation,
+and NandaTown remain behind their HomeHub/connector adapters. The local
+IndexJob worker described below owns only durable indexing execution after
+HomeHub has supplied an AccessContext.
 
 ## Connector registry
 
