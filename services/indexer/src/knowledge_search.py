@@ -2,7 +2,8 @@
 """knowledge_search v0 — 让已入册的 KnowledgeItem 回答"我在哪实现过X".
 
 检索: 纯词法评分(119条不需要向量) — relpath/purpose/key_points/components
-三段加权; qwen3.5-route think:false 合成带出处回答; 命中弱时诚实说没有.
+三段加权; qwen3.5-route think:false 合成带出处回答; 检索无命中或知识真缺答案时
+只回 "Not in the indexed projects." (统一口径, 不许半遮半掩的免责声明).
 用法: knowledge_search.py "哪里实现了委托签名"
 """
 from __future__ import annotations
@@ -51,7 +52,9 @@ def answer(question: str, items: list[dict]) -> dict:
     scored = sorted(((score(i, tokens), i) for i in items), key=lambda x: -x[0])
     top = [(s, i) for s, i in scored[:3] if s > 0]
     if not top:
-        return {"answer": f"已索引的 {len(items)} 个文件里没有匹配到相关实现。",
+        # Same canonical miss sentence the synthesis prompt demands - a genuine
+        # miss is never partially hedged, from either path.
+        return {"answer": "Not in the indexed projects.",
                 "sources": [], "confidence": "none"}
     ctx_blocks = []
     for s, i in top:
@@ -61,10 +64,15 @@ def answer(question: str, items: list[dict]) -> dict:
             f"PURPOSE: {der.get('purpose', '(structure-only: ' + json.dumps({k:v for k,v in der.items() if k in ('lines','py_defs','imports')}) + ')')}\n"
             f"KEY_POINTS: {'; '.join(str(x) for x in (der.get('key_points') or [])[:3])}")
     prompt = (
-        "You are a project knowledge assistant. Answer the question using ONLY the "
-        "indexed file knowledge below. Cite file paths in your answer. If the indexed "
-        "knowledge does not contain the answer, say so honestly. Answer in the question's "
-        "language, max 3 sentences.\n\nQUESTION: " + question + "\n\n" +
+        "You are a project knowledge assistant. Answer using ONLY the indexed file "
+        "knowledge below. The indexed knowledge IS the ground truth - do NOT apologize "
+        "or hedge; if the sources name files, state them directly as fact.\n"
+        "Answer shape: first sentence answers the question and names the file path(s); "
+        "second sentence says what that code does; then stop. Never open with preambles "
+        "like 'based on the provided documents'. Max 2 sentences.\n"
+        "If the indexed knowledge genuinely lacks the answer, reply with exactly "
+        "'Not in the indexed projects.' and nothing else - no partial hedging.\n"
+        "Answer in the question's language.\n\nQUESTION: " + question + "\n\n" +
         "\n---\n".join(ctx_blocks))
     body = json.dumps({"model": "qwen3.5-route", "think": False, "stream": False,
                        "options": {"num_ctx": 4096},

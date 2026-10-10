@@ -369,6 +369,9 @@ def project_snapshot(project_id: str | None = None) -> dict:
             "evidenceId": f"knowledge:{root}:{index}", "projectId": project_key, "sourceId": source_id,
             "knowledgeVersion": str(item.get("version", {}).get("mtime", "")),
             "locator": {"path": item.get("file")}, "kind": kind, "summary": summary,
+            # v3.2 anchored-enrichment primary actor; the Studio evidence badge
+            # (studio-contracts.ts EvidenceRef.anchorTop) renders from this.
+            "anchorTop": item.get("anchor_top"),
             "freshness": "current", "visibility": "private", "producingJarvis": context.get("jarvisNodeId") if context else None,
         })
     evidence = [{k: v for k, v in entry.items() if v is not None} for entry in evidence]

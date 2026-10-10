@@ -127,6 +127,25 @@ class QueryApiProjectionTests(unittest.TestCase):
         self.assertEqual(health["knowledgeItems"], 0)
         self.assertFalse(health["accessContext"])
 
+    def test_snapshot_projects_anchor_top_into_evidence(self):
+        # The Studio evidence badge (studio-contracts.ts EvidenceRef.anchorTop)
+        # was waiting for this projection: v3.2 anchored enrichment writes
+        # anchor_top onto each KnowledgeItem, and the panel renders the
+        # primary-actor badge from the projected anchorTop.
+        item_path = Path(query_api.output_root()) / "demo-project" / "src__main.py.knowledge.json"
+        item = json.loads(item_path.read_text(encoding="utf-8"))
+        item["anchor_top"] = "main L10-L42"
+        item_path.write_text(json.dumps(item), encoding="utf-8")
+        snapshot = query_api.project_snapshot()
+        self.assertEqual(snapshot["evidence"][0]["anchorTop"], "main L10-L42")
+
+    def test_evidence_without_anchor_top_omits_the_field(self):
+        # A pre-anchored item must not carry a null badge field: the Studio
+        # contract keeps anchorTop optional and the badge simply stays dark.
+        snapshot = query_api.project_snapshot()
+        self.assertEqual(len(snapshot["evidence"]), 1)
+        self.assertNotIn("anchorTop", snapshot["evidence"][0])
+
 
 if __name__ == "__main__":
     unittest.main()
