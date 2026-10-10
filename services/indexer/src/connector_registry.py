@@ -265,6 +265,10 @@ def _locked(path: Path) -> Iterator[None]:
 
 def _read_unlocked(path: Path) -> dict[str, Any]:
     try:
+        if not path.exists():
+            # A first boot has no registry yet; that is a pending state, not
+            # evidence of corruption or an unreadable persisted document.
+            return empty_registry()
         if path.stat().st_size > MAX_REGISTRY_BYTES:
             return empty_registry(reason="registry exceeds size limit")
         with path.open(encoding="utf-8") as fh:
