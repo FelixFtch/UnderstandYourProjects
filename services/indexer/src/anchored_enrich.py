@@ -192,6 +192,28 @@ def parse_response(raw: str, syms: list[dict]) -> dict | None:
             part = part.strip()
             if part:
                 segments.append(part)
+    # v3.3.1 修复优先于拒收(实测 RAW 率 100%: 模型常漏 C 行行号/带 P 行尾注)
+    repaired = []
+    sym_by_name = {sy["name"]: sy for sy in syms}
+    for part in segments:
+        if part.startswith("P:"):
+            body = part[2:].strip()
+            for meta in (" — the file", " (the file", " — purpose", " (purpose",
+                         " (largest span", " — largest span", " (anchor", " — anchor",
+                         " (the P line", " — the P line"):
+                if meta in body:
+                    body = body.split(meta)[0].rstrip(" -–(").strip()
+            part = "P: " + body
+        if part.startswith("C:") and not re.search(r"\(L\d+", part):
+            name = part[2:].split("(")[0].strip().strip("`\"'")
+            base = name.split(".")[0].split("=")[0].strip()
+            sy = sym_by_name.get(name) or sym_by_name.get(base)
+            if sy:
+                part = f"C: {name} (L{sy['lo']}-L{sy['hi']})"
+            else:
+                continue  # 丢一行不丢整个回答
+        repaired.append(part)
+    segments = repaired
     for part in segments:
         if part.startswith("P:") and not parsed["purpose"]:
             parsed["purpose"] = snap_all(part[2:].strip(), syms)
