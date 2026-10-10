@@ -28,11 +28,27 @@ def api(host, token, path, binary=False, timeout=90):
         d = r.read()
         return d if binary else json.loads(d)
 
-def laya_decide(content: str) -> tuple[str, float]:
-    body = json.dumps({"state": "repository file content:\n" + content[:900], "questions": {
+def laya_decide(head: str, mid: str = "") -> tuple[str, float]:
+    # Calibration 2026-10-10 (benchmarks/calibration_results_2026-10-10.json,
+    # 10 rows, 40% exact): a 900-char head window often stops inside the
+    # import block, so core-logic files read as "deps" -> structure-only.
+    # head+mid windows let function/class bodies reach the model.  Criteria
+    # reworded so each class has an anchor the old wording lacked
+    # (skip never fired; quick-summary never fired).
+    state = "repository file content:\n" + head[:600]
+    if mid:
+        state += "\n...\n" + mid[:600]
+    body = json.dumps({"state": state, "questions": {
         "triage": {"type": "choice", "instructions": "What analysis does this file deserve?",
-          "criteria": {"skip": "trivial/marker/generated", "structure-only": "deps/config; no LLM",
-                       "quick-summary": "docs worth one line", "deep-analysis": "core logic"}},
+          "criteria": {"skip": "minified/vendored bundles, generated files, binary/non-text assets",
+                       "structure-only": "pure manifest of dependencies/settings, no executable logic",
+                       "quick-summary": "natural-language prose/docs (any language) worth one line, not code",
+                       "deep-analysis": "contains executable logic: functions/classes implementing behavior"}},
+        # TODO(noul-gate): noul is saturated - 0.77-1.00 on ALL 10 calibration
+        # rows incl. dep lists (0.77) and a PNG (0.85); direction agrees with
+        # labels only 4/10.  Do NOT tune this question; redesign the gate
+        # after re-calibration (derive from triage prob mass, or reword to a
+        # calibratable scale).  Tracked for post-recalibration work.
         "thinking": {"type": "noul",
                      "instructions": "Does analysis need multi-step reasoning?"}}}).encode()
     laya_url = os.environ.get("UYP_LAYA_URL", "http://127.0.0.1:8901")
@@ -87,10 +103,34 @@ def brace_json(text: str):
     except json.JSONDecodeError:
         return None
 
-def rule_pretriage(rel: str, size: int) -> str | None:
-    """Zero-cost layer: extension/size rules decided before any model call."""
+# Images / archives / binaries / fonts: never worth an LLM call.
+SKIP_EXT = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".tif", ".tiff", ".heic", ".pdf",
+    ".zip", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar", ".tar", ".dmg", ".pkg", ".whl",
+    ".onnx", ".gguf", ".bin", ".dylib", ".so", ".a", ".o", ".exe", ".dll",
+    ".woff", ".woff2", ".ttf", ".otf",
+}
+
+def minified(head: str) -> bool:
+    """Minification heuristic: avg line length >300 chars over the first 40
+    lines -> machine-generated/minified bundle (calibration 2026-10-10:
+    Laya triaged force-graph.min.js as deep-analysis; dense code looks like
+    core logic to the model).  Also catches extension-less binaries, whose
+    decoded head has no newlines."""
+    if not head:
+        return False
+    lines = head.split("\n")[:40]
+    return sum(len(ln) for ln in lines) / max(len(lines), 1) > 300
+
+def rule_pretriage(rel: str, size: int, head: str = "") -> str | None:
+    """Zero-cost layer: extension/size/minification rules decided before any
+    model call."""
     ext = os.path.splitext(rel)[1].lower()
     if size == 0:
+        return "skip"
+    if rel.lower().endswith(".min.js") or ext in SKIP_EXT:
+        return "skip"  # vendored/binary: deterministic skip, no Laya call
+    if minified(head):
         return "skip"
     if ext in {".md", ".markdown"}:
         return None  # let Laya judge docs (known over-triage, calibrated later)
@@ -98,8 +138,6 @@ def rule_pretriage(rel: str, size: int) -> str | None:
         return None  # code -> Laya
     if ext in {".toml", ".yaml", ".yml", ".json", ".cfg", ".ini", ".lock", ".txt", ".sh"}:
         return "structure-only"
-    if ext in {".png", ".jpg", ".jpeg", ".gif", ".pdf", ".zip", ".gz", ".onnx", ".gguf", ".bin"}:
-        return "skip"
     return "structure-only"
 
 def structure_only_summary(content: str) -> dict:
@@ -166,16 +204,28 @@ def main():
     for f in files:
         rel, size = f["relpath"], f["size"]
         try:
+            # 2048B read for a 600-char window: slack for multibyte (CJK ~3B/char)
             head = api(a.host, token,
-                       f"/read?grant={a.grant}&relpath={rel}&length=1024", binary=True).decode("utf-8", "replace")
+                       f"/read?grant={a.grant}&relpath={rel}&length=2048", binary=True).decode("utf-8", "replace")
         except urllib.error.HTTPError as e:
             head = ""  # unreadable head (e.g. range cap) -> triage on metadata alone
             if e.code != 413:
                 raise
-        verdict = rule_pretriage(rel, size)
-        gate = 0.0
-        if verdict is None:
-            verdict, gate = laya_decide(head)
+        rule_verdict = rule_pretriage(rel, size, head)
+        verdict, gate = rule_verdict, 0.0
+        if rule_verdict is None:
+            # Mid-file sample via connector offset read: calibration showed
+            # head-only windows stop inside the import block.  413 (range
+            # cap) -> empty mid, triage proceeds on head alone.
+            try:
+                mid = api(a.host, token,
+                          f"/read?grant={a.grant}&relpath={rel}&offset={size // 2}&length=2048",
+                          binary=True).decode("utf-8", "replace")
+            except urllib.error.HTTPError as e:
+                if e.code != 413:
+                    raise
+                mid = ""
+            verdict, gate = laya_decide(head, mid)
         # 首扫铺底策略 (ADR-0001 分层): 全量 think:false 铺覆盖, gate 值照记;
         # deep 留给维护窗口的第二遍 (按 gate 挑 top 文件), 不在首扫烧 thinking。
         think = False
@@ -196,13 +246,13 @@ def main():
                     return None
                 raise
         if verdict == "skip":
-            stats["rule_skip" if gate == 0.0 and rel.startswith((".", "assets")) else "laya_skip"] += 1
+            stats["rule_skip" if rule_verdict is not None else "laya_skip"] += 1
         elif verdict == "structure-only":
             full = safe_read(rel, size, min(size, 262144))
             item["derived"] = structure_only_summary(full or "")
             if full is None:
                 item["derived"]["too_large"] = True
-            stats["rule_structure" if gate == 0.0 else "laya_structure"] += 1
+            stats["rule_structure" if rule_verdict is not None else "laya_structure"] += 1
         else:
             full = safe_read(rel, size, min(size, 262144))
             if full is None:
