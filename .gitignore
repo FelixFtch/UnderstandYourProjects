@@ -4,3 +4,4 @@ __pycache__/
 .DS_Store
 *.pyc
 services/indexer/vendor/understand-anything/node_modules/
+services/indexer/vendor/understand-anything/packages/dashboard/dist/
