@@ -76,6 +76,36 @@ opaque IDs and state only. Labels and source IDs are included only when a
 validated context's `sourceScopes` authorizes the connector. This prevents a
 second connector from becoming an accidental source discovery channel.
 
+## HomeHub grant revocation and audit
+
+- `POST /api/uyp/grants/{grant_id}/revoke` — body MUST be exactly
+  `{"reason": "<opaque_identifier_no_spaces>"}` (string, non-empty, <=256
+  chars, opaque-id regex; no spaces/slashes/`~`/`..`).
+  - 400 `revoke fields are invalid` = extra/missing keys; 400 `reason must
+    be an opaque identifier` = spaces/rejected chars.
+  - 403 `owner_session_required` unless caller is owner or the grant's
+    subject; 404 `grant_not_found`; re-revoke is idempotent
+    (`alreadyRevoked: true`, no new audit row).
+  - Success: `{status, grantId, revoked: true, grantEpoch, auditId}` — the
+    grant epoch bumps (live: 2->3), invalidating outstanding AccessContexts.
+- `GET /api/uyp/access-context/audit` — owner only; returns a LIST (max 200,
+  newest first): `{audit_id, schema_version, event_type, actor_member_id,
+  subject_member_id, grant_id, project_id, epoch, occurred_at}`; revoke rows
+  carry `event_type: "uyp.grant.revoke"`.
+- Live evidence: docs/P7_ACCEPTANCE_2026-10-10.md step 6 (revoke epoch 2->3
+  -> search sees "0 files indexed" -> re-grant epoch 4 restores).
+
+### Known spec deviations
+
+- `/api/health` `knowledgeItems` was context-gated but not scope-filtered
+  (still 119 after revocation) — fixed on branch `fix/p7-findings`
+  (`1bc41b9`): health now shares `scoped_items()` with search.
+- `sourceEpoch` echoed `analyzed_at`; now derived as sha256 over the sorted
+  manifest page (`1bc41b9`), still protocol-placeholder grade until the
+  Connector grows a real epoch field.
+- Worker order remains transitional (semantic -> UA); UA-first anchored
+  enrichment runs as a post-pass (anchored_enrich.py v3).
+
 ## Jetson Understand Anything bridge
 
 `services/indexer/src/ua_bridge.py` is the first real UA adapter. It accepts a
