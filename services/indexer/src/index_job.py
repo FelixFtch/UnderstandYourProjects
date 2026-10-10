@@ -582,10 +582,19 @@ def run_job(
         return _record_failure(store, job_id, job, phase="failed", reason="manifest_project_mismatch")
     manifest_epoch = manifest.get("source_epoch") or derive_source_epoch(manifest)
     if job.get("sourceEpoch") and str(job["sourceEpoch"]) != str(manifest_epoch or ""):
-        # The source changed between discovery and authorization.  Requeueing
-        # requires a fresh manifest and is safer than indexing a stale grant.
-        store.event(job_id, "retry_wait", {"reason": "source_epoch_changed", "manifestEpoch": manifest_epoch})
-        return store.get(job_id)
+        # The source changed between attempts (live-repo reality: agents keep
+        # editing the Mac tree, so drift is perpetual - 2026-10-10 field
+        # livelock: every resume saw drift -> retry_wait -> drift...).
+        # Full-pass semantics: ACCEPT the new epoch and continue - the full
+        # scan is a snapshot-at-acceptance; per-file changes flow through the
+        # incremental wave (P8) which exists precisely for this. The new
+        # epoch is pinned in the authorized event below, so the next drift
+        # comparison uses the accepted lineage.
+        store.event(job_id, "resumed", {"reason": "source_epoch_rebased",
+                                        "oldEpoch": job.get("sourceEpoch"),
+                                        "manifestEpoch": manifest_epoch})
+        job["sourceEpoch"] = manifest_epoch
+        store.update(job_id, sourceEpoch=manifest_epoch)
 
     _observe_connector(store, job, context, manifest, connector_host, source_epoch=manifest_epoch)
 

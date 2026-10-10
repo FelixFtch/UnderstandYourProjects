@@ -185,7 +185,9 @@ class IndexJobTests(unittest.TestCase):
         registry = connector_registry.load_registry(self.root / "state" / "connectors" / "registry.json")
         self.assertEqual(registry["connectors"][0]["sourceEpoch"], epoch)
 
-    def test_captured_epoch_requeues_when_source_drifts(self):
+    def test_captured_epoch_rebases_when_source_drifts(self):
+        """2026-10-10 现场活锁修复: 漂移不再 retry_wait(活仓库漂移永续->永续等待),
+        而是 rebase 到新 epoch 继续跑(全量=接受时快照, 变更走 P8 增量波)。"""
         first = {"root_name": "demo", "total": 1, "files": [
             {"relpath": "a.py", "size": 10, "mtime": 100},
         ]}
@@ -198,8 +200,12 @@ class IndexJobTests(unittest.TestCase):
                 self.store, job["jobId"], context=access_context(), connector_host="http://connector",
                 token_file=str(self.token), ua_root=str(self.root / "ua"), output_root=str(self.root / "output"),
             )
-        self.assertEqual(result["phase"], "retry_wait")
-        self.assertEqual(result["reason"], "source_epoch_changed")
+        # rebase 后继续执行(worker 是假的会失败, 但 phase 必须不是 retry_wait,
+        # 且 durable 记录的 sourceEpoch 已更新为新值)
+        self.assertNotEqual(result["reason"], "source_epoch_changed")
+        record = self.store.get(job["jobId"])
+        self.assertEqual(str(record.get("sourceEpoch")),
+                         str(index_job.derive_source_epoch(second)))
 
     def test_derive_source_epoch_is_deterministic_and_fail_closed(self):
         a = {"total": 2, "files": [
