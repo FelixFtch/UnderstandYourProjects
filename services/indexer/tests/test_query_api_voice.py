@@ -1,10 +1,13 @@
-"""Voice handshake contract for the query API (2026-10-10).
+"""Voice handshake contract for the query API (2026-10-10, per-member pass).
 
 The box's agent-runtime voice chain calls ``POST /api/knowledge/search``
 on loopback with ``X-Agent-Member`` identity headers and no Bearer - it
 must never hold this service's credentials.  The service therefore acts
 as the box for those calls (``UYP_HOMEHUB_ACCESS_CONTEXT_URL`` +
-``UYP_HOMEHUB_TOKEN_FILE``, exactly like the indexer worker), while a
+``UYP_HOMEHUB_TOKEN_FILE``, exactly like the indexer worker) and asks
+HomeHub to resolve the SPEAKING MEMBER's own grant scopes: a member with
+a grant is served under her scopes, a member without one is honestly
+denied (403), and the box context is never a fallback.  A
 caller-presented Bearer resolves that caller's own projection, and a
 credential-less, header-less request keeps failing closed (503).
 
@@ -24,6 +27,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
@@ -44,11 +48,31 @@ def box_context() -> dict:
     }
 
 
+def member_context(member: str, projects=("demo-project",)) -> dict:
+    """A HomeHub member-scoped projection: principalId IS the member."""
+    return {
+        "principalId": member,
+        "sessionId": f"session-{member}",
+        "jarvisNodeId": "jetson-1",
+        "projectScopes": list(projects),
+        "sourceScopes": [f"connector:{project}" for project in projects],
+        "grantEpoch": f"epoch-{member}",
+        "policyDigest": f"sha256:policy-{member}",
+        "expiresAt": "2099-01-01T00:00:00Z",
+        "auditId": f"audit-{member}",
+    }
+
+
 class _FakeHomeHubHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
-        self.server.seen_authorization.append(self.headers.get("Authorization"))
+        self.server.seen_requests.append({
+            "path": self.path,
+            "authorization": self.headers.get("Authorization"),
+        })
+        member = (parse_qs(urlparse(self.path).query).get("member") or [None])[0]
+        payload = self.server.context_for(member)
         body = json.dumps(
-            {"status": "ok", "accessContext": self.server.payload}).encode("utf-8")
+            {"status": "ok", "accessContext": payload}).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -60,12 +84,23 @@ class _FakeHomeHubHandler(BaseHTTPRequestHandler):
 
 
 class FakeHomeHub(ThreadingHTTPServer):
-    """Loopback stand-in for HomeHub's /api/uyp/access-context route."""
+    """Loopback stand-in for HomeHub's /api/uyp/access-context route.
+
+    Mirrors the HomeHub contract: a ``member`` query parameter resolves
+    THAT member's projection; without one the caller (the box service
+    bearer) gets its own context.
+    """
 
     def __init__(self) -> None:
         super().__init__(("127.0.0.1", 0), _FakeHomeHubHandler)
-        self.payload = box_context()
-        self.seen_authorization: list = []
+        self.box_payload = box_context()
+        self.member_payloads: dict = {}
+        self.seen_requests: list = []
+
+    def context_for(self, member):
+        if member is None:
+            return self.box_payload
+        return self.member_payloads.get(member, member_context(member))
 
 
 class QueryApiVoiceHandshakeTests(unittest.TestCase):
@@ -143,24 +178,84 @@ class QueryApiVoiceHandshakeTests(unittest.TestCase):
             "http://127.0.0.1:%d/api/uyp/access-context" % homehub.server_address[1])
         return homehub
 
-    def test_voice_member_header_without_bearer_serves_box_context(self):
-        homehub = self._start_homehub()
+    def _configure_box_token(self) -> None:
         token_file = Path(self.tmp.name) / "homehub.token"
         token_file.write_text("box-token\n", encoding="utf-8")
         os.environ["UYP_HOMEHUB_TOKEN_FILE"] = str(token_file)
+
+    def test_voice_member_header_resolves_member_scoped_context(self):
+        homehub = self._start_homehub()
+        self._configure_box_token()
         status, body = self._post_search(
             {"query": "哪里实现了委托签名"}, headers={"X-Agent-Member": "felix"})
         self.assertEqual(status, 200)
         self.assertTrue(body["ok"])
         self.assertIn("answer", body)
         self.assertEqual(body["sources"][0]["file"], "src/main.py")
-        self.assertEqual(body["access"]["grantEpoch"], "epoch-1")
-        # The SERVICE acted as the box: HomeHub saw the box-token bearer,
-        # and the box context's projectScopes scoped the searched items.
-        self.assertEqual(homehub.seen_authorization, ["Bearer box-token"])
+        self.assertEqual(body["access"]["grantEpoch"], "epoch-felix")
+        # The SERVICE acted as the box (its own bearer) but selected the
+        # SPEAKING MEMBER: HomeHub saw the box bearer plus member=felix,
+        # and felix's member context scoped the searched items.
+        self.assertEqual(len(homehub.seen_requests), 1)
+        self.assertIn("member=felix", homehub.seen_requests[0]["path"])
+        self.assertEqual(homehub.seen_requests[0]["authorization"], "Bearer box-token")
         self.assertEqual(len(self.search_calls), 1)
         self.assertEqual(self.search_calls[0]["question"], "哪里实现了委托签名")
         self.assertEqual(len(self.search_calls[0]["items"]), 1)
+
+    def test_voice_member_scoping_hides_projects_the_member_lacks(self):
+        homehub = self._start_homehub()
+        homehub.member_payloads["ly"] = member_context("ly", projects=("other-project",))
+        self._configure_box_token()
+        status, body = self._post_search(
+            {"query": "哪里实现了委托签名"}, headers={"X-Agent-Member": "ly"})
+        # ly is authorized - for a project this box does not hold.  Her
+        # scopes filter the store to nothing; the box's demo-project
+        # context must NOT widen the search back.
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["sources"], [])
+        self.assertEqual(self.search_calls[0]["items"], [])
+
+    def test_voice_member_without_grants_is_honestly_denied(self):
+        homehub = self._start_homehub()
+        homehub.member_payloads["ly"] = member_context("ly", projects=())
+        self._configure_box_token()
+        status, body = self._post_search(
+            {"query": "哪里实现了委托签名"}, headers={"X-Agent-Member": "ly"})
+        # HomeHub answered with a valid EMPTY context: that is this
+        # member's honest denial, never a fallback to the box scopes.
+        self.assertEqual(status, 403)
+        self.assertEqual(body["error"], "member_access_denied")
+        self.assertEqual(self.search_calls, [])
+        self.assertIn("member=ly", homehub.seen_requests[0]["path"])
+
+    def test_voice_member_projection_for_another_principal_is_denied(self):
+        # The bug class this pass closes: HomeHub answering a member
+        # request with the BOX's own context (any principal other than the
+        # requested member) must deny, never serve the box scopes.
+        homehub = self._start_homehub()
+        homehub.member_payloads["ly"] = box_context()
+        self._configure_box_token()
+        status, body = self._post_search(
+            {"query": "哪里实现了委托签名"}, headers={"X-Agent-Member": "ly"})
+        self.assertEqual(status, 403)
+        self.assertEqual(body["error"], "member_access_denied")
+        self.assertEqual(self.search_calls, [])
+
+    def test_no_member_header_keeps_today_box_service_path(self):
+        homehub = self._start_homehub()
+        self._configure_box_token()
+        status, body = self._post_search({"query": "哪里实现了委托签名"})
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["sources"][0]["file"], "src/main.py")
+        self.assertEqual(body["access"]["grantEpoch"], "epoch-1")
+        self.assertEqual(len(self.search_calls[0]["items"]), 1)
+        # No member header: HomeHub saw the plain box request, no selector.
+        self.assertEqual(len(homehub.seen_requests), 1)
+        self.assertNotIn("member=", homehub.seen_requests[0]["path"])
+        self.assertEqual(homehub.seen_requests[0]["authorization"], "Bearer box-token")
 
     def test_no_bearer_no_header_fails_closed_503(self):
         # No Bearer, no member header, nothing configured: today's
@@ -178,7 +273,8 @@ class QueryApiVoiceHandshakeTests(unittest.TestCase):
             headers={"Authorization": "Bearer caller-session-token"})
         self.assertEqual(status, 200)
         self.assertTrue(body["ok"])
-        self.assertEqual(homehub.seen_authorization, ["Bearer caller-session-token"])
+        self.assertEqual(homehub.seen_requests[0]["authorization"], "Bearer caller-session-token")
+        self.assertNotIn("member=", homehub.seen_requests[0]["path"])
         self.assertEqual(len(self.search_calls[0]["items"]), 1)
 
     def test_bearer_failure_never_falls_back_to_box_context(self):
@@ -198,53 +294,78 @@ class QueryApiVoiceHandshakeTests(unittest.TestCase):
 
 class RequestContextResolutionTests(unittest.TestCase):
     """Unit pins on the resolution order with mocked loads: which tier a
-    request takes, including the loopback-bind guard."""
+    request takes, including the loopback-bind guard, the member denial
+    signal, and the structural no-fallback guarantee."""
 
     def test_bearer_takes_the_caller_token_tier(self):
         with patch.object(query_api, "load_homehub_context_for_token",
                           return_value={"ctx": "caller"}) as caller_tier, \
              patch.object(query_api, "load_homehub_context",
                           return_value={"ctx": "box"}) as box_tier, \
+             patch.object(query_api, "load_homehub_context_for_member",
+                          return_value={"ctx": "member"}) as member_tier, \
              patch.object(query_api, "load_access_context",
                           return_value={"ctx": "env"}) as env_tier:
             resolved = query_api.load_request_context(
                 {"Authorization": "Bearer tok"}, loopback_voice=True)
-            self.assertEqual(resolved, {"ctx": "caller"})
-            caller_tier.assert_called_once_with("tok")
-            box_tier.assert_not_called()
-            env_tier.assert_not_called()
+        self.assertEqual(resolved, ({"ctx": "caller"}, None))
+        caller_tier.assert_called_once_with("tok")
+        box_tier.assert_not_called()
+        member_tier.assert_not_called()
+        env_tier.assert_not_called()
 
-    def test_member_header_takes_box_tier_only_on_loopback(self):
+    def test_member_header_takes_member_tier_only_on_loopback(self):
         with patch.object(query_api, "load_homehub_context_for_token",
                           return_value=None) as caller_tier, \
              patch.object(query_api, "load_homehub_context",
                           return_value={"ctx": "box"}) as box_tier, \
+             patch.object(query_api, "load_homehub_context_for_member",
+                          return_value={"ctx": "member"}) as member_tier, \
              patch.object(query_api, "load_access_context",
                           return_value={"ctx": "env"}) as env_tier:
             resolved = query_api.load_request_context(
                 {"X-Agent-Member": "felix"}, loopback_voice=True)
-            self.assertEqual(resolved, {"ctx": "box"})
-            box_tier.assert_called_once()
+            self.assertEqual(resolved, ({"ctx": "member"}, None))
+            member_tier.assert_called_once_with("felix")
+            # The box tier is never consulted on the member path: there is
+            # no fallback if the member resolution fails.
+            box_tier.assert_not_called()
             # Guard off (a --lan bind): the voice tier is NOT admitted;
             # the request keeps today's service-level path.
             resolved = query_api.load_request_context(
                 {"X-Agent-Member": "felix"}, loopback_voice=False)
-            self.assertEqual(resolved, {"ctx": "env"})
+            self.assertEqual(resolved, ({"ctx": "env"}, None))
             env_tier.assert_called_once()
             caller_tier.assert_not_called()
+
+    def test_member_denial_is_reported_not_swallowed(self):
+        # The member tier failed: the denial names the member so the
+        # caller answers 403 honestly, and the box context stays untouched.
+        with patch.object(query_api, "load_homehub_context_for_member",
+                          return_value=None) as member_tier, \
+             patch.object(query_api, "load_homehub_context",
+                          return_value={"ctx": "box"}) as box_tier:
+            resolved = query_api.load_request_context(
+                {"X-Agent-Member": "ly"}, loopback_voice=True)
+        self.assertEqual(resolved, (None, "ly"))
+        member_tier.assert_called_once_with("ly")
+        box_tier.assert_not_called()
 
     def test_plain_request_keeps_today_service_path(self):
         with patch.object(query_api, "load_homehub_context_for_token",
                           return_value=None) as caller_tier, \
              patch.object(query_api, "load_homehub_context",
                           return_value={"ctx": "box"}) as box_tier, \
+             patch.object(query_api, "load_homehub_context_for_member",
+                          return_value={"ctx": "member"}) as member_tier, \
              patch.object(query_api, "load_access_context",
                           return_value={"ctx": "env"}) as env_tier:
             resolved = query_api.load_request_context({}, loopback_voice=True)
-            self.assertEqual(resolved, {"ctx": "env"})
-            env_tier.assert_called_once()
-            box_tier.assert_not_called()
-            caller_tier.assert_not_called()
+        self.assertEqual(resolved, ({"ctx": "env"}, None))
+        env_tier.assert_called_once()
+        box_tier.assert_not_called()
+        member_tier.assert_not_called()
+        caller_tier.assert_not_called()
 
 
 if __name__ == "__main__":

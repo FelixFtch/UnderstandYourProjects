@@ -31,6 +31,7 @@ from knowledge_search import answer as search_answer, load_items
 from connector_registry import load_registry, public_projection, registry_health
 from homehub_adapter import (
     load_context as load_homehub_context,
+    load_context_for_member as load_homehub_context_for_member,
     load_context_for_token as load_homehub_context_for_token,
 )
 
@@ -92,28 +93,35 @@ def load_access_context() -> dict | None:
     return load_homehub_context()
 
 
-def load_request_context(headers, *, loopback_voice: bool = False) -> dict | None:
+def load_request_context(headers, *, loopback_voice: bool = False) -> tuple[dict | None, str | None]:
     """Per-request HomeHub context resolution (voice handshake, 2026-10-10).
+
+    Returns ``(context, denied_member)``: ``context`` is the validated
+    HomeHub projection or ``None``; ``denied_member`` names the loopback
+    voice member whose per-member resolution was DENIED (only ever set by
+    the member tier), so the caller can answer with an honest 403 in that
+    member's name instead of a generic 503.
 
     Resolution order for ``POST /api/knowledge/search``:
 
     (a) ``Authorization: Bearer <token>`` - the caller presents its own
-        HomeHub Companion bearer (a Studio session; the future per-member
-        voice pass).  The service resolves THAT caller's projection over
-        the same approved transport and strict validation as every other
-        path (``homehub_adapter``).  Fail closed: a request that presented
-        credentials never falls back to the box context.
+        HomeHub Companion bearer (a Studio session).  The service resolves
+        THAT caller's projection over the same approved transport and
+        strict validation as every other path (``homehub_adapter``).
+        Fail closed: a request that presented credentials never falls
+        back to the box context.
     (b) loopback-voice mode - no Bearer, but ``X-Agent-Member`` is present:
         the voice runtime (the box's agent-runtime) must never hold this
-        service's credentials, so the SERVICE acts as the box, exactly
-        like the indexer worker does, loading the box projection through
-        ``UYP_HOMEHUB_ACCESS_CONTEXT_URL`` + ``UYP_HOMEHUB_TOKEN_FILE``
-        (standard env names, no new ones).  The fetched box context scopes
-        the search by its ``projectScopes``.  The member header is an
-        identity HINT only, never an authority: per-MEMBER enforcement
-        (HomeHub resolving the speaking member to her own grant scopes)
-        is a TODO for the future per-member pass - until then any member
-        the box grant covers is served under the box scopes.
+        service's credentials, so the SERVICE acts as the box - it
+        presents its own service bearer through ``UYP_HOMEHUB_ACCESS_CONTEXT_URL``
+        + ``UYP_HOMEHUB_TOKEN_FILE`` (standard env names, no new ones) and
+        asks HomeHub to resolve the SPEAKING MEMBER's grant scopes
+        (``load_homehub_context_for_member``).  Per-member enforcement:
+        the member header selects whose grants scope the search.  A
+        member with no grant, an unknown member, or a HomeHub projection
+        that speaks for any other principal (including the box itself) is
+        an honest denial - NEVER a fallback to the box context, which was
+        the bug where the owner's grant served every member.
         ``loopback_voice`` is set ONLY by ``main()`` for a loopback bind:
         header-asserted voice identity must never be admitted on a
         ``--lan`` bind (this adds no network exposure).
@@ -123,10 +131,12 @@ def load_request_context(headers, *, loopback_voice: bool = False) -> dict | Non
     """
     auth = str(headers.get("Authorization") or "")
     if auth[:7].lower() == "bearer " and auth[7:].strip():
-        return load_homehub_context_for_token(auth[7:])
-    if str(headers.get("X-Agent-Member") or "").strip() and loopback_voice:
-        return load_homehub_context()
-    return load_access_context()
+        return load_homehub_context_for_token(auth[7:]), None
+    member = str(headers.get("X-Agent-Member") or "").strip()
+    if member and loopback_voice:
+        context = load_homehub_context_for_member(member)
+        return context, (None if context is not None else member)
+    return load_access_context(), None
 
 
 def access_context_valid(context: dict) -> bool:
@@ -570,15 +580,25 @@ class QueryHandler(BaseHTTPRequestHandler):
         if parsed.path != "/api/knowledge/search":
             self.json_response({"ok": False, "error": "not_found"}, 404, audit)
             return
-        # Voice handshake (2026-10-10): per-request resolution - caller
-        # Bearer, loopback X-Agent-Member voice mode, or today's
-        # service-level env/file path.  The loopback guard flag is set by
-        # main() only for a loopback bind (fail closed otherwise).
-        context = load_request_context(
+        # Voice handshake (2026-10-10), per-member pass: per-request
+        # resolution - caller Bearer, loopback X-Agent-Member voice mode,
+        # or today's service-level env/file path.  The loopback guard flag
+        # is set by main() only for a loopback bind (fail closed
+        # otherwise).  A voice member whose member-scoped resolution was
+        # denied gets an honest 403 in their name - never the box context,
+        # never a generic 503 that hides WHO was denied.
+        context, denied_member = load_request_context(
             self.headers,
             loopback_voice=getattr(self.server, "loopback_voice", False),
         )
         if context is None:
+            if denied_member:
+                self.json_response({
+                    "ok": False,
+                    "error": "member_access_denied",
+                    "message": "HomeHub has no active project grant for this member; voice search is denied for them.",
+                }, 403, audit)
+                return
             self.json_response({"ok": False, "error": "access_context_unavailable", "message": "HomeHub must provide an AccessContext before project knowledge can be searched."}, 503, audit)
             return
         question = str(payload.get("query", "")).strip()
@@ -603,7 +623,7 @@ def main() -> None:
     host = "0.0.0.0" if args.lan else args.host
     server = ThreadingHTTPServer((host, args.port), QueryHandler)
     # Loopback-voice handshake guard (2026-10-10): the X-Agent-Member
-    # fallback in load_request_context is valid ONLY while this API is
+    # voice tier in load_request_context is valid ONLY while this API is
     # loopback-bound - a --lan deployment must never admit header-asserted
     # voice identity without the approved transport in front of it.
     server.loopback_voice = host in {"127.0.0.1", "localhost", "::1"}

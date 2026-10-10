@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Mapping
@@ -121,14 +122,30 @@ def _load_file(path: str) -> dict[str, Any] | None:
         return None
 
 
+def _member_url(url: str, member: str) -> str:
+    """Append the member selector to the approved access-context URL.
+
+    The selector is a subject hint for HomeHub's per-member issuance; the
+    credential presented is unchanged.  An existing ``member`` parameter is
+    replaced, never duplicated, so a configured URL cannot smuggle in a
+    different subject.
+    """
+    parts = urllib.parse.urlsplit(url)
+    query = [(key, value) for key, value in
+             urllib.parse.parse_qsl(parts.query, keep_blank_values=True) if key != "member"]
+    query.append(("member", member))
+    return urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(query)))
+
+
 def _load_url(url: str, token_file: str | None = None,
-              token: str | None = None) -> dict[str, Any] | None:
+              token: str | None = None, member: str | None = None) -> dict[str, Any] | None:
     """Read a HomeHub projection over an approved local transport.
 
     HomeHub remains the issuer and policy authority.  UYP only sends a
     bearer it was handed (the service token file, or a caller-presented
     token) and validates the returned projection; it never exchanges,
-    mints, or refreshes credentials.
+    mints, or refreshes credentials.  ``member`` selects WHOSE grants
+    HomeHub projects; it never changes which credential is presented.
     """
     try:
         headers = {"Accept": "application/json"}
@@ -142,7 +159,8 @@ def _load_url(url: str, token_file: str | None = None,
                 if not token:
                     return None
                 headers["Authorization"] = f"Bearer {token}"
-        request = urllib.request.Request(url, headers=headers, method="GET")
+        request = urllib.request.Request(
+            _member_url(url, member) if member else url, headers=headers, method="GET")
         with urllib.request.urlopen(request, timeout=3) as response:
             return validate_context(_unwrap_response(json.loads(response.read())))
     except (OSError, urllib.error.URLError, json.JSONDecodeError, AccessContextError, TypeError, ValueError):
@@ -183,6 +201,34 @@ def load_context_for_token(token: str) -> dict[str, Any] | None:
     if not value or not url:
         return None
     return _load_url(url, token=value)
+
+
+def load_context_for_member(member: str) -> dict[str, Any] | None:
+    """Resolve a member-scoped projection with this service's own credential.
+
+    The Agent Box speaks for a member it authenticated out of band (the
+    loopback voice chain carries no bearer): the service presents its own
+    HomeHub bearer - the same token file the indexer worker uses - and asks
+    HomeHub to resolve THAT member's grant scopes.  The response must speak
+    for exactly the requested member: a projection for any other principal,
+    including the box's own context (the failure mode where the owner's
+    grant served every member), is a denial.  A valid member context with
+    no project scopes is a denial too.  This never falls back to the
+    service-level box context: a voice member resolves to her own scopes or
+    to nothing.
+    """
+    subject = str(member or "").strip()
+    url = os.environ.get("UYP_HOMEHUB_ACCESS_CONTEXT_URL")
+    if not subject or not url:
+        return None
+    context = _load_url(url, member=subject)
+    if context is None:
+        return None
+    if str(context.get("principalId") or "").strip() != subject:
+        return None
+    if not context.get("projectScopes"):
+        return None
+    return context
 
 
 def scope_allows(context: Mapping[str, Any], project_id: str, source_id: str) -> bool:

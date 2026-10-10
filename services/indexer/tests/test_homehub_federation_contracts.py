@@ -21,6 +21,7 @@ from federation_protocol import (  # noqa: E402
 from homehub_adapter import (  # noqa: E402
     AccessContextError,
     load_context,
+    load_context_for_member,
     public_projection,
     scope_allows,
     validate_context,
@@ -159,6 +160,88 @@ class HomeHubContextTests(unittest.TestCase):
             ), patch("homehub_adapter.urllib.request.urlopen", return_value=Response()):
                 checked = load_context()
             self.assertEqual(checked["grantEpoch"], "remote-epoch")
+
+
+class MemberContextResolutionTests(unittest.TestCase):
+    """load_context_for_member: the box credential resolves the member's
+    own projection, or nothing - never the box context."""
+
+    def member_context(self, member, projects=("project-a",)):
+        return {
+            "principalId": member,
+            "sessionId": "s1",
+            "jarvisNodeId": "jetson-1",
+            "projectScopes": list(projects),
+            "sourceScopes": [f"connector:{project}" for project in projects],
+            "grantEpoch": "epoch-1",
+            "policyDigest": "sha256:policy",
+            "expiresAt": future(),
+            "auditId": "audit-1",
+        }
+
+    def _resolve(self, payload, member="ly"):
+        body = json.dumps({"status": "ok", "accessContext": payload}).encode("utf-8")
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return body
+
+        with tempfile.TemporaryDirectory() as directory:
+            token_file = Path(directory) / "homehub.token"
+            token_file.write_text("box-token\n", encoding="utf-8")
+            with patch.dict(
+                "os.environ",
+                {
+                    "UYP_HOMEHUB_ACCESS_CONTEXT_URL": "http://127.0.0.1:5121/api/uyp/access-context",
+                    "UYP_HOMEHUB_TOKEN_FILE": str(token_file),
+                    "UYP_ACCESS_CONTEXT_FILE": "",
+                },
+                clear=False,
+            ), patch("homehub_adapter.urllib.request.urlopen", return_value=Response()) as opened:
+                result = load_context_for_member(member)
+            request = opened.call_args.args[0]
+        return result, request
+
+    def test_member_context_sends_box_bearer_and_member_selector(self):
+        result, request = self._resolve(self.member_context("ly"))
+        self.assertEqual(result["principalId"], "ly")
+        self.assertEqual(result["projectScopes"], ["project-a"])
+        # The SERVICE bearer is presented unchanged; only the subject
+        # selector travels with the request.
+        self.assertTrue(request.full_url.endswith("member=ly"))
+        self.assertEqual(request.headers.get("Authorization"), "Bearer box-token")
+
+    def test_member_context_for_another_principal_is_denied(self):
+        # HomeHub answering a member request with the BOX's own context
+        # (or any other principal) is the bug class: it must deny here.
+        result, _ = self._resolve(self.member_context("jetson-box"))
+        self.assertIsNone(result)
+
+    def test_member_context_with_empty_scopes_is_denied(self):
+        # A valid projection with no project scopes is this member's
+        # honest denial, never a fallback to the service-level context.
+        result, _ = self._resolve(self.member_context("ly", projects=()))
+        self.assertIsNone(result)
+
+    def test_member_context_requires_url_and_member(self):
+        with patch.dict(
+            "os.environ", {"UYP_HOMEHUB_ACCESS_CONTEXT_URL": ""}, clear=False
+        ), patch("homehub_adapter.urllib.request.urlopen") as opened:
+            self.assertIsNone(load_context_for_member("ly"))
+            opened.assert_not_called()
+        with patch.dict(
+            "os.environ",
+            {"UYP_HOMEHUB_ACCESS_CONTEXT_URL": "http://127.0.0.1:5121/api/uyp/access-context"},
+            clear=False,
+        ), patch("homehub_adapter.urllib.request.urlopen") as opened:
+            self.assertIsNone(load_context_for_member("   "))
+            opened.assert_not_called()
 
 
 class ConnectorRegistryContractTests(unittest.TestCase):
