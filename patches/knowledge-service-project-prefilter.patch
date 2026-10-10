@@ -1,0 +1,146 @@
+# knowledge-service: project_knowledge brain registration + read-time prefilter
+# Origin: UnderstandAnyProjects_MIT feat/gbrain-launch-prep (launch-prep 2026-10-10)
+# Target: jetson ~/jarvis/gbrain/knowledge-service.py (knowledge-service v3, 588 lines,
+#         md5 82fafe72b3e39562b555dac350e5a266, pulled 2026-10-10)
+# Apply:  scp this file to the Jetson, then:
+#           cd ~/jarvis/gbrain && cp knowledge-service.py knowledge-service.py.bak-uyp && \
+#           git apply knowledge-service-project-prefilter.patch
+#         (works with plain `git apply` from the directory holding the file;
+#          `git apply --check` first if you prefer a dry run)
+# Rollback: restore the .bak-uyp copy and restart knowledge-service.service.
+#
+# What this changes and why (details also inline in the hunks):
+#  1. ALL_BRAINS gains "project_knowledge" ENV-GATED, DEFAULT OFF
+#     (KNOWLEDGE_PROJECT_BRAIN=1). Default behavior stays byte-identical.
+#     Listing the brain alone exposes nothing: get_accessible_brains() still
+#     requires a non-revoked brain_grants row.
+#  2. New project_scope_filter(): project_knowledge pages (mirrored project
+#     KnowledgeVersions from the UYP publisher) are dropped from EVERY
+#     response unless the request itself carries "project" + "grant_epoch"
+#     params matching the slug namespace exactly, and revoked epochs
+#     (uyp_revoked tombstone) are always dropped. Fail-closed: mismatch =
+#     excluded, never an error, so the filter cannot be an oracle.
+#  3. The filter is wired into /query and both /synthesize retrieval paths.
+
+diff --git a/knowledge-service.py b/knowledge-service.py
+index 8ddf49d..f6a60a4 100644
+--- a/knowledge-service.py
++++ b/knowledge-service.py
+@@ -36,6 +36,18 @@ ALL_BRAINS = [
+     "personal_felix", "personal_mom", "personal_ly",
+     "family", "public", "external",
+ ]
++# UYP project knowledge (2026-10-10 launch-prep): project_knowledge is a
++# SEPARATE brain for mirrored project KnowledgeVersions, published by the
++# UnderstandAnyProjects indexer (gbrain_publisher.py) under
++# project_knowledge/<project>/<grant_epoch>/<relpath>.  Registration is
++# ENV-GATED and DEFAULT OFF: until KNOWLEDGE_PROJECT_BRAIN=1 is set in the
++# systemd unit, this service behaves byte-identically.  Listing the name
++# alone exposes nothing anyway -- get_accessible_brains() below still
++# filters every brain through non-revoked brain_grants rows, and
++# project_scope_filter() (below) drops project blocks from every response
++# unless the request itself carries a matching project + grant epoch.
++if os.environ.get("KNOWLEDGE_PROJECT_BRAIN", "") == "1":
++    ALL_BRAINS.append("project_knowledge")
+ 
+ 
+ # ── Dynamic permission lookup (from brain_grants table) ──
+@@ -372,6 +384,48 @@ def subject_scope_filter(blocks: list[dict], member: str, role: str) -> list[dic
+     return kept
+ 
+ 
++# ── UYP project-knowledge prefilter (launch-prep 2026-10-10) ──
++# project_knowledge pages are mirrored project KnowledgeVersions, not
++# household memories.  Two isolation rules, both enforced READ-TIME and
++# FAIL-CLOSED:
++#   1. A request with no "project"/"grant_epoch" params (every legacy
++#      caller: voice, family chat) sees ZERO project_knowledge blocks.
++#   2. A request that does carry them sees only blocks whose slug lives
++#      under project_knowledge/<that project>/<that grant epoch>/, minus
++#      anything carrying a revoked marker: the uyp_revoked: true tombstone
++#      frontmatter the publisher writes on revoke, its body phrase (checked
++#      too because chunk_text may or may not include frontmatter), and any
++#      page carrying the marker itself.
++# Ambiguity resolves to EXCLUSION, never to an error: a mismatched or
++# half-specified request just gets empty results, so this filter cannot be
++# used as an oracle for which projects or grant epochs exist.
++def project_scope_filter(blocks: list[dict], params: dict) -> list[dict]:
++    project = str((params or {}).get("project", "")).strip()
++    epoch = str((params or {}).get("grant_epoch", "")).strip()
++    if not (project and epoch):
++        # No project scope on the request: drop every project block.  This
++        # is the default path for all existing callers.
++        return [b for b in blocks
++                if not str(b.get("source", "")).startswith("project_knowledge/")]
++    kept: list[dict] = []
++    for b in blocks:
++        source = str(b.get("source", ""))
++        if not source.startswith("project_knowledge/"):
++            kept.append(b)  # family/personal/public blocks: unchanged
++            continue
++        parts = source.split("/")
++        # expected shape: project_knowledge/<project>/<grant_epoch>/<relpath...>
++        if len(parts) < 4 or parts[1] != project or parts[2] != epoch:
++            continue  # different project or grant epoch: excluded
++        text = str(b.get("text", ""))
++        if ("uyp_revoked: true" in text
++                or "uyp_revoked: true" in text.replace('"', "")
++                or "grant epoch behind these pages was revoked" in text):
++            continue  # revoked epoch's tombstone or a marked page: excluded
++        kept.append(b)
++    return kept
++
++
+ def multi_brain_search(question: str, member: str, role: str) -> tuple[list[dict], list[str]]:
+     accessible = get_accessible_brains(member, role)
+     with ThreadPoolExecutor(max_workers=max(len(accessible), 1)) as pool:
+@@ -385,7 +439,7 @@ def multi_brain_search(question: str, member: str, role: str) -> tuple[list[dict
+ 
+ 
+ def _deep_retrieve(question: str, member: str, role: str,
+-                   per_brain: int = 8) -> list[dict]:
++                   per_brain: int = 8, params: dict | None = None) -> list[dict]:
+     """Wide retrieval for deep answers: more chunks per brain than the
+     fast path, echo-filtered, best-first across the speaker's brains."""
+     accessible = get_accessible_brains(member, role)
+@@ -401,6 +455,9 @@ def _deep_retrieve(question: str, member: str, role: str,
+     # Owner ruling 2026-09-29: same cross-member medical filter on the
+     # deep/synthesize path as on /query, so answers cannot leak either.
+     all_blocks = subject_scope_filter(all_blocks[:14], member, role)
++    # UYP project prefilter on the deep path, same fail-closed rules as
++    # /query (see project_scope_filter).
++    all_blocks = project_scope_filter(all_blocks, params or {})
+     return all_blocks
+ 
+ 
+@@ -477,6 +534,10 @@ class Handler(BaseHTTPRequestHandler):
+         t0 = time.time()
+         blocks, searched = multi_brain_search(question, member, role)
+         blocks = subject_scope_filter(blocks, member, role)  # owner ruling 2026-09-29
++        # UYP project prefilter (fail-closed; see project_scope_filter):
++        # project_knowledge blocks survive only when the request itself
++        # carries a matching project + grant_epoch.
++        blocks = project_scope_filter(blocks, body)
+         latency = round((time.time() - t0) * 1000)
+         self._json({
+             "blocks": blocks, "brains_searched": searched,
+@@ -499,6 +560,10 @@ class Handler(BaseHTTPRequestHandler):
+ 
+         # pick the speaker's hottest brain for this question (hybrid query)
+         blocks, _searched = multi_brain_search(question, member, role)
++        # Same project prefilter on the synthesize paths, so a deep answer
++        # cannot cite project evidence the requester's params do not cover
++        # (and legacy callers see none at all).
++        blocks = project_scope_filter(blocks, body)
+         top_brain = blocks[0]["brain"] if blocks else "public"
+ 
+         # Self-composed deep answer (2026-09-20): retrieve a WIDE net of
+@@ -508,7 +573,7 @@ class Handler(BaseHTTPRequestHandler):
+         # serve's exclusive brain lock blocks (and the serve's own
+         # synthesize only speaks Anthropic-style keys).
+         blocks, _searched = multi_brain_search(question, member, role)
+-        wide = _deep_retrieve(question, member, role)
++        wide = _deep_retrieve(question, member, role, params=body)
+         t0 = time.time()
+         answer = _deep_compose(question, wide)
+         self._json({

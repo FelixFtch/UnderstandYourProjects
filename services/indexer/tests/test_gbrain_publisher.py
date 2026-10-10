@@ -45,7 +45,12 @@ class _FakeServeHandler(BaseHTTPRequestHandler):
                 self._respond(401, {"error": "unauthorized"})
                 return
             rpc = json.loads(body)
-            result = state.dispatch(rpc["params"]["name"], rpc["params"]["arguments"])
+            if rpc.get("method") == "tools/list":
+                state.calls.append(("tools/list", {}))
+                result = {"jsonrpc": "2.0", "id": 1, "result": {
+                    "tools": [{"name": name} for name in sorted(state.tools)]}}
+            else:
+                result = state.dispatch(rpc["params"]["name"], rpc["params"]["arguments"])
             if state.sse:
                 payload = ("event: message\ndata: " + json.dumps(result) + "\n\n").encode()
                 self.send_response(200)
@@ -73,13 +78,15 @@ class _FakeServeHandler(BaseHTTPRequestHandler):
 class FakeGbrainServe:
     """In-thread stand-in for one gbrain serve (token + MCP tools/call)."""
 
-    def __init__(self, *, reject_slugs=(), reject_deletes=False, sse=False):
+    def __init__(self, *, reject_slugs=(), reject_deletes=False, sse=False,
+                 tools=("put_page", "delete_page", "query", "get_page")):
         self.calls = []          # (tool, arguments) in arrival order
         self.pages = {}          # slug -> content
         self.token_requests = []
         self.reject_slugs = set(reject_slugs)
         self.reject_deletes = reject_deletes
         self.sse = sse
+        self.tools = set(tools)  # the principal's visible surface
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), _FakeServeHandler)
         self._httpd.state = self
         self._thread = threading.Thread(
@@ -377,6 +384,71 @@ class GbrainPublisherTests(unittest.TestCase):
         self.assertIn("project_knowledge/demo/g2/src/main.py", server.pages)
         self.assertIn("project_knowledge/demo/g1/__manifest__", server.pages)
         self.assertIn("project_knowledge/demo/g2/__manifest__", server.pages)
+
+    # ── check (provisioning validation, no real payload written) ──
+
+    def test_check_confirms_creds_surface_and_quota(self):
+        server = self.serve()
+        summary = gp.check(client=self.client(server), log=lambda line: None)
+        self.assertTrue(summary["ok"])
+        self.assertTrue(summary["tokenOk"])
+        self.assertTrue(summary["putPage"])
+        self.assertTrue(summary["deletePage"])
+        self.assertEqual(summary["probePut"], "ok")
+        self.assertTrue(summary["probeDeleted"])
+        self.assertEqual(summary["quotaHeadroom"], "ok")
+        self.assertEqual(summary["probeSlug"], "project_knowledge/__probe__")
+        tools = [tool for tool, _ in server.calls]
+        self.assertEqual(tools[0], "tools/list")
+        self.assertEqual(tools[1:], ["put_page", "delete_page"])
+        # The probe cleans up after itself: nothing remains in the namespace.
+        self.assertNotIn("project_knowledge/__probe__", server.pages)
+
+    def test_check_skips_probe_when_delete_page_is_not_visible(self):
+        server = self.serve(tools=("put_page", "query"))
+        summary = gp.check(client=self.client(server), log=lambda line: None)
+        self.assertFalse(summary["ok"])
+        self.assertTrue(summary["tokenOk"])
+        self.assertTrue(summary["putPage"])
+        self.assertFalse(summary["deletePage"])
+        self.assertIn("skipped", summary["probePut"])
+        self.assertEqual(summary["quotaHeadroom"], "unverified")
+        # A probe that cannot be cleaned up is never attempted: the check
+        # itself must not leave litter in the namespace.
+        self.assertNotIn("put_page", [tool for tool, _ in server.calls])
+        self.assertEqual(server.pages, {})
+
+    def test_check_reports_exhausted_quota_without_delete_attempt(self):
+        server = self.serve(reject_slugs={gp.PROBE_SLUG})
+        summary = gp.check(client=self.client(server), log=lambda line: None)
+        self.assertFalse(summary["ok"])
+        self.assertEqual(summary["probePut"], "rejected")
+        self.assertEqual(summary["quotaHeadroom"], "unverified")
+        self.assertTrue(any("Write capacity exhausted" in warning
+                            for warning in summary["warnings"]))
+        self.assertNotIn("delete_page", [tool for tool, _ in server.calls])
+
+    def test_check_reports_leftover_probe_when_delete_is_rejected(self):
+        server = self.serve(reject_deletes=True)
+        summary = gp.check(client=self.client(server), log=lambda line: None)
+        self.assertFalse(summary["ok"])
+        self.assertEqual(summary["probePut"], "ok")
+        self.assertFalse(summary["probeDeleted"])
+        self.assertTrue(any("REMAINS" in warning for warning in summary["warnings"]))
+        self.assertIn(gp.PROBE_SLUG, server.pages)
+
+    def test_check_reports_bad_credentials_without_raising(self):
+        server = self.serve()
+        bad = gp.McpServeClient(server.url, {"client_id": "writer", "client_secret": "wrong"})
+        summary = gp.check(client=bad, log=lambda line: None)
+        self.assertFalse(summary["ok"])
+        self.assertFalse(summary["tokenOk"])
+        self.assertIn("401", summary["error"])
+
+    def test_check_requires_explicit_endpoint(self):
+        summary = gp.check(log=lambda line: None)
+        self.assertFalse(summary["ok"])
+        self.assertIn("no default endpoint", summary["error"])
 
 
 if __name__ == "__main__":
