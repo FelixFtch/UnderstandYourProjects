@@ -13,6 +13,18 @@ UYP_ACCESS_CONTEXT_FILE=~/.config/uyp/access-context.json \
 python3 services/indexer/src/query_api.py --port 8787
 ```
 
+For the production Jetson service, HomeHub can be the live policy transport
+instead of a copied projection file:
+
+```bash
+export UYP_HOMEHUB_ACCESS_CONTEXT_URL=http://127.0.0.1:5120/api/uyp/access-context
+export UYP_HOMEHUB_TOKEN_FILE=~/.config/uyp/homehub.token
+```
+
+The token is a HomeHub Companion bearer provisioned by the pairing/session
+flow. It is not the Connector token. The adapter validates the returned
+projection and fails closed when HomeHub is unavailable.
+
 The default bind is `127.0.0.1`. `--lan` is an explicit deployment choice and
 must sit behind the approved transport. `UYP_STUDIO_API_URL` points the web
 build at this service, for example `http://127.0.0.1:8787` during a local
