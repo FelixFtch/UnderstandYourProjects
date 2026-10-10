@@ -35,6 +35,10 @@ VERSION = "0.1.0"
 DEFAULT_OUTPUT = "~/dev/uyp/output"
 DEFAULT_STATE = "~/dev/uyp/state"
 MAX_BODY = 64 * 1024
+INDEX_JOB_PHASES = frozenset({
+    "discovered", "authorized", "queued", "running", "staged", "published",
+    "blocked", "retry_wait", "offline", "revoked", "failed",
+})
 
 
 def now_iso() -> str:
@@ -119,6 +123,85 @@ def grouped_items() -> dict[str, list[dict]]:
             continue
         groups.setdefault(item_root(path), []).append(item)
     return groups
+
+
+def _scope_allows_job(context: dict, job: dict) -> bool:
+    """Filter a persisted IndexJob by HomeHub capability scopes."""
+    project = str(job.get("projectId", ""))
+    source = str(job.get("sourceId", ""))
+    projects = {str(value) for value in context.get("projectScopes", [])}
+    sources = {str(value) for value in context.get("sourceScopes", [])}
+    project_ok = "*" in projects or project in projects or f"project:{project}" in projects
+    source_ok = "*" in sources or source in sources or f"connector:{project}" in sources
+    return project_ok and source_ok
+
+
+def _job_projection(raw: dict) -> dict | None:
+    """Keep only the public IndexJob contract; drop grants and filesystem paths."""
+    if not isinstance(raw, dict):
+        return None
+    job_id = str(raw.get("jobId", ""))
+    project = str(raw.get("projectId", ""))
+    source = str(raw.get("sourceId", ""))
+    if not job_id or "/" in job_id or "\\" in job_id or not project or "/" in project or "\\" in project or not source:
+        return None
+    phase = str(raw.get("phase", ""))
+    if phase not in INDEX_JOB_PHASES:
+        return None
+    progress = raw.get("progress") if isinstance(raw.get("progress"), dict) else {}
+    processed = progress.get("processed", 0)
+    total = progress.get("total")
+    processed = processed if isinstance(processed, int) and 0 <= processed <= 100_000_000 else 0
+    total = total if isinstance(total, int) and 0 <= total <= 100_000_000 else None
+    result = {
+        "jobId": job_id,
+        "projectId": project if project.startswith("project:") else f"project:{project}",
+        "sourceId": source,
+        "phase": phase,
+        "progress": {"processed": processed, "total": total},
+    }
+    # These are timestamps/versions only; grantId, outputPath, metadata and
+    # event details are deliberately excluded from the Studio projection.
+    for key in ("sourceEpoch", "knowledgeVersion", "createdAt", "updatedAt", "publishedAt", "finishedAt", "reason", "auditId"):
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip() and len(value) <= 256:
+            result[key] = value.strip()
+    return result
+
+
+def load_persisted_index_jobs(project_id: str | None = None, context: dict | None = None) -> list[dict]:
+    """Read durable IndexJob records, fail-closed without HomeHub context."""
+    if context is None:
+        return []
+    jobs_root = os.path.realpath(os.path.join(state_root(), "index-jobs"))
+    if not os.path.isdir(jobs_root):
+        return []
+    requested = str(project_id or "").removeprefix("project:")
+    result: list[dict] = []
+    for path in sorted(glob.glob(os.path.join(jobs_root, "*.json"))):
+        try:
+            if os.path.commonpath([jobs_root, os.path.realpath(path)]) != jobs_root:
+                continue
+            with open(path, encoding="utf-8") as fh:
+                raw = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            continue
+        projected = _job_projection(raw)
+        if projected is None or not _scope_allows_job(context, raw):
+            continue
+        raw_project = str(raw.get("projectId", "")).removeprefix("project:")
+        if requested and raw_project != requested:
+            continue
+        result.append(projected)
+    return result
+
+
+def index_jobs_health(context: dict | None = None) -> dict:
+    """Summarize durable job state without exposing unauthorized projects."""
+    jobs = load_persisted_index_jobs(context=context)
+    active = sum(1 for job in jobs if job["phase"] not in {"published", "blocked", "offline", "revoked", "failed"})
+    latest = max((str(job.get("updatedAt", "")) for job in jobs), default=None)
+    return {"state": "current" if jobs else "pending", "total": len(jobs), "active": active, "lastUpdatedAt": latest}
 
 
 def configured_connector_status() -> dict:
@@ -264,6 +347,7 @@ def project_snapshot(project_id: str | None = None) -> dict:
     if connector_projection["connectorId"] not in connector_ids:
         registry_connectors.append(connector_projection)
     registry_nodes = registry_agent_nodes(context)
+    persisted_jobs = load_persisted_index_jobs(root if visible_project else None, context)
     snapshot = {
         "project": {
             "projectId": project_key, "sourceId": source_id, "name": root if visible_project else "Project scope unavailable",
@@ -284,9 +368,7 @@ def project_snapshot(project_id: str | None = None) -> dict:
             "connectorStatus": connector["state"], "reason": reason,
         },
         "evidence": evidence, "evidenceOrigin": "service" if items else "graph-fallback",
-        "jobs": [{"jobId": f"job:{root}:{updated}", "projectId": project_key, "sourceId": source_id,
-                  "phase": "published" if items else "discovered", "progress": {"processed": len(items), "total": len(items)},
-                  "knowledgeVersion": updated, "finishedAt": updated}],
+        "jobs": persisted_jobs,
         "sources": [source],
         "agentNodes": [{"nodeId": node_id, "label": os.environ.get("UYP_AGENT_LABEL", "Jetson Agent Box") if context else "Jetson Agent Box · identity pending", "transport": node_transport, "pairing": node_pairing, "lastSeen": updated if items else None, "capabilities": ["Incremental index", "Knowledge search", "Evidence citations"], "connectorIds": [source_id]}],
         "connectors": registry_connectors,
@@ -356,7 +438,8 @@ class QueryHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         if parsed.path == "/api/health":
             items = sum(len(value) for value in grouped_items().values())
-            self.json_response({"ok": True, "service": "uyp-query-api", "version": VERSION, "knowledgeItems": items, "accessContext": bool(load_access_context()), "connector": configured_connector_status(), "connectorRegistry": registry_health()}, audit=audit)
+            context = load_access_context()
+            self.json_response({"ok": True, "service": "uyp-query-api", "version": VERSION, "knowledgeItems": items if context else 0, "accessContext": bool(context), "connector": configured_connector_status(), "connectorRegistry": registry_health(), "indexJobs": index_jobs_health(context)}, audit=audit)
             return
         if parsed.path == "/api/studio/snapshot":
             self.json_response(project_snapshot((query.get("projectId") or [None])[0]), audit=audit)
@@ -389,7 +472,9 @@ class QueryHandler(BaseHTTPRequestHandler):
             self.json_response({"peers": load_nandatown_peers(), "metadataOnly": True}, audit=audit)
             return
         if parsed.path == "/api/index/jobs":
-            self.json_response({"jobs": project_snapshot((query.get("projectId") or [None])[0])["jobs"]}, audit=audit)
+            context = load_access_context()
+            project = (query.get("projectId") or [None])[0]
+            self.json_response({"jobs": load_persisted_index_jobs(project, context), "accessContext": bool(context)}, audit=audit)
             return
         if parsed.path.startswith("/api/knowledge/evidence/"):
             evidence_id = parsed.path.rsplit("/", 1)[-1]
