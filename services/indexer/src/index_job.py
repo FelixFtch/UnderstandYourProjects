@@ -150,7 +150,12 @@ class IndexJobStore:
                job_id: str | None = None, total: int | None = None,
                metadata: dict[str, Any] | None = None) -> dict[str, Any]:
         safe_component(project_id, "project id")
-        safe_component(source_id, "source id")
+        # A source id is a capability identifier, not a filesystem component;
+        # GitHub-style ids may legitimately contain a slash (for example
+        # ``github:org/repository``).  It is still bounded against NUL and
+        # emptiness before being persisted.
+        if not str(source_id) or "\x00" in str(source_id):
+            raise ValueError(f"unsafe source id: {source_id!r}")
         safe_component(grant_id, "grant id")
         job_id = safe_component(job_id or f"job-{uuid.uuid4().hex}", "job id")
         if self._path(job_id).exists():

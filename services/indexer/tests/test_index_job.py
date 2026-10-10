@@ -57,6 +57,20 @@ class IndexJobTests(unittest.TestCase):
         self.assertEqual(called, [])
         self.assertEqual(result["events"], 2)
 
+    def test_scheduler_leaves_queue_untouched_without_homehub_context(self):
+        job = self.make_job()
+        result = index_job.run_pending(
+            self.store,
+            context=None,
+            connector_host="http://connector",
+            token_file=str(self.token),
+            ua_root=str(self.root / "ua"),
+            output_root=str(self.root / "output"),
+        )
+        self.assertEqual(result["scheduled"], 0)
+        self.assertEqual(result["skipped"], 1)
+        self.assertEqual(self.store.get(job["jobId"])["phase"], "discovered")
+
     def test_authorized_job_stages_then_publishes_atomically(self):
         job = self.make_job()
         output = self.root / "output"
@@ -101,6 +115,14 @@ class IndexJobTests(unittest.TestCase):
                 token_file=str(self.token), ua_root=str(self.root / "ua"), output_root=str(self.root / "output"),
             )
         self.assertEqual(result["phase"], "retry_wait")
+
+    def test_source_capability_id_may_be_github_style(self):
+        record = self.store.create(
+            project_id="repo",
+            source_id="github:org/repository",
+            grant_id="grant-2",
+        )
+        self.assertEqual(record["sourceId"], "github:org/repository")
 
     def test_revoked_context_is_recorded_as_revoked(self):
         job = self.make_job()
