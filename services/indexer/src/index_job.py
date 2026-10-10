@@ -37,7 +37,7 @@ from typing import Any, Callable
 
 from connector_registry import upsert_connector, update_health
 
-from homehub_adapter import AccessContextError, validate_context
+from homehub_adapter import AccessContextError, load_context, validate_context
 
 
 PHASES = (
@@ -92,19 +92,6 @@ def context_is_valid(context: dict[str, Any] | None) -> bool:
     except (AccessContextError, TypeError, ValueError):
         return False
     return True
-
-
-def load_context(path: str | None) -> dict[str, Any] | None:
-    if not path:
-        return None
-    try:
-        value = json.loads(Path(os.path.expanduser(path)).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    try:
-        return validate_context(value)
-    except (AccessContextError, TypeError, ValueError):
-        return None
 
 
 def scope_allows(context: dict[str, Any], job: dict[str, Any]) -> bool:
