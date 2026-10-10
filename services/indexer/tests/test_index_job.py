@@ -10,6 +10,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 import index_job  # noqa: E402
+import connector_registry  # noqa: E402
 
 
 def access_context(*, epoch="g1", projects=None, sources=None):
@@ -97,6 +98,10 @@ class IndexJobTests(unittest.TestCase):
                          ["discovered", "authorized", "queued", "running", "staged", "published"])
         self.assertTrue((output / "demo" / "main.py.knowledge.json").exists())
         self.assertTrue((self.root / "state" / "demo" / "ua" / "knowledge-graph.json").exists())
+        registry = connector_registry.load_registry(self.root / "state" / "connectors" / "registry.json")
+        self.assertEqual(registry["connectors"][0]["sourceIds"], ["connector:demo"])
+        self.assertEqual(registry["connectors"][0]["manifestState"], "ready")
+        self.assertNotIn("grantId", json.dumps(registry))
 
     def test_epoch_mismatch_revokes_before_worker(self):
         job = self.make_job()

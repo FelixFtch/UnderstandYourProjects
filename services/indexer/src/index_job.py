@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -33,6 +34,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+
+from connector_registry import upsert_connector, update_health
 
 from homehub_adapter import AccessContextError, validate_context
 
@@ -112,6 +115,68 @@ def scope_allows(context: dict[str, Any], job: dict[str, Any]) -> bool:
     project_ok = "*" in projects or project in projects or f"project:{project}" in projects
     source_ok = "*" in sources or source in sources or f"connector:{project}" in sources
     return project_ok and source_ok
+
+
+def _registry_connector_id(source_id: str) -> str:
+    """Map a capability id to a stable registry id without persisting paths."""
+    slug = re.sub(r"[^A-Za-z0-9_.:-]+", "-", str(source_id)).strip("-")[:140]
+    return f"connector:{slug or 'pending'}"
+
+
+def _observe_connector(store: "IndexJobStore", job: dict[str, Any], context: dict[str, Any], manifest: dict[str, Any], connector_host: str) -> None:
+    """Persist connector health/manifest metadata after a scoped read.
+
+    This is a status projection only.  The grant id, token, file entries, and
+    HomeHub context are deliberately excluded; HomeHub remains authoritative.
+    Registry I/O cannot make an otherwise successful IndexJob fail.
+    """
+    source_id = str(job.get("sourceId", ""))
+    connector_id = _registry_connector_id(source_id)
+    metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
+    kind = metadata.get("connectorKind", "local")
+    label = metadata.get("connectorLabel", "Authorized connector")
+    transport = os.environ.get("UYP_AGENT_TRANSPORT", "unknown")
+    total = manifest.get("total") if isinstance(manifest.get("total"), int) else None
+    has_more = bool(manifest.get("has_more"))
+    source_epoch = manifest.get("source_epoch")
+    record = {
+        "connectorId": connector_id,
+        "nodeId": str(context.get("jarvisNodeId", "node:pending")),
+        "kind": kind,
+        "label": label,
+        "transport": transport,
+        "endpoint": connector_host,
+        "state": "current",
+        "manifestState": "pending" if has_more else "ready",
+        "sourceIds": [source_id],
+        "sourceEpoch": str(source_epoch) if source_epoch is not None else None,
+        "lastSeen": now_iso(),
+        "lastSyncAt": now_iso(),
+        "manifest": {
+            "state": "pending" if has_more else "ready",
+            "sourceEpoch": str(source_epoch) if source_epoch is not None else None,
+            "generatedAt": manifest.get("generated_at"),
+            "total": total,
+            "fileCount": total,
+        },
+    }
+    try:
+        upsert_connector(record, store.root / "connectors" / "registry.json")
+    except (OSError, ValueError, TypeError):
+        return
+
+
+def _observe_connector_health(store: "IndexJobStore", job: dict[str, Any], *, state: str, detail: str) -> None:
+    """Best-effort health update for a connector already in the registry."""
+    try:
+        update_health(
+            _registry_connector_id(str(job.get("sourceId", ""))),
+            state=state,
+            detail=detail,
+            path=store.root / "connectors" / "registry.json",
+        )
+    except (KeyError, OSError, ValueError, TypeError):
+        return
 
 
 class IndexJobStore:
@@ -348,12 +413,15 @@ def run_job(
         )
     except urllib.error.HTTPError as exc:
         phase = "revoked" if exc.code in {401, 403} else "offline"
+        _observe_connector_health(store, job, state="revoked" if phase == "revoked" else "offline", detail=f"HTTPError:{exc.code}")
         store.event(job_id, phase, {"reason": "connector_revoked" if phase == "revoked" else "connector_unavailable", "error": f"HTTPError:{exc.code}"})
         return store.get(job_id)
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        _observe_connector_health(store, job, state="offline", detail=type(exc).__name__)
         store.event(job_id, "offline", {"reason": "connector_unavailable", "error": type(exc).__name__})
         return store.get(job_id)
     if str(manifest.get("root_name", "")) != str(job["projectId"]):
+        _observe_connector_health(store, job, state="failed", detail="manifest_project_mismatch")
         store.event(job_id, "failed", {"reason": "manifest_project_mismatch"})
         return store.get(job_id)
     manifest_epoch = manifest.get("source_epoch")
@@ -362,6 +430,8 @@ def run_job(
         # requires a fresh manifest and is safer than indexing a stale grant.
         store.event(job_id, "retry_wait", {"reason": "source_epoch_changed", "manifestEpoch": manifest_epoch})
         return store.get(job_id)
+
+    _observe_connector(store, job, context, manifest, connector_host)
 
     store.event(job_id, "authorized", {"auditId": context.get("auditId"), "grantEpoch": context.get("grantEpoch")})
     store.event(job_id, "queued", {"queue": "background-index"})
