@@ -1,4 +1,4 @@
-import type { StudioSnapshot } from "./studio-contracts";
+import type { IndexJob, PeerJarvisSummary, SourceSummary, StudioSnapshot } from "./studio-contracts";
 
 export interface KnowledgeSearchResult {
   ok?: boolean;
@@ -8,6 +8,24 @@ export interface KnowledgeSearchResult {
   auditId?: string;
   error?: string;
   message?: string;
+}
+
+/** GET /api/sources — the Agent Box source projection for this session. */
+export interface SourcesProjection {
+  sources: SourceSummary[];
+}
+
+/** GET /api/index/jobs — persisted IndexJob records, already HomeHub scope-filtered. */
+export interface IndexJobsProjection {
+  jobs: IndexJob[];
+  /** False means no HomeHub AccessContext was supplied, so an empty job list is expected. */
+  accessContext?: boolean;
+}
+
+/** GET /api/nandatown/peers — public directory metadata; never a HomeHub grant. */
+export interface NandatownPeersProjection {
+  peers: PeerJarvisSummary[];
+  metadataOnly?: boolean;
 }
 
 /**
@@ -38,6 +56,23 @@ async function request<T>(path: string, init?: RequestInit, signal?: AbortSignal
 export async function fetchStudioSnapshot(signal?: AbortSignal): Promise<StudioSnapshot | null> {
   if (apiBase() === null) return null;
   return request<StudioSnapshot>("/api/studio/snapshot", undefined, signal);
+}
+
+export async function fetchSources(signal?: AbortSignal): Promise<SourceSummary[] | null> {
+  if (apiBase() === null) return null;
+  const projection = await request<SourcesProjection>("/api/sources", undefined, signal);
+  return Array.isArray(projection?.sources) ? projection.sources : [];
+}
+
+export async function fetchIndexJobs(signal?: AbortSignal): Promise<IndexJobsProjection | null> {
+  if (apiBase() === null) return null;
+  return request<IndexJobsProjection>("/api/index/jobs", undefined, signal);
+}
+
+export async function fetchNandatownPeers(signal?: AbortSignal): Promise<PeerJarvisSummary[] | null> {
+  if (apiBase() === null) return null;
+  const projection = await request<NandatownPeersProjection>("/api/nandatown/peers", undefined, signal);
+  return Array.isArray(projection?.peers) ? projection.peers : [];
 }
 
 export async function searchProjectKnowledge(query: string, projectId: string, signal?: AbortSignal): Promise<KnowledgeSearchResult> {

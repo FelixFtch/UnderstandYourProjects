@@ -346,6 +346,9 @@ function ActivitySection({ snapshot }: { snapshot: StudioSnapshot }) {
 }
 
 function GroupsSection({ snapshot, onOpenPrivacy }: { snapshot: StudioSnapshot; onOpenPrivacy: () => void }) {
+  // The graph fallback never publishes peers; an array means the query service
+  // supplied the directory, even when evidence is still graph-derived.
+  const directoryLive = Array.isArray(snapshot.peers);
   return (
     <SectionFrame
       kicker="Jarvis groups"
@@ -353,14 +356,24 @@ function GroupsSection({ snapshot, onOpenPrivacy }: { snapshot: StudioSnapshot; 
       description="Choose a group from the inbox, continue the conversation in the center, and adjust this group's local sharing draft on the right. HomeHub remains the authority for identity, policy, revocation, and audit."
       action={<span className="studio-chip"><span className="studio-chip-dot" />Draft conversations</span>}
     >
-      <GroupWorkspace onOpenPrivacy={onOpenPrivacy} peers={snapshot.peers} directoryLive={snapshot.evidenceOrigin === "service"} />
+      <GroupWorkspace onOpenPrivacy={onOpenPrivacy} peers={snapshot.peers} directoryLive={directoryLive} />
     </SectionFrame>
   );
 }
 
 function SourcesSection({ snapshot }: { snapshot: StudioSnapshot }) {
   const live = snapshot.evidenceOrigin === "service";
-  return <SectionFrame kicker="Sources & devices" title="Know which Jarvis can see which sources." description="Agent Boxes are the compute and identity boundary. Connectors are the individually scoped Mac, NAS, GitHub, or workstation sources that a Jetson may analyze. Server projections are displayed with their freshness and HomeHub boundary; local actions remain drafts until the authority returns a grant."><SourcesWorkspace sources={snapshot.sources} agentNodes={snapshot.agentNodes} connectors={snapshot.connectors} live={live} /><div className="studio-source-callout"><Icon name="shield" size={18} /><div><strong>HomeHub supplies the authority.</strong><p>UnderstandYourProjects displays discovery, pairing, grants, manifests, and health. It does not create a second ownership database or turn a local pair code into authorization.</p></div></div></SectionFrame>;
+  // Knowledge items per source are only meaningful on a service snapshot; the
+  // graph fallback has no source-attributed evidence.
+  const knowledgeItemsBySource = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const item of snapshot.evidence) {
+      if (!item.sourceId) continue;
+      counts[item.sourceId] = (counts[item.sourceId] ?? 0) + 1;
+    }
+    return counts;
+  }, [snapshot.evidence]);
+  return <SectionFrame kicker="Sources & devices" title="Know which Jarvis can see which sources." description="Agent Boxes are the compute and identity boundary. Connectors are the individually scoped Mac, NAS, GitHub, or workstation sources that a Jetson may analyze. Server projections are displayed with their freshness and HomeHub boundary; local actions remain drafts until the authority returns a grant."><SourcesWorkspace sources={snapshot.sources} agentNodes={snapshot.agentNodes} connectors={snapshot.connectors} knowledgeItemsBySource={knowledgeItemsBySource} live={live} /><div className="studio-source-callout"><Icon name="shield" size={18} /><div><strong>HomeHub supplies the authority.</strong><p>UnderstandYourProjects displays discovery, pairing, grants, manifests, and health. It does not create a second ownership database or turn a local pair code into authorization.</p></div></div></SectionFrame>;
 }
 
 function PrivacySection({ snapshot, onOpenConversations }: { snapshot: StudioSnapshot; onOpenConversations: () => void }) {

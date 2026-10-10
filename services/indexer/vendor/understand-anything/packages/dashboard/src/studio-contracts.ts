@@ -97,11 +97,19 @@ export interface IndexJob {
   projectId: string;
   sourceId?: string;
   phase: IndexJobPhase;
-  progress?: { processed: number; total?: number };
+  /** The query service always publishes `processed`; `total` is null when unbounded/unknown. */
+  progress?: { processed: number; total?: number | null };
   knowledgeVersion?: string;
   error?: string;
   startedAt?: string;
   finishedAt?: string;
+  /** Persisted-job timestamps published by the index service (query_api._job_projection). */
+  createdAt?: string;
+  updatedAt?: string;
+  publishedAt?: string;
+  reason?: string;
+  sourceEpoch?: string;
+  auditId?: string;
 }
 
 /** A server-projected HomeHub context. Studio can display it, but cannot mint or widen it. */
@@ -134,6 +142,9 @@ export interface SourceSummary {
   state: ConnectionState;
   detail: string;
   lastSyncAt?: string;
+  /** Optional counts; the current query service embeds grants in `detail` text only. */
+  grantsActive?: number;
+  knowledgeItems?: number;
 }
 
 /** Read-only projections for the Agent Box and multi-connector surfaces. */
