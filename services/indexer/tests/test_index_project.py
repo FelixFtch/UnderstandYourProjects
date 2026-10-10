@@ -1,5 +1,6 @@
 import json
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -117,6 +118,72 @@ class TestLayaDecide(unittest.TestCase):
                    side_effect=urllib.error.URLError("down")), \
              patch.dict(os.environ, {"UYP_LAYA_FALLBACK": "rule"}):
             self.assertEqual(index_project.laya_decide("x", "y"), ("quick-summary", 0.0))
+
+
+def manifest_files():
+    return [
+        {"relpath": "a.py", "size": 1, "mtime": 10, "kind": "file"},
+        {"relpath": "b.py", "size": 2, "mtime": 20, "kind": "file"},
+        {"relpath": "c.md", "size": 3, "mtime": 30, "kind": "file"},
+    ]
+
+
+class TestChangedSelection(unittest.TestCase):
+    def test_only_changed_restricts_pool_and_reports_missing(self):
+        # a.py already processed at this version -> skipped by done_before
+        done = lambda f: f["relpath"] == "a.py"
+        files, skipped, missing = index_project.select_files(
+            manifest_files(), limit=0, done_before=done,
+            only={"a.py", "b.py", "deleted_upstream.py"})
+        self.assertEqual([f["relpath"] for f in files], ["b.py"])
+        self.assertEqual(skipped, 1)
+        self.assertEqual(missing, 1)  # deleted/excluded relpaths are reported, not invented
+
+    def test_limit_applies_within_the_changed_pool(self):
+        files, _, _ = index_project.select_files(
+            manifest_files(), limit=1, done_before=lambda f: False, only={"a.py", "b.py"})
+        self.assertEqual([f["relpath"] for f in files], ["a.py"])
+
+    def test_force_reprocesses_changed_pool_despite_done_before(self):
+        files, skipped, _ = index_project.select_files(
+            manifest_files(), limit=0, done_before=lambda f: True, only={"a.py"}, force=True)
+        self.assertEqual([f["relpath"] for f in files], ["a.py"])
+        self.assertEqual(skipped, 0)
+
+    def test_no_only_selection_keeps_full_project_behavior(self):
+        files, skipped, missing = index_project.select_files(
+            manifest_files(), limit=0, done_before=lambda f: f["relpath"] == "c.md")
+        self.assertEqual([f["relpath"] for f in files], ["a.py", "b.py"])
+        self.assertEqual((skipped, missing), (1, 0))
+
+    def test_changed_pool_exhausted_by_done_before(self):
+        files, skipped, _ = index_project.select_files(
+            manifest_files(), limit=0, done_before=lambda f: True, only={"a.py"})
+        self.assertEqual(files, [])
+        self.assertEqual(skipped, 1)
+
+
+class TestLoadChangedPaths(unittest.TestCase):
+    def changes_file(self, payload):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        changes = Path(tmp.name) / "changed.json"
+        changes.write_text(json.dumps(payload), encoding="utf-8")
+        return str(changes)
+
+    def test_merges_args_and_file_with_dedupe(self):
+        changes = self.changes_file(["b.py", "a.py", "b.py"])
+        merged = index_project.load_changed_paths(["a.py", "c.py"], changes)
+        self.assertEqual(merged, {"a.py", "b.py", "c.py"})
+
+    def test_none_when_no_selection_given(self):
+        self.assertIsNone(index_project.load_changed_paths(None, None))
+        self.assertIsNone(index_project.load_changed_paths([], None))
+
+    def test_rejects_non_array_changes_file(self):
+        changes = self.changes_file({"a.py": 1})
+        with self.assertRaises(ValueError):
+            index_project.load_changed_paths(None, changes)
 
 
 if __name__ == "__main__":

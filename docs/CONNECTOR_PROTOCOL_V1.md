@@ -91,9 +91,19 @@ Incremental file inventory. Cursor = opaque token (mtime+path checkpoint).
 { "events": [ { "id": "e_...", "ts": "...", "grant": "g_01",
                 "relpath": "src/app.py", "kind": "modified" } ] }
 ```
-kinds: `created | modified | deleted | renamed` (renamed carries `from`).
+kinds: `created | modified | deleted` (`renamed` is not implemented yet: a
+move is emitted as a deleted+created pair).
 Source of truth is the local filesystem watcher (FSEvents on macOS) plus the
 periodic manifest reconciliation as safety net.
+
+Implementation notes (P8): the watcher runs inside the connector as a
+background thread — FSEvents via `watchdog` when importable, otherwise a
+30s manifest-diff poll (`UYP_WATCHER=off|poll|fsevents` overrides;
+`GET /status` reports the active mode honestly in `watcher_ok`). Events are
+appended to `~/.config/uyp/events_log.jsonl` (ids never repeat across
+restarts) and `GET /events` is a pure read of that log: `?since=<id>` returns
+only newer events, `?grant=` optionally filters, pages are capped at 500 with
+`truncated` + `last_event_id` for cursor advancement.
 
 ## 6. Status — `GET /status`
 

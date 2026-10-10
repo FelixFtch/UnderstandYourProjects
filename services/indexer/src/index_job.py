@@ -616,11 +616,23 @@ def run_job(
     store.event(job_id, "running", {"stageRoot": str(stage_root), "auditId": context.get("auditId"), "resumedFromStagedItems": staged_items})
     py = python_executable or sys.executable
     script = index_script or str(Path(__file__).with_name("index_project.py"))
-    limit = int((job.get("metadata") or {}).get("limit", 0))
+    metadata = job.get("metadata") if isinstance(job.get("metadata"), dict) else {}
+    limit = int(metadata.get("limit", 0))
     command = [py, script, "--host", connector_host, "--token-file", str(token_path), "--grant", connector_grant_id(job)]
     # Pass the value explicitly: 0 means full pending project for the durable
     # worker, while the standalone CLI retains its 20-file default.
     command.extend(["--limit", str(limit)])
+    changed_files = metadata.get("changed_files")
+    if isinstance(changed_files, list) and changed_files:
+        # P8 incremental reconcile pinned the exact relpaths that changed.
+        # The list travels as a file inside the job's staging root rather
+        # than argv: hundreds of relpaths do not belong on a command line,
+        # and a resumed attempt re-reads it without any reconcile state.
+        changes_path = stage_root / "changed_files.json"
+        changes_path.write_text(
+            json.dumps(sorted({str(item) for item in changed_files}), ensure_ascii=False, indent=1) + "\n",
+            encoding="utf-8")
+        command.extend(["--changes-file", str(changes_path)])
     try:
         runner(command, env)
         if ua_runner is None:
@@ -813,15 +825,31 @@ def main() -> None:
     elif args.action == "list":
         result = store.list()
     elif args.action == "run-pending":
+        context = load_context(args.access_context)
+        # P8 pre-step: turn Connector change events into targeted jobs before
+        # the scheduler picks work.  Guarded by the HomeHub context exactly
+        # like the scheduler itself: no context means no reconcile, silently.
+        # A failed reconcile never blocks the pass - its cursors are only
+        # advanced on success, so the events retry on the next tick.
+        reconcile_summary = None
+        if context is not None and context_is_valid(context):
+            try:
+                from incremental import reconcile_and_enqueue  # local: avoids an import cycle
+                reconcile_summary = reconcile_and_enqueue(
+                    store, connector_host=args.connector_host, token_file=args.token_file)
+            except Exception as exc:  # the scheduler pass must still run
+                reconcile_summary = {"ok": False, "error": type(exc).__name__}
         result = run_pending(
             store,
-            context=load_context(args.access_context),
+            context=context,
             connector_host=args.connector_host,
             token_file=args.token_file,
             ua_root=args.ua_root,
             output_root=args.output_root,
             max_jobs=args.max_jobs,
         )
+        if reconcile_summary is not None:
+            result["reconcile"] = reconcile_summary
     else:
         result = run_job(
             store,

@@ -197,6 +197,45 @@ def structure_only_summary(content: str) -> dict:
             "py_defs": len(re.findall(r"^\s*(def|class) ", content, re.M)) if content else 0,
             "imports": len(re.findall(r"^(import|from) ", content, re.M)) if content else 0}
 
+def load_changed_paths(only_changed, changes_file):
+    """Merge --only-changed and --changes-file into one relpath set (or None).
+
+    ``changes_file`` holds the JSON array the IndexJob worker writes into its
+    staging root (run_job passes --changes-file); --only-changed is the
+    hand-friendly spelling for manual incremental runs. Both are additive.
+    """
+    paths = [str(p) for p in (only_changed or [])]
+    if changes_file:
+        with open(changes_file, encoding="utf-8") as fh:
+            raw = json.load(fh)
+        if not isinstance(raw, list):
+            raise ValueError(f"changes file must hold a JSON array: {changes_file}")
+        paths.extend(str(p) for p in raw)
+    if not paths:
+        return None
+    return set(paths)
+
+def select_files(all_files, *, limit, done_before, only=None, force=False):
+    """Pick this run's files. Returns (selected, skipped, missing).
+
+    ``only`` restricts the candidate pool to those relpaths (incremental
+    mode); relpaths inside ``only`` but absent from the manifest (deleted
+    upstream, or excluded by the connector) simply never match and are
+    reported as ``missing`` - never invented. done_before still applies
+    unless --force, so a resumed incremental run skips files it already
+    re-processed at the same version.
+    """
+    if only is None:
+        pool, missing = all_files, 0
+    else:
+        pool = [f for f in all_files if f["relpath"] in only]
+        missing = len(only) - len(pool)
+    if force:
+        return (pool if limit <= 0 else pool[:limit]), 0, missing
+    pending = [f for f in pool if not done_before(f)]
+    selected = pending if limit <= 0 else pending[:limit]
+    return selected, len(pool) - len(pending), missing
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="http://127.0.0.1:7121")
@@ -204,6 +243,10 @@ def main():
     ap.add_argument("--grant", required=True)
     ap.add_argument("--limit", type=int, default=20)
     ap.add_argument("--force", action="store_true", help="re-analyze even if same-version output exists")
+    ap.add_argument("--only-changed", nargs="+", metavar="RELPATH",
+                    help="incremental: only (re-)analyze these relpaths")
+    ap.add_argument("--changes-file", metavar="PATH",
+                    help="incremental: JSON array of relpaths to (re-)analyze; merged with --only-changed")
     a = ap.parse_args()
     token = open(a.token_file).read().strip()
 
@@ -239,17 +282,16 @@ def main():
             return json.load(open(path)).get("version", {}).get("mtime") == f["mtime"]
         except Exception:
             return False
-    if not a.force:
-        skipped = sum(1 for f in all_files if done_before(f))
-        pending = [f for f in all_files if not done_before(f)]
-        # ``--limit 0`` is the worker's explicit full-project mode.  The
-        # interactive CLI keeps its historical default of 20, but a durable
-        # IndexJob must be able to request all pending files.
-        files = pending if a.limit <= 0 else pending[:a.limit]
-        if skipped:
-            print(f"resume: skipping {skipped} already-processed files", flush=True)
-    else:
-        files = all_files if a.limit <= 0 else all_files[:a.limit]
+    # ``--limit 0`` is the worker's explicit full-project mode.  The
+    # interactive CLI keeps its historical default of 20, but a durable
+    # IndexJob must be able to request all pending files.
+    only = load_changed_paths(a.only_changed, a.changes_file)
+    files, skipped, missing = select_files(all_files, limit=a.limit, only=only,
+                                           force=a.force, done_before=done_before)
+    if only is not None:
+        print(f"incremental: {len(only)} changed path(s), {missing} not in manifest (deleted/excluded)", flush=True)
+    if skipped:
+        print(f"resume: skipping {skipped} already-processed files", flush=True)
     print(f"indexing {root}: {len(files)} files (of {man['total']})", flush=True)
     for f in files:
         rel, size = f["relpath"], f["size"]

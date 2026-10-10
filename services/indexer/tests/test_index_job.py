@@ -500,6 +500,92 @@ class IndexJobTests(unittest.TestCase):
         self.assertEqual(again["scheduled"], 0)
         self.assertEqual(self.store.get(job["jobId"])["retryCount"], 1)
 
+    # ---- P8 incremental: changed_files -> worker command ----
+
+    def publishing_runner(self, captured):
+        def fake_runner(command, env):
+            captured.append(list(command))
+            candidate = Path(env["UYP_OUTPUT_ROOT"]) / "demo"
+            candidate.mkdir(parents=True, exist_ok=True)
+            (candidate / "a.py.knowledge.json").write_text(
+                json.dumps({"file": "a.py"}), encoding="utf-8")
+        return fake_runner
+
+    @staticmethod
+    def fake_ua(**kwargs):
+        graph_dir = Path(kwargs["state_root"]) / "demo" / "ua"
+        graph_dir.mkdir(parents=True, exist_ok=True)
+        (graph_dir / "knowledge-graph.json").write_text("{}", encoding="utf-8")
+        return {"stagedFiles": 1, "nodes": 0, "edges": 0}
+
+    def test_incremental_job_pins_changed_files_for_the_worker(self):
+        job = self.store.create(
+            project_id="demo", source_id="connector:demo", grant_id="grant-1", grant_epoch="g1",
+            metadata={"limit": 0, "changed_files": ["src/b.py", "src/a.py", "src/b.py"]})
+        captured = []
+        with patch.object(index_job, "connector_call",
+                          return_value={"root_name": "demo", "total": 5, "source_epoch": "e1"}):
+            result = index_job.run_job(
+                self.store, job["jobId"],
+                **self.worker_kwargs(runner=self.publishing_runner(captured), ua_runner=self.fake_ua))
+        self.assertEqual(result["phase"], "published")
+        command = captured[0]
+        self.assertIn("--changes-file", command)
+        changes_path = Path(command[command.index("--changes-file") + 1])
+        # sorted, deduped - the worker sees exactly the reconcile's list
+        self.assertEqual(json.loads(changes_path.read_text(encoding="utf-8")), ["src/a.py", "src/b.py"])
+        # the changes file lives in the job's own staging root, not argv
+        self.assertIn(str(self.root / "state" / "index-jobs" / job["jobId"]), str(changes_path))
+        self.assertEqual(command[command.index("--limit") + 1], "0")
+
+    def test_full_job_command_carries_no_changes_file_flag(self):
+        job = self.make_job()
+        captured = []
+        with patch.object(index_job, "connector_call",
+                          return_value={"root_name": "demo", "total": 1, "source_epoch": "e1"}):
+            result = index_job.run_job(
+                self.store, job["jobId"],
+                **self.worker_kwargs(runner=self.publishing_runner(captured), ua_runner=self.fake_ua))
+        self.assertEqual(result["phase"], "published")
+        self.assertNotIn("--changes-file", captured[0])
+
+    def test_run_pending_cli_reconciles_events_before_scheduling(self):
+        import incremental
+
+        calls = []
+
+        def fake_reconcile(store, **kwargs):
+            calls.append(kwargs)
+            return {"ok": True, "enqueued": [], "deferred": [], "dropped": [],
+                    "changed": {}, "fetched": 0, "error": None}
+
+        argv = ["index_job.py", "--state-root", str(self.root / "state"),
+                "--output-root", str(self.root / "output"), "--ua-root", str(self.root / "ua"),
+                "run-pending"]
+        with patch.object(index_job, "load_context", return_value=access_context()), \
+             patch.object(incremental, "reconcile_and_enqueue", side_effect=fake_reconcile), \
+             patch.object(sys, "argv", argv), \
+             patch("builtins.print"):
+            index_job.main()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["connector_host"], "http://127.0.0.1:7121")
+        self.assertIn("token_file", calls[0])
+
+    def test_run_pending_cli_skips_reconcile_without_homehub_context(self):
+        import incremental
+
+        calls = []
+        argv = ["index_job.py", "--state-root", str(self.root / "state"),
+                "--output-root", str(self.root / "output"), "--ua-root", str(self.root / "ua"),
+                "run-pending"]
+        with patch.object(index_job, "load_context", return_value=None), \
+             patch.object(incremental, "reconcile_and_enqueue",
+                          side_effect=lambda *a, **k: calls.append(k)), \
+             patch.object(sys, "argv", argv), \
+             patch("builtins.print"):
+            index_job.main()
+        self.assertEqual(calls, [])  # no context -> silent skip, like today
+
 
 def read_events(store, job_id):
     path = store._event_path(job_id)
