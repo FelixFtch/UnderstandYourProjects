@@ -47,7 +47,31 @@ def score(item: dict, tokens: list[str]) -> float:
                 if v in rel or v in purpose: s += 1.2
     return s
 
+INTERACTIVE_LOCK = "/tmp/uyp_interactive.lock"
+
+def _touch_interactive_lock():
+    """交互查询在途标志: 索引侧富集看到新鲜旗标即让路(语音>查询>索引铁律,
+    2026-10-10 现场事故: 全量索引占满 ollama 5 槽, 'say OK' 都 10s 超时)。"""
+    import time as _t
+    with open(INTERACTIVE_LOCK, "w") as fh:
+        fh.write(str(_t.time()))
+
+def _clear_interactive_lock():
+    try:
+        os.remove(INTERACTIVE_LOCK)
+    except OSError:
+        pass
+
+
 def answer(question: str, items: list[dict]) -> dict:
+    _touch_interactive_lock()
+    try:
+        return _answer_locked(question, items)
+    finally:
+        _clear_interactive_lock()
+
+
+def _answer_locked(question: str, items: list[dict]) -> dict:
     tokens = tokenize(question)
     scored = sorted(((score(i, tokens), i) for i in items), key=lambda x: -x[0])
     top = [(s, i) for s, i in scored[:3] if s > 0]

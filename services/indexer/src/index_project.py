@@ -80,7 +80,25 @@ def laya_decide(head: str, mid: str = "") -> tuple[str, float]:
             return "quick-summary", 0.0
         raise
 
+INTERACTIVE_LOCK = "/tmp/uyp_interactive.lock"
+
+def _yield_to_interactive(max_wait_s: int = 600):
+    """语音>查询>索引 (架构铁律): 交互锁新鲜(<90s)期间, 后台富集让路等待。"""
+    import time as _t
+    waited = 0
+    while waited < max_wait_s:
+        try:
+            ts = float(open(INTERACTIVE_LOCK).read().strip())
+        except (OSError, ValueError):
+            return
+        if _t.time() - ts > 90:
+            return
+        time.sleep(2)
+        waited += 2
+
+
 def qwen_enrich(content: str, think: bool):
+    _yield_to_interactive()
     instr = ("You are a project file analyzer. Output ONLY a JSON object with keys: "
              "purpose (one sentence), key_points (max 3 strings), components (max 3), "
              "depends_on (max 3). Answer in the SAME LANGUAGE as the file. No other text.")
