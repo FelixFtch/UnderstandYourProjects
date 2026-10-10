@@ -58,6 +58,7 @@ def run(
     limit: int = 0,
     max_file_bytes: int = READ_CAP,
     project_name: str | None = None,
+    knowledge_root: str | None = None,
 ) -> dict:
     token = Path(os.path.expanduser(token_file)).read_text(encoding="utf-8").strip()
     manifest = api(host, token, "/manifest?grant=" + urllib.parse.quote(grant, safe=""))
@@ -136,12 +137,33 @@ def run(
             all_results.extend(extracted.get("results", []))
             imports_by_path.update(batch.get("batchImportData", {}))
 
+        # Laya/Qwen enrichment is already a Connector-scoped artifact in the
+        # worker staging directory.  Pass only bounded derived metadata to UA;
+        # source bytes remain in the temporary Connector staging tree.
+        semantic_by_path: dict[str, dict] = {}
+        if knowledge_root:
+            root = Path(os.path.expanduser(knowledge_root)).resolve()
+            for item_path in root.glob("*.knowledge.json"):
+                try:
+                    item = json.loads(item_path.read_text(encoding="utf-8"))
+                    rel = safe_relative_path(str(item.get("file", "")))
+                    derived = item.get("derived")
+                    if isinstance(derived, dict):
+                        semantic_by_path[rel] = {
+                            "purpose": str(derived.get("purpose", ""))[:512],
+                            "keyPoints": [str(v)[:256] for v in derived.get("key_points", [])[:3]] if isinstance(derived.get("key_points"), list) else [],
+                            "components": [str(v)[:256] for v in derived.get("components", [])[:3]] if isinstance(derived.get("components"), list) else [],
+                        }
+                except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                    continue
+
         bundle_path = intermediate / "graph-input.json"
         bundle_path.write_text(json.dumps({
             "projectName": root_name,
             "contentDigest": json.loads(scan_path.read_text(encoding="utf-8")).get("contentDigest"),
             "results": all_results,
             "importsByPath": imports_by_path,
+            "semanticByPath": semantic_by_path,
         }, ensure_ascii=False), encoding="utf-8")
         graph_path = project_state / "knowledge-graph.json"
         run_checked(["node", str(Path(__file__).with_name("ua_graph_builder.mjs")), str(bundle_path), str(graph_path)], env=ua_env)
@@ -171,6 +193,7 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--max-file-bytes", type=int, default=READ_CAP)
     parser.add_argument("--project-name")
+    parser.add_argument("--knowledge-root")
     args = parser.parse_args()
     print(json.dumps(run(**vars(args)), ensure_ascii=False, indent=2))
 

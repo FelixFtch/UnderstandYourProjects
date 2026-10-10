@@ -124,3 +124,29 @@ checks the live Connector manifest. It stages KnowledgeItems and the UA graph
 under the job directory and publishes complete project directories with a
 rollback copy. Missing, expired, or revoked HomeHub context stops the job in
 `blocked` or `revoked`; it never falls back to indexing all local output.
+
+For automatic scheduling, invoke the same worker from a systemd timer,
+launchd job, or deployment controller with `run-pending`:
+
+```bash
+python3 services/indexer/src/index_job.py \
+  --state-root ~/dev/uyp/state \
+  --output-root ~/dev/uyp/output \
+  --access-context ~/.config/uyp/access-context.json \
+  --connector-host http://127.0.0.1:7121 \
+  --token-file ~/.config/uyp/token \
+  --ua-root ~/dev/uyp/understand-anything-src \
+  run-pending --max-jobs 1
+```
+
+The scheduler is fail-closed: when HomeHub is unavailable it reports skipped
+jobs and leaves their durable phase unchanged. It never turns a temporary
+policy-plane outage into a grant or a permanent denial. `run-pending` is a
+single bounded pass so the deployment layer controls cadence and resource
+limits.
+
+The UA bridge now feeds the staged Laya/Qwen `KnowledgeItem` summaries into the
+vendored graph, retains Connector-resolved import edges, and computes
+heuristic layers and a guided tour with the UA core APIs. These are published
+with the graph only after the complete candidate passes the worker's atomic
+publish step; no `.ua` files are written into a source repository.

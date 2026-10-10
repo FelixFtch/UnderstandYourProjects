@@ -29,6 +29,7 @@ from urllib.parse import parse_qs, urlparse
 
 from knowledge_search import answer as search_answer, load_items
 from connector_registry import load_registry, public_projection, registry_health
+from homehub_adapter import load_context as load_homehub_context
 
 
 VERSION = "0.1.0"
@@ -83,19 +84,9 @@ def load_ua_graph(project: str) -> dict | None:
 
 
 def load_access_context() -> dict | None:
-    path = os.environ.get("UYP_ACCESS_CONTEXT_FILE")
-    if not path:
-        return None
-    try:
-        with open(os.path.expanduser(path), encoding="utf-8") as fh:
-            value = json.load(fh)
-        if not isinstance(value, dict):
-            return None
-        # The service accepts a projection from HomeHub; it does not infer one.
-        required = {"principalId", "sessionId", "jarvisNodeId", "projectScopes", "sourceScopes", "grantEpoch", "policyDigest", "expiresAt", "auditId"}
-        return value if required.issubset(value) and access_context_valid(value) else None
-    except (OSError, json.JSONDecodeError):
-        return None
+    # A local file is only a transport projection from HomeHub.  Use the same
+    # strict validator as IndexJob and federation code, and fail closed.
+    return load_homehub_context()
 
 
 def access_context_valid(context: dict) -> bool:

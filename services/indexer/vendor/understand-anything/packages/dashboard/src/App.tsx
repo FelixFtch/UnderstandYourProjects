@@ -76,6 +76,18 @@ function dataUrl(fileName: string, token: string | null): string {
   return token ? `${path}?token=${encodeURIComponent(token)}` : path;
 }
 
+function dataUrls(fileName: string, token: string | null): string[] {
+  const primary = dataUrl(fileName, token);
+  if (!DEMO_MODE || fileName !== "knowledge-graph.json" || !import.meta.env.VITE_GRAPH_URL) {
+    return [primary];
+  }
+  // A Jetson graph is only publishable after HomeHub returns an AccessContext.
+  // Keep the local demo graph as a visible partial fallback while that
+  // authority is unavailable; never replace a 503 with fake project data.
+  const fallback = `${(import.meta.env.BASE_URL || "/").replace(/\/$/, "")}/${fileName}`;
+  return primary === fallback ? [primary] : [primary, fallback];
+}
+
 /**
  * Resolve the access token from the URL query string or sessionStorage.
  * If found in the URL, persist to sessionStorage and strip the param from the address bar.
@@ -159,27 +171,34 @@ function Dashboard({ accessToken }: { accessToken: string }) {
   }, []);
 
   useEffect(() => {
-    fetch(dataUrl("knowledge-graph.json", accessToken))
-      .then(async (res) => {
-        // Guard res.ok before parsing (matching the meta.json/config.json/
-        // diff-overlay.json/domain-graph.json fetches in this file). Without
-        // this, a serving/config failure returns a 404 JSON error body that
-        // gets parsed and handed to validateGraph, which fails project-metadata
-        // validation and surfaces the misleading "Invalid knowledge graph:
-        // Missing or invalid project metadata" instead of the real cause
-        // (graph file not found / GRAPH_DIR unset). See issues #288, #406.
-        if (!res.ok) {
-          let detail = `HTTP ${res.status}`;
-          try {
-            const body = await res.json();
-            if (body?.error) detail = body.error;
-          } catch {
-            /* non-JSON error body; keep the status code */
+    const urls = dataUrls("knowledge-graph.json", accessToken);
+    const loadGraph = async () => {
+      let lastError: Error | null = null;
+      for (const url of urls) {
+        try {
+          const res = await fetch(url);
+          // Guard res.ok before parsing. A gated Jetson graph returns 503
+          // until HomeHub supplies AccessContext; in demo mode the next URL
+          // is the local partial graph.
+          if (!res.ok) {
+            let detail = `HTTP ${res.status}`;
+            try {
+              const body = await res.json();
+              if (body?.error) detail = body.error;
+            } catch {
+              /* non-JSON error body; keep the status code */
+            }
+            throw new Error(detail);
           }
-          throw new Error(detail);
+          return await res.json();
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error));
+          if (url !== urls[urls.length - 1]) continue;
         }
-        return res.json();
-      })
+      }
+      throw lastError || new Error("knowledge_graph_unavailable");
+    };
+    loadGraph()
       .then((data: unknown) => {
         const result = validateGraph(data);
         if (result.success && result.data) {

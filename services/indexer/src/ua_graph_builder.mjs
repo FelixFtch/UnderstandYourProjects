@@ -16,7 +16,7 @@ if (!inputPath || !outputPath) {
 
 const uaRoot = process.env.UYP_UA_ROOT;
 if (!uaRoot) throw new Error("UYP_UA_ROOT is required");
-const { GraphBuilder } = await import(
+const { GraphBuilder, detectLayers, generateHeuristicTour } = await import(
   pathToFileURL(resolve(uaRoot, "packages/core/dist/index.js")).href,
 );
 
@@ -28,6 +28,9 @@ const builder = new GraphBuilder(
 );
 
 const knownFiles = new Set(results.map((file) => file.path));
+const semanticByPath = input.semanticByPath && typeof input.semanticByPath === "object"
+  ? input.semanticByPath
+  : {};
 
 for (const file of results) {
   const functions = (file.functions || []).map((fn) => ({
@@ -42,10 +45,11 @@ for (const file of results) {
     properties: cls.properties || [],
   }));
   const analysis = { functions, classes, imports: [], exports: [] };
-  const summary = `Deterministic structure extracted from ${file.path}`;
+  const semantic = semanticByPath[file.path] || {};
+  const summary = semantic.purpose || `Deterministic structure extracted from ${file.path}`;
   const meta = {
     summary,
-    tags: [file.language, file.fileCategory].filter(Boolean),
+    tags: [file.language, file.fileCategory, ...(semantic.components || []).slice(0, 3)].filter(Boolean),
     complexity: "simple",
     fileSummary: summary,
     summaries: {},
@@ -72,5 +76,39 @@ for (const file of results) {
     }
   }
 }
-
-writeFileSync(outputPath, JSON.stringify(builder.build(), null, 2));
+const graph = builder.build();
+// Promote bounded Laya/Qwen labels into explicit semantic nodes.  The labels
+// are derived metadata only; source bytes remain in the Connector staging
+// directory and never enter the graph artifact.
+const semanticNodes = new Map();
+for (const [filePath, semantic] of Object.entries(semanticByPath)) {
+  const fileId = `file:${filePath}`;
+  if (!graph.nodes.some((node) => node.id === fileId)) continue;
+  const labels = [...(semantic.components || []), ...(semantic.keyPoints || [])]
+    .filter((value) => typeof value === "string" && value.trim())
+    .map((value) => value.trim().slice(0, 160))
+    .slice(0, 6);
+  for (const label of labels) {
+    const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80);
+    if (!slug) continue;
+    const id = `concept:${slug}`;
+    if (!semanticNodes.has(id)) {
+      semanticNodes.set(id, {
+        id,
+        type: "concept",
+        name: label,
+        summary: `Semantic concept derived from project analysis: ${label}`,
+        tags: ["laya-qwen"],
+        complexity: "simple",
+      });
+    }
+    const key = `related|${fileId}|${id}`;
+    if (!graph.edges.some((edge) => `${edge.type}|${edge.source}|${edge.target}` === key)) {
+      graph.edges.push({ source: fileId, target: id, type: "related", direction: "forward", weight: 0.45 });
+    }
+  }
+}
+graph.nodes.push(...semanticNodes.values());
+graph.layers = detectLayers(graph);
+graph.tour = generateHeuristicTour(graph);
+writeFileSync(outputPath, JSON.stringify(graph, null, 2));
