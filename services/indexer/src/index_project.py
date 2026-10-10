@@ -12,6 +12,7 @@ Requires: Laya llama-server on :8901 (start_laya.sh), ollama qwen3.5:4b.
 """
 from __future__ import annotations
 import argparse, json, os, re, subprocess, sys, time, urllib.error, urllib.request
+import threading
 
 MODELS = os.environ.get("UYP_MODELS_ROOT", "/home/jetson/dev/uyp/models")
 BIN = os.environ.get("UYP_LLAMACPP_BIN", "/home/jetson/dev/uyp/llama.cpp-build/build/bin")
