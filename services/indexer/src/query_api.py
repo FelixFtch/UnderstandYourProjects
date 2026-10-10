@@ -28,6 +28,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from knowledge_search import answer as search_answer, load_items
+from connector_registry import load_registry, public_projection, registry_health
 
 
 VERSION = "0.1.0"
@@ -137,6 +138,61 @@ def configured_connector_status() -> dict:
         return {"state": "offline", "detail": f"Connector unavailable: {type(exc).__name__}"}
 
 
+def connector_registry_projection(context: dict | None = None) -> list[dict]:
+    """Return connector metadata with HomeHub scope filtering.
+
+    The registry is a durable status projection, not an ACL.  Without a
+    HomeHub AccessContext we expose only opaque connector/node ids and health
+    state; labels, source ids, and manifest scope stay hidden.  With a context,
+    source identifiers are still filtered by the context's source scopes.
+    """
+    document = load_registry()
+    records = document.get("connectors", [])
+    if context is None:
+        return public_projection({"connectors": records}, include_sources=False)
+    scopes = {str(value) for value in context.get("sourceScopes", [])}
+    all_sources = "*" in scopes
+    allowed: list[dict] = []
+    for record in records:
+        source_ids = {str(value) for value in record.get("sourceIds", [])}
+        connector_id = str(record.get("connectorId", ""))
+        if not all_sources and not source_ids.intersection(scopes) and connector_id not in scopes:
+            continue
+        allowed.append(record)
+    return public_projection({"connectors": allowed}, include_sources=True)
+
+
+def registry_agent_nodes(context: dict | None = None) -> list[dict]:
+    """Build read-only Agent Box projections from the durable registry."""
+    connectors = connector_registry_projection(context)
+    records = load_registry().get("connectors", [])
+    by_node: dict[str, dict] = {}
+    for record in records:
+        node_id = str(record.get("nodeId", ""))
+        if not node_id:
+            continue
+        # A connector that was filtered by source scope must not reveal its
+        # source association through the node's connectorIds either.
+        visible_ids = {item["connectorId"] for item in connectors if item["nodeId"] == node_id}
+        if context is not None and not visible_ids:
+            continue
+        state = str(record.get("state", "pending"))
+        pairing = "revoked" if state == "revoked" else "offline" if state in {"offline", "failed"} else "paired" if state == "current" else "pairing" if state == "pending" else "discovered"
+        entry = by_node.setdefault(node_id, {
+            "nodeId": node_id,
+            "label": str(record.get("label")) if context is not None else "Agent Box metadata pending",
+            "transport": str(record.get("transport", "unknown")),
+            "pairing": pairing,
+            "lastSeen": record.get("lastSeen"),
+            "capabilities": list(record.get("capabilities", [])),
+            "connectorIds": [],
+        })
+        for connector_id in sorted(visible_ids):
+            if connector_id not in entry["connectorIds"]:
+                entry["connectorIds"].append(connector_id)
+    return list(by_node.values())
+
+
 def load_nandatown_peers() -> list[dict]:
     """Load public directory metadata emitted by the NandaTown adapter only."""
     path = os.environ.get("UYP_NANDATOWN_DIRECTORY_FILE")
@@ -202,7 +258,12 @@ def project_snapshot(project_id: str | None = None) -> dict:
     node_id = (context or {}).get("jarvisNodeId") or "agent-node-pending"
     node_pairing = "paired" if context else "discovered"
     node_transport = os.environ.get("UYP_AGENT_TRANSPORT", "unknown") if context else "unknown"
-    connector_projection = {"connectorId": source_id, "nodeId": node_id, "kind": "local", "label": root, "state": connector["state"], "manifestState": "ready" if items else "pending", "sourceIds": [source_id]}
+    connector_projection = {"connectorId": source_id, "nodeId": node_id, "kind": "local", "label": root if visible_project else "Connector metadata pending", "state": connector["state"], "manifestState": "ready" if items else "pending", "sourceIds": [source_id] if visible_project else []}
+    registry_connectors = connector_registry_projection(context)
+    connector_ids = {item["connectorId"] for item in registry_connectors}
+    if connector_projection["connectorId"] not in connector_ids:
+        registry_connectors.append(connector_projection)
+    registry_nodes = registry_agent_nodes(context)
     snapshot = {
         "project": {
             "projectId": project_key, "sourceId": source_id, "name": root if visible_project else "Project scope unavailable",
@@ -228,9 +289,16 @@ def project_snapshot(project_id: str | None = None) -> dict:
                   "knowledgeVersion": updated, "finishedAt": updated}],
         "sources": [source],
         "agentNodes": [{"nodeId": node_id, "label": os.environ.get("UYP_AGENT_LABEL", "Jetson Agent Box") if context else "Jetson Agent Box · identity pending", "transport": node_transport, "pairing": node_pairing, "lastSeen": updated if items else None, "capabilities": ["Incremental index", "Knowledge search", "Evidence citations"], "connectorIds": [source_id]}],
-        "connectors": [connector_projection],
+        "connectors": registry_connectors,
         "peers": load_nandatown_peers(),
     }
+    # Keep the locally derived project node and durable registry nodes visible
+    # as separate projections.  A registry record never overrides HomeHub's
+    # node identity or creates an authorization decision.
+    known_nodes = {entry["nodeId"] for entry in snapshot["agentNodes"]}
+    for entry in registry_nodes:
+        if entry["nodeId"] not in known_nodes:
+            snapshot["agentNodes"].append(entry)
     if visible_project and ua_graph:
         snapshot["graph"] = {
             "version": ua_graph.get("version"),
@@ -288,7 +356,7 @@ class QueryHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         if parsed.path == "/api/health":
             items = sum(len(value) for value in grouped_items().values())
-            self.json_response({"ok": True, "service": "uyp-query-api", "version": VERSION, "knowledgeItems": items, "accessContext": bool(load_access_context()), "connector": configured_connector_status()}, audit=audit)
+            self.json_response({"ok": True, "service": "uyp-query-api", "version": VERSION, "knowledgeItems": items, "accessContext": bool(load_access_context()), "connector": configured_connector_status(), "connectorRegistry": registry_health()}, audit=audit)
             return
         if parsed.path == "/api/studio/snapshot":
             self.json_response(project_snapshot((query.get("projectId") or [None])[0]), audit=audit)
@@ -307,6 +375,15 @@ class QueryHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/sources":
             self.json_response({"sources": project_snapshot((query.get("projectId") or [None])[0])["sources"]}, audit=audit)
+            return
+        if parsed.path == "/api/connectors":
+            context = load_access_context()
+            self.json_response({
+                "connectors": connector_registry_projection(context),
+                "registry": registry_health(),
+                "accessContext": bool(context),
+                "metadataOnly": context is None,
+            }, audit=audit)
             return
         if parsed.path == "/api/nandatown/peers":
             self.json_response({"peers": load_nandatown_peers(), "metadataOnly": True}, audit=audit)

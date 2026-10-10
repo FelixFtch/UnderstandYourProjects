@@ -26,6 +26,7 @@ development session. The Studio build variable is `VITE_STUDIO_API_URL`.
 | `GET /api/studio/snapshot` | project, source, health, evidence, and IndexJob projection | only publishes HomeHub context when supplied |
 | `GET /api/knowledge-graph` | vendored Understand Anything graph projection | returns `503` until HomeHub supplies an AccessContext |
 | `GET /api/sources` | source projection for the Agent Box surface | source grant is not created here |
+| `GET /api/connectors` | durable multi-connector health and manifest projection | metadata-only without HomeHub; never mints pairing or grants |
 | `POST /api/knowledge/search` | bounded lexical retrieval plus Qwen synthesis | requires a HomeHub AccessContext and filters before synthesis |
 
 `POST /api/knowledge/search` accepts `{ "query": "...", "projectId": "..." }`.
@@ -40,6 +41,24 @@ This adapter does not implement pairing, grants, revocation, NandaTown
 invites, or IndexJob mutation. Those operations belong behind the HomeHub and
 connector adapters described in `docs/EXECUTION_PLAN.md` and must be added with
 their own durable state and audit contracts.
+
+## Connector registry
+
+The Jetson keeps a versioned registry at
+`$UYP_CONNECTOR_REGISTRY_FILE`, or at
+`$UYP_STATE_ROOT/connectors/registry.json` when the explicit path is omitted.
+The registry stores connector and Agent Box metadata, health observations, and
+bounded manifest counters. Writes are atomic and the file is mode `0600`.
+Bearer tokens, source paths, full manifest entries, and HomeHub grants are
+discarded at the schema boundary. A pairing or manifest adapter may call the
+`connector_registry.upsert_connector`, `update_health`, and `update_manifest`
+functions after its own HomeHub checks. `GET /api/connectors` only projects
+those records; it cannot create or revoke a connector.
+
+When no valid HomeHub `AccessContext` is available, the endpoint returns
+opaque IDs and state only. Labels and source IDs are included only when a
+validated context's `sourceScopes` authorizes the connector. This prevents a
+second connector from becoming an accidental source discovery channel.
 
 ## Jetson Understand Anything bridge
 
@@ -67,7 +86,39 @@ python3 services/indexer/src/ua_bridge.py \
   --limit 30
 ```
 
-The bridge is intentionally a separate command until the durable `IndexJob`
-worker owns the `AUTHORIZED -> QUEUED -> RUNNING -> STAGED -> PUBLISHED`
-transition. A worker may call the same function once HomeHub has supplied the
-grant and audit context.
+The durable worker is implemented in `services/indexer/src/index_job.py`. It
+owns the `AUTHORIZED -> QUEUED -> RUNNING -> STAGED -> PUBLISHED` transition
+while HomeHub remains the authority that supplies and revokes the
+AccessContext. Job records and append-only transition events live below
+`UYP_STATE_ROOT/index-jobs/`; no source directory receives a job artifact.
+
+Create and run a job on Jetson after HomeHub has written a valid context
+projection (the worker does not create one):
+
+```bash
+python3 services/indexer/src/index_job.py \
+  --state-root ~/dev/uyp/state \
+  --output-root ~/dev/uyp/output \
+  --access-context ~/.config/uyp/access-context.json \
+  --connector-host http://127.0.0.1:7121 \
+  --token-file ~/.config/uyp/token \
+  --ua-root ~/dev/uyp/understand-anything-src \
+  create --project-id jarvis-memory-live \
+  --source-id connector:jarvis-memory-live \
+  --grant-id g_example --grant-epoch homehub-epoch-1
+
+python3 services/indexer/src/index_job.py \
+  --state-root ~/dev/uyp/state \
+  --output-root ~/dev/uyp/output \
+  --access-context ~/.config/uyp/access-context.json \
+  --connector-host http://127.0.0.1:7121 \
+  --token-file ~/.config/uyp/token \
+  --ua-root ~/dev/uyp/understand-anything-src \
+  run job-<id>
+```
+
+The worker first validates project/source scopes and the grant epoch, then
+checks the live Connector manifest. It stages KnowledgeItems and the UA graph
+under the job directory and publishes complete project directories with a
+rollback copy. Missing, expired, or revoked HomeHub context stops the job in
+`blocked` or `revoked`; it never falls back to indexing all local output.
