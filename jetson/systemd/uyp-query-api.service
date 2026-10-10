@@ -9,6 +9,8 @@ WorkingDirectory=%h/dev/uyp/indexer
 Environment=UYP_OUTPUT_ROOT=%h/dev/uyp/output
 Environment=UYP_STATE_ROOT=%h/dev/uyp/state
 Environment=UYP_CONNECTOR_HOST=http://127.0.0.1:7121
+Environment=UYP_HOMEHUB_ACCESS_CONTEXT_URL=http://127.0.0.1:5120/api/uyp/access-context
+Environment=UYP_HOMEHUB_TOKEN_FILE=%h/.config/uyp/homehub.token
 ExecStart=/usr/bin/python3 %h/dev/uyp/indexer/query_api.py --host 127.0.0.1 --port 8787
 Restart=on-failure
 RestartSec=5
