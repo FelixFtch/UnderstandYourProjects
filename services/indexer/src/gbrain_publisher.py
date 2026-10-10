@@ -36,6 +36,12 @@ Discovered write surface (Jetson audit 2026-10-10):
   module deliberately has NO default endpoint: dry_run is the default and a
   live publish requires an explicit --url/--creds (UYP_GBRAIN_URL /
   UYP_GBRAIN_CREDS), so nothing can accidentally write to the family brain.
+  check() (CLI: ``check``) validates a freshly provisioned serve WITHOUT
+  touching real payload: it lists the principal's tool surface and, only when
+  put_page AND delete_page are both visible, does one tiny put+delete
+  round-trip on the project_knowledge/__probe__ slug (a few receipt bytes --
+  the same signal the family timer burned, but bounded and cleaned up) to
+  prove quota headroom end to end.
 
 Namespace layout (one gbrain page per KnowledgeItem):
 
@@ -71,7 +77,9 @@ import argparse
 import hashlib
 import json
 import os
+import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
@@ -81,6 +89,7 @@ from typing import Any, Callable
 
 NAMESPACE = "project_knowledge"
 MANIFEST_SEGMENT = "__manifest__"
+PROBE_SLUG = NAMESPACE + "/__probe__"
 INGESTED_VIA = "uyp-gbrain-publisher/1.0"
 SLUG_MAX = 255
 TOKEN_MARGIN_SECONDS = 120.0
@@ -316,9 +325,10 @@ class McpServeClient:
         self._token_expires = time.time() + float(payload.get("expires_in", 3600))
         return self._token
 
-    def call(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                           "params": {"name": tool, "arguments": arguments}}).encode()
+    def _post_rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        """One JSON-RPC round-trip; unwraps SSE and raises on RPC-level errors."""
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method,
+                           "params": params}).encode()
         request = urllib.request.Request(self.url, data=body, headers={
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
@@ -331,8 +341,18 @@ class McpServeClient:
             raw = raw.split("data: ", 1)[1]
         envelope = json.loads(raw)
         if "error" in envelope:
-            raise GbrainRejectedError(tool, str(arguments.get("slug", "")), str(envelope["error"])[:200])
-        result = envelope.get("result") or {}
+            raise GbrainRejectedError(str(params.get("name", "") or method),
+                                      str(params.get("name", "")),
+                                      str(envelope["error"])[:200])
+        return envelope.get("result") or {}
+
+    def list_tools(self) -> list[str]:
+        """The principal's honest tool surface (JSON-RPC tools/list)."""
+        result = self._post_rpc("tools/list", {})
+        return sorted(str(tool.get("name", "")) for tool in (result.get("tools") or []))
+
+    def call(self, tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        result = self._post_rpc("tools/call", {"name": tool, "arguments": arguments})
         if result.get("isError"):
             reason = str(result.get("content"))[:200]
             try:
@@ -534,6 +554,123 @@ def revoke(project_id: str, grant_epoch: str, *,
     return summary
 
 
+def _probe_page() -> str:
+    return _page({"type": "note", "uyp_namespace": NAMESPACE, "uyp_probe": True},
+                 "# uyp publisher probe\n\nTemporary credentials/quota probe written by "
+                 "gbrain_publisher check; deleted again in the same run.\n")
+
+
+def check(base_url: str | None = None, creds: Any = None, *,
+          client: McpServeClient | None = None,
+          log: Callable[[str], None] = print) -> dict[str, Any]:
+    """Validate a provisioned serve without touching any real payload.
+
+    Proves, in order: the writer OAuth credentials work (a bearer is
+    required for every /mcp call), the principal's honest tool surface via
+    tools/list (put_page/delete_page visibility decides whether revoke()
+    can delete or only tombstone), and -- only when the probe can be
+    cleaned up again -- quota headroom, via one tiny put+delete round-trip
+    on the project_knowledge/__probe__ slug.  The probe burns a few receipt
+    bytes on purpose: "Write capacity exhausted" arrives as an isError
+    rejection, exactly the failure class that hid on the family brain for a
+    week (2026-09-27), so this is the one signal that proves the lane is
+    usable end to end.  ``ok`` is True only when creds, surface, quota AND
+    cleanup all check out.
+    """
+    summary: dict[str, Any] = {
+        "ok": False,
+        "endpoint": None,
+        "tokenOk": False,
+        "toolsVisible": [],
+        "putPage": False,
+        "deletePage": False,
+        "probeSlug": PROBE_SLUG,
+        "probePut": "not-run",
+        "probeDeleted": False,
+        "quotaHeadroom": "unverified",
+        "warnings": [],
+        "error": None,
+    }
+    try:
+        active = client if client is not None else _client_from(base_url, creds)
+    except GbrainPublishError as exc:
+        summary["error"] = str(exc)
+        log(f"check: FAILED ({exc})")
+        return summary
+    summary["endpoint"] = active.base
+    try:
+        tools = active.list_tools()
+    except GbrainRejectedError as exc:
+        summary["error"] = f"tools/list rejected: {exc.reason}"
+        log(f"check: FAILED ({summary['error']})")
+        return summary
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError, ValueError) as exc:
+        summary["error"] = f"tools/list failed: {type(exc).__name__}: {exc}"[:250]
+        log(f"check: FAILED ({summary['error']})")
+        return summary
+    summary["tokenOk"] = True
+    summary["toolsVisible"] = tools
+    summary["putPage"] = "put_page" in tools
+    summary["deletePage"] = "delete_page" in tools
+    log(f"check: token OK, {len(tools)} tools visible "
+        f"(put_page={summary['putPage']}, delete_page={summary['deletePage']})")
+    if not summary["putPage"]:
+        summary["probePut"] = "skipped: put_page not visible to this principal"
+        summary["warnings"].append(
+            "surface lacks put_page -- grant the writer profile or rescope the client")
+        log(f"check: FAILED ({summary['probePut']})")
+        return summary
+    if not summary["deletePage"]:
+        # A probe we cannot delete would leave litter in the namespace; a
+        # publish-lane without delete_page also cannot run revoke() deletions.
+        summary["probePut"] = "skipped: delete_page not visible; the probe could not be cleaned up"
+        summary["warnings"].append(
+            "surface lacks delete_page -- revoke() falls back to tombstone-only "
+            "and quota cannot be probed safely")
+        log(f"check: FAILED ({summary['probePut']})")
+        return summary
+    content = _probe_page()
+    try:
+        active.call("put_page", {
+            "slug": PROBE_SLUG,
+            "content": content,
+            "force": True,
+            "ingested_via": INGESTED_VIA,
+            "request_id": _request_id("check-put", PROBE_SLUG, content),
+        })
+    except GbrainRejectedError as exc:
+        summary["probePut"] = "rejected"
+        summary["warnings"].append(f"probe put rejected: {exc.reason}")
+        log(f"check: FAILED (probe put rejected: {exc.reason})")
+        return summary
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
+        summary["probePut"] = "error"
+        summary["error"] = f"probe put failed: {type(exc).__name__}: {exc}"[:250]
+        log(f"check: FAILED ({summary['error']})")
+        return summary
+    summary["probePut"] = "ok"
+    summary["quotaHeadroom"] = "ok"
+    log("check: probe PUT ok (quota headroom confirmed)")
+    try:
+        active.call("delete_page", {
+            "slug": PROBE_SLUG,
+            "force": True,
+            "request_id": _request_id("check-delete", PROBE_SLUG),
+        })
+        summary["probeDeleted"] = True
+        log("check: probe DELETE ok (namespace clean)")
+    except GbrainRejectedError as exc:
+        summary["warnings"].append(
+            f"probe delete rejected -- the probe page REMAINS at {PROBE_SLUG}: {exc.reason}")
+        log(f"check: FAILED (probe delete rejected: {exc.reason})")
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
+        summary["warnings"].append(
+            f"probe delete failed -- the probe page REMAINS at {PROBE_SLUG}: {type(exc).__name__}")
+        log("check: FAILED (probe delete transport error)")
+    summary["ok"] = summary["probeDeleted"]
+    return summary
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Publish a KnowledgeVersion into the gBrain project_knowledge "
@@ -556,16 +693,23 @@ def main() -> None:
     drop.add_argument("--grant-epoch", required=True)
     drop.add_argument("--knowledge-root", help="project directory that produced the pages")
     drop.add_argument("--slugs", help="comma-separated explicit slug list instead")
+    sub.add_parser("check", help="validate creds/tool surface/quota headroom against a "
+                                 "serve without writing real payload (exits non-zero on failure)")
     args = parser.parse_args()
     if args.action == "publish":
         result = publish(args.knowledge_root, args.project_id, args.version,
                          args.grant_epoch, dry_run=not args.apply,
                          base_url=args.url, creds=args.creds)
-    else:
+    elif args.action == "revoke":
         slugs = [part.strip() for part in args.slugs.split(",") if part.strip()] if args.slugs else None
         result = revoke(args.project_id, args.grant_epoch,
                         knowledge_root=args.knowledge_root, slugs=slugs,
                         dry_run=not args.apply, base_url=args.url, creds=args.creds)
+    else:
+        result = check(args.url, args.creds)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        # A check is a gate for runbook scripts: propagate the verdict.
+        raise SystemExit(0 if result.get("ok") else 1)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
