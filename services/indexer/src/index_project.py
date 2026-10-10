@@ -21,12 +21,25 @@ BIN = os.environ.get("UYP_LLAMACPP_BIN", "/home/jetson/dev/uyp/llama.cpp-build/b
 STATE = os.path.realpath(os.path.expanduser(os.environ.get("UYP_STATE_ROOT", "~/dev/uyp/state")))
 OUT = os.path.realpath(os.path.expanduser(os.environ.get("UYP_OUTPUT_ROOT", "~/dev/uyp/output")))
 
-def api(host, token, path, binary=False, timeout=90):
-    req = urllib.request.Request(host.rstrip("/") + path,
-                                 headers={"Authorization": f"Bearer {token}"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        d = r.read()
-        return d if binary else json.loads(d)
+def api(host, token, path, binary=False, timeout=90, retries=5):
+    # transport retry (2026-10-10 hotfix, second-project run): the connector is
+    # reached through the launchd ssh -R tunnel, which blips on network changes
+    # (observed 10:26:45Z tunnel restart -> ConnectionReset -> job killed).
+    # Retry with backoff instead of crashing the whole IndexJob.
+    last = None
+    for attempt in range(retries):
+        req = urllib.request.Request(host.rstrip("/") + path,
+                                     headers={"Authorization": f"Bearer {token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                d = r.read()
+                return d if binary else json.loads(d)
+        except urllib.error.HTTPError:
+            raise  # policy answers (403/404/413) are final - do not mask them
+        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+            last = exc
+            time.sleep(min(2 ** attempt * 5, 60))
+    raise last
 
 def laya_decide(head: str, mid: str = "") -> tuple[str, float]:
     # Calibration 2026-10-10 (benchmarks/calibration_results_2026-10-10.json,
@@ -74,9 +87,28 @@ def qwen_enrich(content: str, think: bool):
     body = json.dumps({"model": "qwen3.5-route", "think": think, "stream": False,
                        "options": {"num_ctx": 4096},
                        "messages": [{"role": "user", "content": instr + "\n\nFILE CONTENT:\n" + content[:2600]}]})
-    r = subprocess.run(["curl", "-s", "127.0.0.1:11434/api/chat", "-d", body, "--max-time", "400"],
-                       capture_output=True, text=True)
-    d = json.loads(r.stdout)
+    # transport retry (2026-10-10 hotfix, second-project run): ollama shares
+    # qwen3.5-route with the live voice router and sporadically 500s/restarts
+    # mid-request (observed 06:06 EDT restart -> empty curl stdout -> job
+    # worker_command_failed). Warm with a think:false ping and retry instead
+    # of crashing the IndexJob; after 3 strikes emit empty (json_bad) so the
+    # job keeps going.
+    d = None
+    for _attempt in range(3):
+        r = subprocess.run(["curl", "-s", "127.0.0.1:11434/api/chat", "-d", body, "--max-time", "400"],
+                           capture_output=True, text=True)
+        try:
+            d = json.loads(r.stdout)
+            break
+        except (json.JSONDecodeError, ValueError):
+            d = None
+            subprocess.run(["curl", "-s", "127.0.0.1:11434/api/chat", "-d",
+                            json.dumps({"model": "qwen3.5-route", "think": False, "stream": False,
+                                        "messages": [{"role": "user", "content": "ping"}]}),
+                            "--max-time", "30"], capture_output=True, text=True)
+            time.sleep(10)
+    if d is None:
+        return "", 0
     content = (d.get("message", {}) or {}).get("content", "") or ""
     tokens = d.get("eval_count", 0)
     if not content.strip():
