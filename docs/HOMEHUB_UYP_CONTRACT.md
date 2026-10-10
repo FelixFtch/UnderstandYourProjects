@@ -48,8 +48,11 @@ unscoped files.
 
 1. HomeHub owner session creates one grant for one opaque project and source.
 2. The Jetson service reads `/api/uyp/access-context` with that session token.
-3. A durable UYP `IndexJob` is created with the returned project/source scope,
-   grant ID, and epoch.
+3. The authorized Connector supplies its own short-lived read capability for
+   the same source. A durable UYP `IndexJob` is created with that Connector
+   capability plus the HomeHub project/source scope and epoch. These are two
+   deliberately separate grants: the Connector capability is never treated
+   as a HomeHub identity or policy decision.
 4. The worker reads the authorized Connector manifest, stages the files,
    runs Understand Anything plus the existing Laya/Qwen enrichment, and
    atomically publishes the graph and evidence projection.

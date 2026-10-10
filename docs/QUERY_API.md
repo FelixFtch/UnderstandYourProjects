@@ -121,8 +121,14 @@ python3 services/indexer/src/index_job.py \
   --ua-root ~/dev/uyp/understand-anything-src \
   create --project-id jarvis-memory-live \
   --source-id connector:jarvis-memory-live \
-  --grant-id g_example --grant-epoch homehub-epoch-1
+  --grant-id g_connector_example --grant-epoch homehub-epoch-1
+```
 
+`--grant-id` is the Connector's read capability. `--grant-epoch` is the
+HomeHub policy epoch from the AccessContext; they are intentionally different
+values and must not be substituted for each other.
+
+```bash
 python3 services/indexer/src/index_job.py \
   --state-root ~/dev/uyp/state \
   --output-root ~/dev/uyp/output \
