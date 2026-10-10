@@ -35,6 +35,7 @@ except ImportError:  # pragma: no cover - exercised only on non-POSIX hosts
 SCHEMA_VERSION = "uyp.connector-registry.v1"
 DEFAULT_STATE_ROOT = "~/dev/uyp/state"
 MAX_CONNECTORS = 128
+MAX_REGISTRY_BYTES = 512 * 1024
 MAX_TEXT = 256
 MAX_ID = 160
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
@@ -264,6 +265,8 @@ def _locked(path: Path) -> Iterator[None]:
 
 def _read_unlocked(path: Path) -> dict[str, Any]:
     try:
+        if path.stat().st_size > MAX_REGISTRY_BYTES:
+            return empty_registry(reason="registry exceeds size limit")
         with path.open(encoding="utf-8") as fh:
             return _normalize_document(json.load(fh))
     except (OSError, ValueError, json.JSONDecodeError):
