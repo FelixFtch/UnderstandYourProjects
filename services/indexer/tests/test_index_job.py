@@ -2,6 +2,8 @@ import json
 import os
 import tempfile
 import unittest
+import urllib.error
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -44,6 +46,22 @@ class IndexJobTests(unittest.TestCase):
             project_id="demo", source_id="connector:demo", grant_id="grant-1",
             grant_epoch="g1", **kwargs,
         )
+
+    def worker_kwargs(self, **overrides):
+        kwargs = {
+            "context": access_context(),
+            "connector_host": "http://connector",
+            "token_file": str(self.token),
+            "ua_root": str(self.root / "ua"),
+            "output_root": str(self.root / "output"),
+        }
+        kwargs.update(overrides)
+        return kwargs
+
+    def refuse_to_run(self, command, env):
+        # AssertionError is deliberately outside run_job's failure tuple, so
+        # an unexpected execution fails the test instead of being recorded.
+        raise AssertionError("run_pending must not execute this job")
 
     def test_missing_access_context_is_blocked_without_running_worker(self):
         self.make_job()
@@ -236,8 +254,251 @@ class IndexJobTests(unittest.TestCase):
                 token_file=str(self.token), ua_root=str(self.root / "ua"), output_root=str(self.root / "output"),
                 runner=failing_runner,
             )
-        self.assertEqual(result["phase"], "failed")
+        # A crashed worker is retryable now: the job waits for a bounded retry
+        # instead of ending terminal, while the previous stable version stays
+        # queryable either way (publish never ran for the candidate).
+        self.assertEqual(result["phase"], "retry_wait")
         self.assertEqual((stable / "stable.json").read_text(encoding="utf-8"), "stable")
+
+    def test_worker_crash_schedules_bounded_retry_with_backoff(self):
+        job = self.make_job()
+
+        def crashing_runner(command, env):
+            raise RuntimeError("model unavailable")
+
+        with patch.object(index_job, "connector_call", return_value={"root_name": "demo", "total": 3, "source_epoch": "e1"}):
+            result = index_job.run_job(self.store, job["jobId"], **self.worker_kwargs(runner=crashing_runner))
+        self.assertEqual(result["phase"], "retry_wait")
+        self.assertEqual(result["reason"], "worker_command_failed")
+        self.assertEqual(result["retryCount"], 1)
+        due = datetime.fromisoformat(result["nextAttemptAt"].replace("Z", "+00:00"))
+        self.assertGreater(due, datetime.now(timezone.utc))
+        self.assertEqual(
+            [event["phase"] for event in read_events(self.store, job["jobId"])],
+            ["discovered", "authorized", "queued", "running", "failed", "retry_wait"])
+
+    def test_connector_manifest_and_transport_failures_are_retryable(self):
+        missing = self.make_job()
+        with patch.object(index_job, "connector_call",
+                          side_effect=urllib.error.HTTPError("http://connector/manifest", 404, "Not Found", None, None)):
+            result = index_job.run_job(self.store, missing["jobId"], **self.worker_kwargs())
+        self.assertEqual(result["phase"], "retry_wait")
+        self.assertEqual(result["reason"], "connector_manifest_not_found")
+        self.assertEqual(result["retryCount"], 1)
+        self.assertIn("nextAttemptAt", result)
+
+        unreachable = self.make_job()
+        with patch.object(index_job, "connector_call", side_effect=urllib.error.URLError("tunnel blip")):
+            result = index_job.run_job(self.store, unreachable["jobId"], **self.worker_kwargs())
+        self.assertEqual(result["phase"], "retry_wait")
+        self.assertEqual(result["reason"], "connector_unavailable")
+        self.assertEqual(result["retryCount"], 1)
+
+    def test_authorization_failures_stay_terminal(self):
+        mismatch = self.make_job()
+        with patch.object(index_job, "connector_call", return_value={"root_name": "other", "total": 1}):
+            result = index_job.run_job(self.store, mismatch["jobId"], **self.worker_kwargs())
+        self.assertEqual(result["phase"], "failed")
+        self.assertEqual(result["reason"], "manifest_project_mismatch")
+        self.assertNotIn("retryCount", result)
+        self.assertNotIn("nextAttemptAt", result)
+
+        dead_grant = self.make_job()
+        with patch.object(index_job, "connector_call",
+                          side_effect=urllib.error.HTTPError("http://connector/manifest", 401, "Unauthorized", None, None)):
+            result = index_job.run_job(self.store, dead_grant["jobId"], **self.worker_kwargs())
+        self.assertEqual(result["phase"], "revoked")
+
+        drifted_epoch = self.make_job()
+        with patch.object(index_job, "connector_call", return_value={"root_name": "demo", "total": 1, "source_epoch": "e1"}):
+            result = index_job.run_job(
+                self.store, drifted_epoch["jobId"], **self.worker_kwargs(context=access_context(epoch="g2")))
+        self.assertEqual(result["phase"], "revoked")
+
+        # none of the terminal jobs above may be requeued by the scheduler
+        summary = index_job.run_pending(self.store, **self.worker_kwargs(runner=self.refuse_to_run))
+        self.assertEqual(summary["recovered"], 0)
+        self.assertEqual(summary["scheduled"], 0)
+        self.assertEqual(self.store.get(mismatch["jobId"])["phase"], "failed")
+        self.assertEqual(self.store.get(dead_grant["jobId"])["phase"], "revoked")
+        self.assertEqual(self.store.get(drifted_epoch["jobId"])["phase"], "revoked")
+
+    def test_publish_failure_stays_terminal_and_keeps_stable_output(self):
+        job = self.make_job()
+        stable = self.root / "output" / "demo"
+        stable.mkdir(parents=True)
+        (stable / "stable.json").write_text("stable", encoding="utf-8")
+
+        def fake_runner(command, env):
+            candidate = Path(env["UYP_OUTPUT_ROOT"]) / "demo"
+            candidate.mkdir(parents=True)
+            (candidate / "main.py.knowledge.json").write_text(json.dumps({"file": "main.py"}), encoding="utf-8")
+
+        def lazy_ua(**kwargs):
+            # reports success but never writes the staged UA graph, so the
+            # second half of publish fails and the first half rolls back
+            return {"stagedFiles": 1, "nodes": 0, "edges": 0}
+
+        with patch.object(index_job, "connector_call", return_value={"root_name": "demo", "total": 1, "source_epoch": "e1"}):
+            result = index_job.run_job(
+                self.store, job["jobId"], **self.worker_kwargs(runner=fake_runner, ua_runner=lazy_ua))
+        self.assertEqual(result["phase"], "failed")
+        self.assertEqual(result["reason"], "publish_failed")
+        self.assertNotIn("retryCount", result)
+        self.assertEqual((stable / "stable.json").read_text(encoding="utf-8"), "stable")
+
+        # a publish failure is deliberately outside the retryable set
+        summary = index_job.run_pending(self.store, **self.worker_kwargs(runner=self.refuse_to_run))
+        self.assertEqual(summary["recovered"], 0)
+        self.assertEqual(self.store.get(job["jobId"])["phase"], "failed")
+
+    def test_run_pending_resumes_retry_wait_only_after_backoff(self):
+        job = self.make_job()
+
+        def crashing_runner(command, env):
+            raise RuntimeError("worker killed")
+
+        with patch.object(index_job, "connector_call", return_value={"root_name": "demo", "total": 1, "source_epoch": "e1"}):
+            failed = index_job.run_job(self.store, job["jobId"], **self.worker_kwargs(runner=crashing_runner))
+        self.assertEqual(failed["phase"], "retry_wait")
+        due = datetime.fromisoformat(failed["nextAttemptAt"].replace("Z", "+00:00"))
+
+        # before the backoff elapses the timer must leave the job alone
+        early = index_job.run_pending(
+            self.store, **self.worker_kwargs(runner=self.refuse_to_run, now=due - timedelta(seconds=1)))
+        self.assertEqual(early["scheduled"], 0)
+        self.assertEqual(self.store.get(job["jobId"])["phase"], "retry_wait")
+
+        def fake_runner(command, env):
+            candidate = Path(env["UYP_OUTPUT_ROOT"]) / "demo"
+            candidate.mkdir(parents=True)
+            (candidate / "main.py.knowledge.json").write_text(json.dumps({"file": "main.py"}), encoding="utf-8")
+
+        def fake_ua(**kwargs):
+            graph_dir = Path(kwargs["state_root"]) / "demo" / "ua"
+            graph_dir.mkdir(parents=True)
+            (graph_dir / "knowledge-graph.json").write_text(json.dumps({"nodes": [], "edges": []}), encoding="utf-8")
+            return {"stagedFiles": 1, "nodes": 0, "edges": 0}
+
+        # once due, run-pending resumes it end to end and records the pickup
+        with patch.object(index_job, "connector_call", return_value={"root_name": "demo", "total": 1, "source_epoch": "e1"}):
+            late = index_job.run_pending(
+                self.store, **self.worker_kwargs(runner=fake_runner, ua_runner=fake_ua, now=due + timedelta(seconds=1)))
+        self.assertEqual(late["scheduled"], 1)
+        self.assertEqual(self.store.get(job["jobId"])["phase"], "published")
+        events = read_events(self.store, job["jobId"])
+        resumed = next(event for event in events if event["phase"] == "resumed")
+        self.assertEqual(resumed["details"]["reason"], "worker_command_failed")
+        self.assertEqual(resumed["details"]["retryCount"], 1)
+
+    def test_retry_budget_exhaustion_escalates_to_permanent_failure(self):
+        job = self.make_job()
+
+        def crashing_runner(command, env):
+            raise RuntimeError("model unavailable")
+
+        manifest = {"root_name": "demo", "total": 1, "source_epoch": "e1"}
+        with patch.object(index_job, "connector_call", return_value=manifest):
+            for expected in (1, 2, 3):
+                result = index_job.run_job(self.store, job["jobId"], **self.worker_kwargs(runner=crashing_runner))
+                self.assertEqual(result["phase"], "retry_wait")
+                self.assertEqual(result["retryCount"], expected)
+            # the fourth failure has no budget left: permanent, terminal failed
+            final = index_job.run_job(self.store, job["jobId"], **self.worker_kwargs(runner=crashing_runner))
+        self.assertEqual(final["phase"], "failed")
+        self.assertEqual(final["reason"], "worker_command_failed")
+        terminal = [event for event in read_events(self.store, job["jobId"]) if event["phase"] == "failed"][-1]
+        self.assertTrue(terminal["details"]["retriesExhausted"])
+        self.assertEqual(terminal["details"]["retryCount"], 3)
+
+        # the scheduler must not resurrect an exhausted job
+        summary = index_job.run_pending(self.store, **self.worker_kwargs(runner=self.refuse_to_run))
+        self.assertEqual(summary["recovered"], 0)
+        self.assertEqual(summary["scheduled"], 0)
+        self.assertEqual(self.store.get(job["jobId"])["phase"], "failed")
+
+    def test_resume_reuses_staged_output_instead_of_restarting(self):
+        job = self.make_job()
+        stage_root = self.root / "state" / "index-jobs" / job["jobId"] / "staged"
+
+        def crashing_runner(command, env):
+            # the worker writes two items incrementally, then dies mid-run
+            candidate = Path(env["UYP_OUTPUT_ROOT"]) / "demo"
+            candidate.mkdir(parents=True, exist_ok=True)
+            (candidate / "a.py.knowledge.json").write_text(
+                json.dumps({"file": "a.py", "version": {"mtime": 1}}), encoding="utf-8")
+            (candidate / "b.py.knowledge.json").write_text(
+                json.dumps({"file": "b.py", "version": {"mtime": 2}}), encoding="utf-8")
+            raise RuntimeError("worker killed mid-run")
+
+        manifest = {"root_name": "demo", "total": 3, "source_epoch": "e1"}
+        with patch.object(index_job, "connector_call", return_value=manifest):
+            failed = index_job.run_job(self.store, job["jobId"], **self.worker_kwargs(runner=crashing_runner))
+        self.assertEqual(failed["phase"], "retry_wait")
+        # durable progress reports what survived the crash
+        self.assertEqual(failed["progress"]["processed"], 2)
+        self.assertEqual(len(list((stage_root / "output" / "demo").glob("*.knowledge.json"))), 2)
+        # the previous candidate is reused, not archived away
+        self.assertEqual(list(stage_root.parent.glob("staged-previous-*")), [])
+        first_item = (stage_root / "output" / "demo" / "a.py.knowledge.json").read_text(encoding="utf-8")
+
+        observed = []
+
+        def resuming_runner(command, env):
+            # index_project.py skips same-version staged items; the resumed
+            # worker must see the previous attempt's two items
+            candidate = Path(env["UYP_OUTPUT_ROOT"]) / "demo"
+            observed.append(sorted(path.name for path in candidate.glob("*.knowledge.json")))
+            (candidate / "c.py.knowledge.json").write_text(
+                json.dumps({"file": "c.py", "version": {"mtime": 3}}), encoding="utf-8")
+
+        def fake_ua(**kwargs):
+            graph_dir = Path(kwargs["state_root"]) / "demo" / "ua"
+            graph_dir.mkdir(parents=True, exist_ok=True)
+            (graph_dir / "knowledge-graph.json").write_text(json.dumps({"nodes": [], "edges": []}), encoding="utf-8")
+            return {"stagedFiles": 3, "nodes": 0, "edges": 0}
+
+        due = datetime.fromisoformat(failed["nextAttemptAt"].replace("Z", "+00:00"))
+        with patch.object(index_job, "connector_call", return_value=manifest):
+            resumed = index_job.run_pending(
+                self.store, **self.worker_kwargs(runner=resuming_runner, ua_runner=fake_ua, now=due + timedelta(seconds=1)))
+        self.assertEqual(resumed["scheduled"], 1)
+        # the resumed worker skipped, not restarted: it saw both prior items
+        self.assertEqual(observed, [["a.py.knowledge.json", "b.py.knowledge.json"]])
+        self.assertEqual(self.store.get(job["jobId"])["phase"], "published")
+        # prior items survived the resume untouched and all three published
+        self.assertEqual(
+            (stage_root / "output" / "demo" / "a.py.knowledge.json").read_text(encoding="utf-8"),
+            first_item)
+        published = sorted(path.name for path in (self.root / "output" / "demo").glob("*.knowledge.json"))
+        self.assertEqual(published, ["a.py.knowledge.json", "b.py.knowledge.json", "c.py.knowledge.json"])
+        running = [event for event in read_events(self.store, job["jobId"]) if event["phase"] == "running"][-1]
+        self.assertEqual(running["details"]["resumedFromStagedItems"], 2)
+
+    def test_run_pending_requeues_retryable_terminal_jobs_once(self):
+        # a job that crashed before retry accounting existed: terminal failed
+        job = self.make_job()
+        for phase in ("authorized", "queued", "running"):
+            self.store.event(job["jobId"], phase, {})
+        self.store.event(job["jobId"], "failed", {"reason": "worker_command_failed"})
+        self.assertNotIn("retryCount", self.store.get(job["jobId"]))
+
+        # the scheduler requeues it into retry_wait with the same budget and
+        # backoff; it does not execute it in the same pass
+        result = index_job.run_pending(self.store, **self.worker_kwargs(runner=self.refuse_to_run))
+        self.assertEqual(result["recovered"], 1)
+        self.assertEqual(result["scheduled"], 0)
+        record = self.store.get(job["jobId"])
+        self.assertEqual(record["phase"], "retry_wait")
+        self.assertEqual(record["retryCount"], 1)
+        self.assertIn("nextAttemptAt", record)
+
+        # the requeued job is no longer terminal: a second pass must neither
+        # inflate the retry count nor schedule it before the backoff elapses
+        again = index_job.run_pending(self.store, **self.worker_kwargs(runner=self.refuse_to_run))
+        self.assertEqual(again["recovered"], 0)
+        self.assertEqual(again["scheduled"], 0)
+        self.assertEqual(self.store.get(job["jobId"])["retryCount"], 1)
 
 
 def read_events(store, job_id):

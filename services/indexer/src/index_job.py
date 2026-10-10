@@ -14,6 +14,17 @@ rollback copy, so a failed candidate cannot replace the previous stable
 version.  Source bytes are still obtained by ``index_project.py`` and
 ``ua_bridge.py`` through the Connector; this worker never reads a source path.
 
+Retryable failures (worker crash, missing manifest, transport errors) do not
+end a job: the failure is still recorded under its canonical phase, then the
+job moves into ``retry_wait`` with a bounded retry budget (``MAX_RETRIES``)
+and an exponential backoff (``nextAttemptAt``).  ``run_pending`` requeues
+retryable terminal jobs and resumes due ``retry_wait`` jobs, reusing the
+previous attempt's staged output: ``index_project.py`` skips items whose
+recorded version already matches the manifest, so a job that dies near the
+end resumes where it stopped instead of restarting from zero.  Non-retryable
+failures (revocation, grant epoch mismatch, scope denial, publish failure)
+stay terminal.
+
 HomeHub must supply the AccessContext projection.  The worker validates it but
 never mints grants, extends expiry, changes policy, or writes audit decisions.
 """
@@ -32,7 +43,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -55,19 +66,45 @@ PHASES = (
     "failed",
 )
 
+# ``failed``/``offline`` stay in TERMINAL: run_pending never executes them
+# directly, it first reclassifies the retryable ones into ``retry_wait``.
 TERMINAL = {"published", "blocked", "offline", "revoked", "failed"}
 
+# Reasons the durable worker may retry.  Authorization answers (revocation,
+# grant epoch mismatch, scope denial) and publish failures stay terminal:
+# retrying them would only repeat the same denial, and a publish that already
+# failed must not get another shot at replacing a stable knowledge version.
+RETRYABLE_REASONS = {
+    "worker_command_failed",         # worker/LLM crash, incl. transport HTTP codes
+    "connector_manifest_not_found",  # connector answered 404 for the grant
+    "connector_unavailable",         # transport error reaching the connector
+}
+MAX_RETRIES = 3
+RETRY_BACKOFF_BASE_SECONDS = 60
+
+# Events that are logged for observability but never move the durable phase.
+INFORMATIONAL_PHASES = {"resumed"}
+
 ALLOWED_TRANSITIONS = {
-    "discovered": {"authorized", "retry_wait", "blocked", "revoked", "failed"},
-    "authorized": {"queued", "blocked", "revoked", "failed"},
+    # The manifest fetch happens before the authorized transition, so every
+    # non-terminal phase must be able to record a connector/transport failure
+    # (``offline`` was previously missing here, which crashed the scheduler
+    # pass instead of recording the outage).
+    "discovered": {"authorized", "retry_wait", "blocked", "revoked", "failed", "offline"},
+    "authorized": {"queued", "blocked", "revoked", "failed", "offline"},
     "queued": {"running", "offline", "retry_wait", "revoked", "failed"},
     "running": {"staged", "offline", "retry_wait", "revoked", "failed"},
-    "staged": {"published", "failed", "revoked"},
-    "retry_wait": {"authorized", "queued", "running", "offline", "revoked", "failed"},
+    "staged": {"published", "failed", "revoked", "offline"},
+    # ``blocked`` is reachable from retry_wait because a resumed job can find
+    # its scope narrowed between attempts; it must block, not crash.
+    "retry_wait": {"authorized", "queued", "running", "blocked", "offline", "revoked", "failed"},
     "offline": {"authorized", "queued", "retry_wait", "revoked", "failed"},
     "blocked": {"authorized", "revoked", "failed"},
     "revoked": set(),
-    "failed": {"authorized", "queued", "revoked"},
+    # ``retry_wait`` is reachable from failed so a retryable failure can be
+    # requeued (immediately after it is recorded, or by the recovery pass in
+    # run_pending for jobs that crashed before retry accounting existed).
+    "failed": {"authorized", "queued", "retry_wait", "revoked"},
     "published": {"authorized", "queued", "revoked"},
 }
 
@@ -78,6 +115,15 @@ class JobError(RuntimeError):
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _timestamp_after(seconds: int) -> str:
+    return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+
+
+def _retry_backoff_seconds(retry_count: int) -> int:
+    """Exponential backoff for the Nth retry: 60s, 120s, 240s."""
+    return RETRY_BACKOFF_BASE_SECONDS * (2 ** (max(int(retry_count), 1) - 1))
 
 
 def safe_component(value: str, label: str = "component") -> str:
@@ -210,6 +256,37 @@ def _observe_connector_health(store: "IndexJobStore", job: dict[str, Any], *, st
         return
 
 
+def _record_failure(store: "IndexJobStore", job_id: str, job: dict[str, Any], *,
+                    phase: str, reason: str, error: str | None = None) -> dict[str, Any]:
+    """Record a failure, scheduling a bounded retry when the reason allows it.
+
+    The failure itself is always recorded under its canonical phase (``failed``
+    or ``offline``, or ``revoked`` for policy answers) so the event log keeps
+    the real outcome.  A retryable reason then moves the job into
+    ``retry_wait`` with the retry budget and backoff that ``run_pending`` needs
+    to resume it; a non-retryable reason, or an exhausted budget, leaves the
+    recorded phase terminal.  Returns the job record after the transition.
+    """
+    details: dict[str, Any] = {"reason": reason}
+    if error is not None:
+        details["error"] = error
+    retries_used = int(job.get("retryCount") or 0)
+    if reason not in RETRYABLE_REASONS or retries_used >= MAX_RETRIES:
+        if reason in RETRYABLE_REASONS:
+            details["retryCount"] = retries_used
+            details["retriesExhausted"] = True
+        store.event(job_id, phase, details)
+        return store.get(job_id)
+    retry_count = retries_used + 1
+    store.event(job_id, phase, details)
+    store.event(job_id, "retry_wait", {
+        **details,
+        "retryCount": retry_count,
+        "nextAttemptAt": _timestamp_after(_retry_backoff_seconds(retry_count)),
+    })
+    return store.get(job_id)
+
+
 class IndexJobStore:
     """Atomic JSON records and append-only transition events under state_root."""
 
@@ -300,14 +377,24 @@ class IndexJobStore:
         return records
 
     def event(self, job_id: str, phase: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Record a phase transition, or an informational event that keeps the phase.
+
+        Phases in ``INFORMATIONAL_PHASES`` (for example ``resumed``) are
+        appended to the durable event log without moving the record's phase,
+        so timeline readers can see retry pickups that are not state-machine
+        transitions.
+        """
         record = self.get(job_id)
-        if phase not in PHASES:
+        if phase not in PHASES and phase not in INFORMATIONAL_PHASES:
             raise JobError(f"unknown IndexJob phase: {phase}")
         current = str(record.get("phase"))
-        if phase != current and phase not in ALLOWED_TRANSITIONS.get(current, set()):
-            raise JobError(f"invalid IndexJob transition: {current} -> {phase}")
+        informational = phase in INFORMATIONAL_PHASES
+        if not informational:
+            if phase != current and phase not in ALLOWED_TRANSITIONS.get(current, set()):
+                raise JobError(f"invalid IndexJob transition: {current} -> {phase}")
         stamp = now_iso()
-        record["phase"] = phase
+        if not informational:
+            record["phase"] = phase
         record["updatedAt"] = stamp
         if details:
             for key, value in details.items():
@@ -400,6 +487,28 @@ def publish_staged(job: dict[str, Any], *, stage_root: Path, output_root: Path, 
     }
 
 
+def _count_staged_items(stage_root: Path, project_id: str) -> int:
+    """Count KnowledgeItems a previous attempt already staged for the project."""
+    try:
+        project_output = stage_root / "output" / safe_component(project_id, "project id")
+        return sum(1 for item in project_output.glob("*.knowledge.json") if item.is_file())
+    except (OSError, ValueError):
+        return 0
+
+
+def _preserve_staged_progress(store: "IndexJobStore", job_id: str, job: dict[str, Any],
+                              stage_root: Path, manifest: dict[str, Any]) -> None:
+    """After a worker crash, keep durable progress truthful about survivors.
+
+    The worker writes staged output incrementally, so items completed before
+    the crash must show up in the job record immediately -- not only when a
+    later retry recounts them.
+    """
+    staged_items = _count_staged_items(stage_root, str(job["projectId"]))
+    if staged_items:
+        store.update(job_id, progress={"processed": staged_items, "total": manifest.get("total")})
+
+
 def run_job(
     store: IndexJobStore,
     job_id: str,
@@ -420,6 +529,15 @@ def run_job(
     existing index CLI and calls ``ua_bridge.run`` in-process after indexing.
     """
     job = store.get(job_id)
+    if str(job.get("phase")) == "retry_wait":
+        # A retry attempt is being picked up (by run_pending or a manual run).
+        # ``resumed`` is informational: the durable phase keeps its retry_wait
+        # value and moves on with the next real transition.
+        resumed_details: dict[str, Any] = {"retryCount": int(job.get("retryCount") or 0)}
+        reason = job.get("reason")
+        if isinstance(reason, str) and reason:
+            resumed_details["reason"] = reason
+        store.event(job_id, "resumed", resumed_details)
     if not context_is_valid(context):
         revoked = isinstance(context, dict) and (
             context.get("revoked") is True
@@ -455,16 +573,13 @@ def run_job(
         phase = "revoked" if exc.code in {401, 403} else "failed" if exc.code == 404 else "offline"
         _observe_connector_health(store, job, state="revoked" if phase == "revoked" else "offline", detail=f"HTTPError:{exc.code}")
         reason = "connector_revoked" if phase == "revoked" else "connector_manifest_not_found" if phase == "failed" else "connector_unavailable"
-        store.event(job_id, phase, {"reason": reason, "error": f"HTTPError:{exc.code}"})
-        return store.get(job_id)
+        return _record_failure(store, job_id, job, phase=phase, reason=reason, error=f"HTTPError:{exc.code}")
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
         _observe_connector_health(store, job, state="offline", detail=type(exc).__name__)
-        store.event(job_id, "offline", {"reason": "connector_unavailable", "error": type(exc).__name__})
-        return store.get(job_id)
+        return _record_failure(store, job_id, job, phase="offline", reason="connector_unavailable", error=type(exc).__name__)
     if str(manifest.get("root_name", "")) != str(job["projectId"]):
         _observe_connector_health(store, job, state="failed", detail="manifest_project_mismatch")
-        store.event(job_id, "failed", {"reason": "manifest_project_mismatch"})
-        return store.get(job_id)
+        return _record_failure(store, job_id, job, phase="failed", reason="manifest_project_mismatch")
     manifest_epoch = manifest.get("source_epoch") or derive_source_epoch(manifest)
     if job.get("sourceEpoch") and str(job["sourceEpoch"]) != str(manifest_epoch or ""):
         # The source changed between discovery and authorization.  Requeueing
@@ -479,20 +594,26 @@ def run_job(
     store.event(job_id, "authorized", {"auditId": context.get("auditId"), "grantEpoch": context.get("grantEpoch"), "sourceEpoch": manifest_epoch})
     store.event(job_id, "queued", {"queue": "background-index"})
     stage_root = Path(store.root) / "index-jobs" / safe_component(job_id, "job id") / "staged"
-    if stage_root.exists():
-        # A resume starts from a fresh candidate; the previous candidate stays
-        # in the job directory as a diagnostic/rollback artifact.
-        archive = stage_root.with_name(f"staged-previous-{uuid.uuid4().hex}")
-        os.replace(stage_root, archive)
+    # Reuse a previous attempt's staging directory instead of wiping it.  The
+    # index worker is idempotent against its own output -- index_project.py
+    # skips items whose recorded version matches the manifest -- so a job that
+    # dies at file 2900 of 3000 resumes at file 2901, not at file 1.  The
+    # publish step still swaps complete directories atomically with a rollback
+    # copy, so a reused candidate cannot replace the previous stable version.
+    staged_items = _count_staged_items(stage_root, str(job["projectId"]))
     (stage_root / "output").mkdir(parents=True, exist_ok=True)
     (stage_root / "state").mkdir(parents=True, exist_ok=True)
+    if staged_items:
+        # Keep the durable progress truthful while the retry is running, so a
+        # job that dies again still reports how much work survived.
+        store.update(job_id, progress={"processed": staged_items, "total": manifest.get("total")})
     env = dict(os.environ)
     env.update({
         "UYP_OUTPUT_ROOT": str(stage_root / "output"),
         "UYP_STATE_ROOT": str(stage_root / "state"),
         "UYP_ACCESS_CONTEXT_FILE": "",  # index_project itself never authorizes
     })
-    store.event(job_id, "running", {"stageRoot": str(stage_root), "auditId": context.get("auditId")})
+    store.event(job_id, "running", {"stageRoot": str(stage_root), "auditId": context.get("auditId"), "resumedFromStagedItems": staged_items})
     py = python_executable or sys.executable
     script = index_script or str(Path(__file__).with_name("index_project.py"))
     limit = int((job.get("metadata") or {}).get("limit", 0))
@@ -517,12 +638,12 @@ def run_job(
         store.update(job_id, progress={"processed": int(ua_summary.get("stagedFiles", 0)), "total": manifest.get("total")}, uaSummary=ua_summary)
         store.event(job_id, "staged", {"uaSummary": ua_summary})
     except urllib.error.HTTPError as exc:
+        _preserve_staged_progress(store, job_id, job, stage_root, manifest)
         phase = "revoked" if exc.code in {401, 403} else "offline" if exc.code in {408, 502, 503, 504} else "failed"
-        store.event(job_id, phase, {"reason": "worker_command_failed", "error": f"HTTPError:{exc.code}"})
-        return store.get(job_id)
+        return _record_failure(store, job_id, job, phase=phase, reason="worker_command_failed", error=f"HTTPError:{exc.code}")
     except (OSError, subprocess.CalledProcessError, ValueError, RuntimeError) as exc:
-        store.event(job_id, "failed", {"reason": "worker_command_failed", "error": type(exc).__name__})
-        return store.get(job_id)
+        _preserve_staged_progress(store, job_id, job, stage_root, manifest)
+        return _record_failure(store, job_id, job, phase="failed", reason="worker_command_failed", error=type(exc).__name__)
 
     try:
         publication = publish_staged(
@@ -532,10 +653,65 @@ def run_job(
             state_root=store.root,
         )
     except (OSError, shutil.Error, JobError) as exc:
-        store.event(job_id, "failed", {"reason": "publish_failed", "error": type(exc).__name__})
-        return store.get(job_id)
+        return _record_failure(store, job_id, job, phase="failed", reason="publish_failed", error=type(exc).__name__)
     store.event(job_id, "published", {**publication, "auditId": context.get("auditId")})
     return store.get(job_id)
+
+
+def _retry_attempt_due(job: dict[str, Any], stamp: datetime) -> bool:
+    """A retry_wait job becomes due once ``nextAttemptAt`` has passed.
+
+    Records without ``nextAttemptAt`` (the source-epoch-drift requeue and jobs
+    written before retry accounting existed) stay immediately eligible, which
+    preserves the previous run_pending behavior for them.  A malformed
+    timestamp also counts as due: an early retry is recoverable, a job stuck
+    behind an unparseable timestamp is not.
+    """
+    if str(job.get("phase")) != "retry_wait":
+        return True
+    raw = str(job.get("nextAttemptAt") or "")
+    if not raw:
+        return True
+    try:
+        due = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if due.tzinfo is None:
+        due = due.replace(tzinfo=timezone.utc)
+    return due <= stamp
+
+
+def _recover_failed_jobs(store: IndexJobStore) -> int:
+    """Requeue terminal jobs whose failure reason is retryable.
+
+    Jobs that crashed before retry accounting existed sit permanently in
+    ``failed``/``offline`` even though their reason (worker crash, missing
+    manifest, transport blip) is exactly what retries exist for.  Each
+    recovery consumes one unit of the same bounded budget and gets the same
+    backoff, so an exhausted or non-retryable job stays terminal.  Returns how
+    many jobs were requeued.
+    """
+    recovered = 0
+    for job in store.list():
+        if str(job.get("phase")) not in {"failed", "offline"}:
+            continue
+        reason = str(job.get("reason") or "")
+        if reason not in RETRYABLE_REASONS:
+            continue
+        retries_used = int(job.get("retryCount") or 0)
+        if retries_used >= MAX_RETRIES:
+            continue
+        retry_count = retries_used + 1
+        try:
+            store.event(str(job["jobId"]), "retry_wait", {
+                "reason": reason,
+                "retryCount": retry_count,
+                "nextAttemptAt": _timestamp_after(_retry_backoff_seconds(retry_count)),
+            })
+        except (JobError, KeyError):
+            continue  # a concurrent actor moved the job first; leave it alone
+        recovered += 1
+    return recovered
 
 
 def run_pending(
@@ -549,6 +725,7 @@ def run_pending(
     max_jobs: int = 1,
     runner: Callable[[list[str], dict[str, str]], None] = _run_command,
     ua_runner: Callable[..., dict[str, Any]] | None = None,
+    now: datetime | None = None,
 ) -> dict[str, Any]:
     """Run queued durable jobs once, without turning missing access into a grant.
 
@@ -556,11 +733,23 @@ def run_pending(
     deployment controller can invoke it repeatedly.  When HomeHub has not
     supplied a valid context the queue is left untouched so a restart does not
     convert a temporarily disconnected policy plane into permanent blocks.
+
+    Before selecting jobs, terminal ``failed``/``offline`` jobs with a
+    retryable reason and budget left are requeued into ``retry_wait``.
+    ``retry_wait`` jobs are selected only once their ``nextAttemptAt`` backoff
+    has elapsed, so a crashing job is retried with increasing delay instead of
+    being hammered on every timer tick.  ``now`` is injectable so schedulers
+    and tests can decide eligibility against a controlled clock.
     """
+    stamp = now or datetime.now(timezone.utc)
     jobs = [job for job in store.list() if str(job.get("phase")) not in TERMINAL]
     if context is None or not context_is_valid(context):
-        return {"ok": True, "scheduled": 0, "skipped": len(jobs), "reason": "homehub_access_context_unavailable", "jobs": []}
-    selected = jobs[: max(0, int(max_jobs))]
+        return {"ok": True, "scheduled": 0, "skipped": len(jobs), "recovered": 0, "reason": "homehub_access_context_unavailable", "jobs": []}
+    recovered = _recover_failed_jobs(store)
+    if recovered:
+        jobs = [job for job in store.list() if str(job.get("phase")) not in TERMINAL]
+    due = [job for job in jobs if _retry_attempt_due(job, stamp)]
+    selected = due[: max(0, int(max_jobs))]
     results: list[dict[str, Any]] = []
     for job in selected:
         results.append(run_job(
@@ -574,7 +763,7 @@ def run_pending(
             runner=runner,
             ua_runner=ua_runner,
         ))
-    return {"ok": True, "scheduled": len(results), "skipped": max(0, len(jobs) - len(results)), "jobs": results}
+    return {"ok": True, "scheduled": len(results), "skipped": max(0, len(jobs) - len(results)), "recovered": recovered, "jobs": results}
 
 
 def main() -> None:
