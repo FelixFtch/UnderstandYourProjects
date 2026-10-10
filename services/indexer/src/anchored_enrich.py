@@ -56,18 +56,15 @@ def qwen(prompt: str) -> tuple[str, int]:
 INSTR = """You are a project file analyzer. You are given a file's REAL symbol table
 extracted by tree-sitter (authoritative structure) and the file's source text.
 
-Rules:
-1. purpose: one sentence whose SUBJECT IS the PRIMARY ACTOR named in the
-   "PRIMARY ACTOR:" line below — describe what THAT symbol does (it is the
-   file's largest and most central symbol). Do not describe side helpers.
-2. key_points: max 4. EACH point must END with a citation "(Lxx-Lyy)" that
-   is COPY-PASTED from one row of the symbol table — never compute your own
-   numbers. Classify each point: [fact]/[structure]/[inference].
-3. components: copy symbol names WITH their exact table ranges.
-4. Summarize the CODE, not docstrings or comments (they may be stale).
-5. depends_on: only imports actually present in the source text.
-6. Answer in the SAME LANGUAGE as the file. Output ONLY the JSON object:
-{"purpose": str, "key_points": [str], "components": [str], "depends_on": [str]}
+Output STRICTLY in this line format (one line each, no JSON, no code fences,
+no extra text; write key_point text WITHOUT double quotes):
+P: <one sentence, subject = the PRIMARY ACTOR named below>
+K: [fact|structure|inference] <point> (L<lo>-L<hi>)   <- range copy-pasted from the table
+C: <symbol name> (L<lo>-L<hi>)
+D: <import>
+Rules: max 4 K lines; ranges only from the symbol table rows; summarize the
+CODE not docstrings; depends_on only imports actually present; answer in the
+file's language.
 """
 
 def main():
@@ -117,35 +114,41 @@ def main():
         except RuntimeError as e:
             print(f"  qwen-fail {rel}: {e}", flush=True); continue
         import re
-        # v3.1: qwen 偶发用 ```json 围栏包裹 + 尾逗号 -> 先剥围栏再试, 仍败则 raw_head 兜底
+        def snap_all(text: str) -> str:
+            """行号吸附: 生成区间吸附到重叠符号的精确区间, 无重叠标 unverified。"""
+            def rep(m):
+                lo, hi = int(m.group(1)), int(m.group(2))
+                cands = [sy for sy in syms if not (hi < sy["lo"] or lo > sy["hi"])]
+                if not cands:
+                    return f"(unverified L{lo}-L{hi})"
+                best = max(cands, key=lambda sy: min(hi, sy["hi"]) - max(lo, sy["lo"]))
+                return f"(L{best['lo']}-L{best['hi']})"
+            return re.sub(r"\(?(?:L ?)?(\d{1,4})\s*[-\u2013]\s*(?:L ?)?(\d{1,4})\)?", lambda m: rep(m), text)
         cleaned = re.sub(r"^```[a-z]*\s*|\s*```$", "", raw.strip(), flags=re.M)
-        m = re.search(r"\{.*\}", cleaned, re.S)
-        parsed = None
-        if m:
-            candidate = m.group(0)
-            for attempt in (candidate,
-                            re.sub(r",\s*([}\]])", r"\1", candidate)):  # 尾逗号修复
-                try:
-                    parsed = json.loads(attempt); break
-                except json.JSONDecodeError:
-                    continue
-        # v3 citation snap: 生成行号吸附到符号表区间(复审实测: 未吸附时 key_points
-        # 引用仅 36% 有效——模型"说真话但指错行"; 吸附后引用必然指向真实符号)
-        if parsed:
-            # 先归一 L 前缀, 再逐段吸附
-            def snap_all(text):
-                def rep(m):
-                    lo, hi = int(m.group(1)), int(m.group(2))
-                    cands = [sy for sy in syms if not (hi < sy["lo"] or lo > sy["hi"])]
-                    if not cands:
-                        # 无重叠: 找内容最近不可行, 保守标记 unverified
-                        return f"(unverified L{lo}-L{hi})"
-                    best = max(cands, key=lambda sy: min(hi, sy["hi"]) - max(lo, sy["lo"]))
-                    return f"(L{best['lo']}-L{best['hi']})"
-                return re.sub(r"\(?(?:L ?)?(\d{1,4})\s*[-–]\s*(?:L ?)?(\d{1,4})\)?",
-                              lambda m: rep(m), text)
-            parsed["key_points"] = [snap_all(kp) for kp in parsed.get("key_points", [])]
-            parsed["components"] = [snap_all(cp) for cp in parsed.get("components", [])]
+        # v3.2: 行式协议确定性解析 (JSON 在含引号代码上反复失败)
+        parsed = {"purpose": "", "key_points": [], "components": [], "depends_on": []}
+        import re as _re2
+        # 先按内嵌标记切分(模型偶发把 K:/C: 塞进同一行), 再逐段归类
+        segments = []
+        for line in cleaned.split("\n"):
+            line = line.strip().strip("`")
+            if not line:
+                continue
+            for part in _re2.split(r"(?=(?:^|\s)(?:P|K|C|D): )", line):
+                part = part.strip()
+                if part:
+                    segments.append(part)
+        for part in segments:
+            if part.startswith("P:") and not parsed["purpose"]:
+                parsed["purpose"] = part[2:].strip()
+            elif part.startswith("K:"):
+                parsed["key_points"].append(snap_all(part[2:].strip()))
+            elif part.startswith("C:"):
+                parsed["components"].append(snap_all(part[2:].strip()))
+            elif part.startswith("D:"):
+                parsed["depends_on"].append(part[2:].strip())
+        if not parsed["purpose"] and not parsed["key_points"]:
+            parsed = None  # 完全没按协议来 -> raw_head 兜底
         d.setdefault("derived_v1", d.get("derived"))
         d["derived"] = parsed or {"raw_head": raw[:300]}
         d["derived"]["anchored"] = True
