@@ -58,6 +58,11 @@ class IndexJobTests(unittest.TestCase):
         self.assertEqual(called, [])
         self.assertEqual(result["events"], 2)
 
+    def test_job_persists_connector_capability_separately(self):
+        job = self.make_job()
+        self.assertEqual(job["connectorGrantId"], "grant-1")
+        self.assertNotIn("grantId", job)
+
     def test_scheduler_leaves_queue_untouched_without_homehub_context(self):
         job = self.make_job()
         result = index_job.run_pending(

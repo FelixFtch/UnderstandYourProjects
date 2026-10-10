@@ -11,7 +11,7 @@ Usage: index_project.py --host http://127.0.0.1:7121 --grant g_xxx [--limit 20]
 Requires: Laya llama-server on :8901 (start_laya.sh), ollama qwen3.5:4b.
 """
 from __future__ import annotations
-import argparse, json, os, re, subprocess, sys, time, urllib.request
+import argparse, json, os, re, subprocess, sys, time, urllib.error, urllib.request
 
 MODELS = os.environ.get("UYP_MODELS_ROOT", "/home/jetson/dev/uyp/models")
 BIN = os.environ.get("UYP_LLAMACPP_BIN", "/home/jetson/dev/uyp/llama.cpp-build/build/bin")
@@ -35,10 +35,21 @@ def laya_decide(content: str) -> tuple[str, float]:
                        "quick-summary": "docs worth one line", "deep-analysis": "core logic"}},
         "thinking": {"type": "noul",
                      "instructions": "Does analysis need multi-step reasoning?"}}}).encode()
-    r = urllib.request.Request("http://127.0.0.1:8901/v1/systemone", data=body,
+    laya_url = os.environ.get("UYP_LAYA_URL", "http://127.0.0.1:8901")
+    r = urllib.request.Request(laya_url.rstrip("/") + "/v1/systemone", data=body,
                                headers={"Content-Type": "application/json"})
-    d = json.loads(urllib.request.urlopen(r, timeout=60).read())["answers"]
-    return d["triage"]["choice"], d["thinking"]["noul"]
+    try:
+        d = json.loads(urllib.request.urlopen(r, timeout=60).read())["answers"]
+        return d["triage"]["choice"], d["thinking"]["noul"]
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, KeyError, TypeError):
+        # The production profile keeps Laya resident.  A deliberate operator
+        # fallback is useful during a model-service outage: the rule layer
+        # still preserves coverage while every Qwen enrichment remains
+        # think:false.  It is opt-in so an accidental outage cannot silently
+        # change the normal routing contract.
+        if os.environ.get("UYP_LAYA_FALLBACK") == "rule":
+            return "quick-summary", 0.0
+        raise
 
 def qwen_enrich(content: str, think: bool):
     instr = ("You are a project file analyzer. Output ONLY a JSON object with keys: "

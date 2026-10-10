@@ -101,10 +101,22 @@ def validate_context(value: Mapping[str, Any], *, now: datetime | None = None) -
     return normalized
 
 
+def _unwrap_response(value: Any) -> Mapping[str, Any]:
+    """Accept HomeHub's transport envelope without changing the authority boundary."""
+    if not isinstance(value, Mapping):
+        raise AccessContextError("HomeHub response must be an object")
+    context = value.get("accessContext")
+    if isinstance(context, Mapping):
+        if value.get("status") not in (None, "ok"):
+            raise AccessContextError("HomeHub response is not ok")
+        return context
+    return value
+
+
 def _load_file(path: str) -> dict[str, Any] | None:
     try:
         with open(os.path.expanduser(path), encoding="utf-8") as handle:
-            return validate_context(json.load(handle))
+            return validate_context(_unwrap_response(json.load(handle)))
     except (OSError, json.JSONDecodeError, AccessContextError, TypeError):
         return None
 
@@ -127,7 +139,7 @@ def _load_url(url: str, token_file: str | None = None) -> dict[str, Any] | None:
             headers["Authorization"] = f"Bearer {token}"
         request = urllib.request.Request(url, headers=headers, method="GET")
         with urllib.request.urlopen(request, timeout=3) as response:
-            return validate_context(json.loads(response.read()))
+            return validate_context(_unwrap_response(json.loads(response.read())))
     except (OSError, urllib.error.URLError, json.JSONDecodeError, AccessContextError, TypeError, ValueError):
         return None
 

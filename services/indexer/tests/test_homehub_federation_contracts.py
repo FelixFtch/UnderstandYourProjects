@@ -93,6 +93,34 @@ class HomeHubContextTests(unittest.TestCase):
             request = opened.call_args.args[0]
             self.assertEqual(request.headers.get("Authorization"), "Bearer session-token")
 
+    def test_http_projection_accepts_homehub_transport_envelope(self):
+        payload = json.dumps({"status": "ok", "accessContext": self.context()}).encode("utf-8")
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return payload
+
+        with tempfile.TemporaryDirectory() as directory:
+            token_file = Path(directory) / "homehub.token"
+            token_file.write_text("session-token\n", encoding="utf-8")
+            with patch.dict(
+                "os.environ",
+                {
+                    "UYP_HOMEHUB_ACCESS_CONTEXT_URL": "http://127.0.0.1:5120/api/uyp/access-context",
+                    "UYP_HOMEHUB_TOKEN_FILE": str(token_file),
+                    "UYP_ACCESS_CONTEXT_FILE": "",
+                },
+                clear=False,
+            ), patch("homehub_adapter.urllib.request.urlopen", return_value=Response()):
+                checked = load_context()
+            self.assertEqual(checked["projectScopes"], ["project-a"])
+
     def test_http_projection_failure_remains_unavailable(self):
         with patch.dict(
             "os.environ",

@@ -104,6 +104,14 @@ def scope_allows(context: dict[str, Any], job: dict[str, Any]) -> bool:
     return project_ok and source_ok
 
 
+def connector_grant_id(job: dict[str, Any]) -> str:
+    """Resolve the Connector capability without confusing it with HomeHub policy."""
+    value = job.get("connectorGrantId") or job.get("grantId")
+    if not isinstance(value, str) or not value.strip():
+        raise JobError("IndexJob is missing connectorGrantId")
+    return value.strip()
+
+
 def _registry_connector_id(source_id: str) -> str:
     """Map a capability id to a stable registry id without persisting paths."""
     raw = str(source_id)
@@ -203,7 +211,8 @@ class IndexJobStore:
             except FileNotFoundError:
                 pass
 
-    def create(self, *, project_id: str, source_id: str, grant_id: str,
+    def create(self, *, project_id: str, source_id: str, grant_id: str | None = None,
+               connector_grant_id: str | None = None,
                source_epoch: str | None = None, grant_epoch: str | None = None,
                job_id: str | None = None, total: int | None = None,
                metadata: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -214,7 +223,10 @@ class IndexJobStore:
         # emptiness before being persisted.
         if not str(source_id) or "\x00" in str(source_id):
             raise ValueError(f"unsafe source id: {source_id!r}")
-        safe_component(grant_id, "grant id")
+        if connector_grant_id and grant_id and connector_grant_id != grant_id:
+            raise ValueError("grant_id and connector_grant_id must match when both are supplied")
+        connector_grant_id = connector_grant_id or grant_id
+        safe_component(connector_grant_id or "", "connector grant id")
         job_id = safe_component(job_id or f"job-{uuid.uuid4().hex}", "job id")
         if self._path(job_id).exists():
             raise JobError(f"job already exists: {job_id}")
@@ -224,7 +236,10 @@ class IndexJobStore:
             "jobId": job_id,
             "projectId": project_id,
             "sourceId": source_id,
-            "grantId": grant_id,
+            # This is the Connector's read capability. HomeHub's project
+            # grant is represented by the AccessContext and its epoch; it is
+            # deliberately a separate authorization namespace.
+            "connectorGrantId": connector_grant_id,
             "sourceEpoch": source_epoch,
             "grantEpoch": grant_epoch,
             "phase": "discovered",
@@ -399,15 +414,17 @@ def run_job(
     token_path = Path(os.path.expanduser(token_file))
     try:
         token = token_path.read_text(encoding="utf-8").strip()
+        connector_grant = connector_grant_id(job)
         manifest = connector_call(
             connector_host,
             token,
-            "/manifest?grant=" + urllib.parse.quote(str(job["grantId"]), safe=""),
+            "/manifest?grant=" + urllib.parse.quote(connector_grant, safe=""),
         )
     except urllib.error.HTTPError as exc:
-        phase = "revoked" if exc.code in {401, 403} else "offline"
+        phase = "revoked" if exc.code in {401, 403} else "failed" if exc.code == 404 else "offline"
         _observe_connector_health(store, job, state="revoked" if phase == "revoked" else "offline", detail=f"HTTPError:{exc.code}")
-        store.event(job_id, phase, {"reason": "connector_revoked" if phase == "revoked" else "connector_unavailable", "error": f"HTTPError:{exc.code}"})
+        reason = "connector_revoked" if phase == "revoked" else "connector_manifest_not_found" if phase == "failed" else "connector_unavailable"
+        store.event(job_id, phase, {"reason": reason, "error": f"HTTPError:{exc.code}"})
         return store.get(job_id)
     except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
         _observe_connector_health(store, job, state="offline", detail=type(exc).__name__)
@@ -446,7 +463,7 @@ def run_job(
     py = python_executable or sys.executable
     script = index_script or str(Path(__file__).with_name("index_project.py"))
     limit = int((job.get("metadata") or {}).get("limit", 0))
-    command = [py, script, "--host", connector_host, "--token-file", str(token_path), "--grant", str(job["grantId"])]
+    command = [py, script, "--host", connector_host, "--token-file", str(token_path), "--grant", connector_grant_id(job)]
     # Pass the value explicitly: 0 means full pending project for the durable
     # worker, while the standalone CLI retains its 20-file default.
     command.extend(["--limit", str(limit)])
@@ -457,7 +474,7 @@ def run_job(
         ua_summary = ua_runner(
             host=connector_host,
             token_file=str(token_path),
-            grant=str(job["grantId"]),
+            grant=connector_grant_id(job),
             ua_root=ua_root,
             state_root=str(stage_root / "state"),
             limit=limit,
@@ -539,7 +556,10 @@ def main() -> None:
     create = sub.add_parser("create")
     create.add_argument("--project-id", required=True)
     create.add_argument("--source-id", required=True)
-    create.add_argument("--grant-id", required=True)
+    create.add_argument("--connector-grant-id")
+    # Backward-compatible spelling for existing local scripts. It always
+    # means the Connector capability, never the HomeHub project grant.
+    create.add_argument("--grant-id")
     create.add_argument("--source-epoch")
     create.add_argument("--grant-epoch")
     create.add_argument("--job-id")
@@ -553,10 +573,15 @@ def main() -> None:
     args = parser.parse_args()
     store = IndexJobStore(args.state_root)
     if args.action == "create":
+        connector_grant = args.connector_grant_id or args.grant_id
+        if args.connector_grant_id and args.grant_id and args.connector_grant_id != args.grant_id:
+            parser.error("--connector-grant-id and --grant-id must match when both are supplied")
+        if not connector_grant:
+            parser.error("create requires --connector-grant-id")
         result = store.create(
             project_id=args.project_id,
             source_id=args.source_id,
-            grant_id=args.grant_id,
+            connector_grant_id=connector_grant,
             source_epoch=args.source_epoch,
             grant_epoch=args.grant_epoch,
             job_id=args.job_id,

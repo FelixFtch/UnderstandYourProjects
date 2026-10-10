@@ -50,9 +50,11 @@ unscoped files.
 2. The Jetson service reads `/api/uyp/access-context` with that session token.
 3. The authorized Connector supplies its own short-lived read capability for
    the same source. A durable UYP `IndexJob` is created with that Connector
-   capability plus the HomeHub project/source scope and epoch. These are two
-   deliberately separate grants: the Connector capability is never treated
-   as a HomeHub identity or policy decision.
+   capability plus the HomeHub project/source scope and epoch. In the durable
+   job record and CLI this capability is named `connectorGrantId` (the legacy
+   `--grant-id` spelling is accepted as an alias). These are two deliberately
+   separate grants: the Connector capability is never treated as a HomeHub
+   identity or policy decision.
 4. The worker reads the authorized Connector manifest, stages the files,
    runs Understand Anything plus the existing Laya/Qwen enrichment, and
    atomically publishes the graph and evidence projection.

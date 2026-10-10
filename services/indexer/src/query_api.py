@@ -151,7 +151,7 @@ def _job_projection(raw: dict) -> dict | None:
         "phase": phase,
         "progress": {"processed": processed, "total": total},
     }
-    # These are timestamps/versions only; grantId, outputPath, metadata and
+    # These are timestamps/versions only; connectorGrantId/grantId, outputPath, metadata and
     # event details are deliberately excluded from the Studio projection.
     for key in ("sourceEpoch", "knowledgeVersion", "createdAt", "updatedAt", "publishedAt", "finishedAt", "reason", "auditId"):
         value = raw.get(key)
