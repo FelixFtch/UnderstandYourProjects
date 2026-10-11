@@ -84,18 +84,23 @@ def laya_decide(head: str, mid: str = "") -> tuple[str, float]:
 INTERACTIVE_LOCK = "/tmp/uyp_interactive.lock"
 
 def _yield_to_interactive(max_wait_s: int = 600):
-    """语音>查询>索引 (架构铁律): 交互锁新鲜(<90s)期间, 后台富集让路等待。"""
+    """语音>查询>索引 + 强制抢占 (owner design 2026-10-10):
+    语音进来 -> 杀掉在途 qwen curl -> GPU 立刻 100% 给语音
+    -> 30秒无交互 -> 恢复索引, 被截断的文件从零重做。"""
     import time as _t
-    waited = 0
+    import subprocess as _sp
+    waited = 0.0
     while waited < max_wait_s:
         try:
             ts = float(open(INTERACTIVE_LOCK).read().strip())
         except (OSError, ValueError):
             return
-        if _t.time() - ts > 90:
+        if _t.time() - ts > 30:
             return
-        time.sleep(2)
-        waited += 2
+        _sp.run(["pkill", "-f", "curl.*127.0.0.1:11434/api/chat"],
+                capture_output=True)
+        time.sleep(0.5)
+        waited += 0.5
 
 
 def qwen_enrich(content: str, think: bool):
@@ -375,6 +380,15 @@ def main():
             item["enrich_s"] = round(time.time() - t0, 1)
             bump("deep" if think else "quick")
             bump("json_ok" if parsed else "json_bad")
+        # 抢占检查: 锁新鲜时不写输出 — 文件保持未分析, 恢复时重做
+        try:
+            _lk = float(open(INTERACTIVE_LOCK).read().strip())
+            _fresh = (time.time() - _lk) <= 30
+        except (OSError, ValueError):
+            _fresh = False
+        if _fresh and verdict not in ("skip", "structure-only"):
+            print(f"  PREEMPTED         {rel[:70]} (redo on resume)", flush=True)
+            return verdict
         safe = rel.replace("/", "__") + ".knowledge.json"
         with open(f"{OUT}/{root}/{safe}", "w", encoding="utf-8") as fh:
             json.dump(item, fh, ensure_ascii=False, indent=1)
