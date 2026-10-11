@@ -186,5 +186,135 @@ class TestLoadChangedPaths(unittest.TestCase):
             index_project.load_changed_paths(None, changes)
 
 
+class TestSlotPacing(unittest.TestCase):
+    """GPU-aware yield (root-cause fix, 2026-10-10): the interactive lock
+    only helps while a query is IN FLIGHT; between queries the index workers
+    must not fill every ollama slot, or the NEXT voice/text query waits for
+    a slot.  Pacing checks the shared load before each qwen call and waits
+    below the UYP_MAX_CONCURRENT ceiling."""
+
+    def _ps_response(self, payload):
+        m = MagicMock()
+        m.read.return_value = json.dumps(payload).encode()
+        m.__enter__ = MagicMock(return_value=m)
+        m.__exit__ = MagicMock(return_value=False)
+        return m
+
+    def test_inflight_from_reporting_ps_endpoint(self):
+        # A server that reports its own concurrency is honored directly.
+        with patch("urllib.request.urlopen",
+                   return_value=self._ps_response({"concurrent": 4, "models": []})):
+            self.assertEqual(index_project._ollama_inflight(), 4)
+
+    def test_stock_ps_falls_back_to_established_socket_count(self):
+        # Stock ollama /api/ps lists models only: count ESTABLISHED sockets
+        # on the ollama port instead (one per in-flight request).
+        ps = self._ps_response({"models": [{"name": "qwen3.5-route"}]})
+        ss = MagicMock(returncode=0,
+                       stdout="ESTAB 0 0 127.0.0.1:1 127.0.0.1:11434\n\n"
+                              "ESTAB 0 0 127.0.0.1:2 127.0.0.1:11434\n")
+        with patch("urllib.request.urlopen", return_value=ps), \
+             patch.object(index_project.subprocess, "run", return_value=ss) as run:
+            self.assertEqual(index_project._ollama_inflight(), 2)
+            self.assertEqual(run.call_args[0][0][0], "ss")
+
+    def test_probe_failure_means_unknown_and_disables_pacing(self):
+        with patch("urllib.request.urlopen", side_effect=OSError("down")), \
+             patch.object(index_project.subprocess, "run",
+                          side_effect=FileNotFoundError("ss")):
+            self.assertEqual(index_project._ollama_inflight(), 0)
+
+    def test_pacing_sleeps_while_at_or_above_ceiling(self):
+        levels = iter([3, 3, 1])
+        with patch.object(index_project, "_ollama_inflight",
+                          side_effect=lambda: next(levels)), \
+             patch.object(index_project.time, "sleep") as sleep:
+            index_project._pace_llm_slots()
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [2, 2])
+
+    def test_pacing_ceiling_default_and_env(self):
+        # Default 3: 2 proceeds, 3 waits.  UYP_MAX_CONCURRENT=5: 4 proceeds, 5 waits.
+        with patch.object(index_project, "_ollama_inflight", return_value=2), \
+             patch.object(index_project.time, "sleep") as sleep:
+            index_project._pace_llm_slots()
+        sleep.assert_not_called()
+        with patch.dict(os.environ, {"UYP_MAX_CONCURRENT": "5"}), \
+             patch.object(index_project, "_ollama_inflight", side_effect=[5, 4]), \
+             patch.object(index_project.time, "sleep") as sleep:
+            index_project._pace_llm_slots()
+        self.assertEqual(sleep.call_count, 1)
+
+    def test_qwen_enrich_paces_before_each_call(self):
+        paced = []
+        curl = MagicMock(returncode=0, stdout=json.dumps(
+            {"message": {"content": "{}"}, "eval_count": 1}))
+        with patch.object(index_project, "_pace_llm_slots",
+                          side_effect=lambda: paced.append(1)), \
+             patch.object(index_project.subprocess, "run", return_value=curl):
+            content, tokens = index_project.qwen_enrich("x = 1", False)
+        self.assertEqual(paced, [1])
+        self.assertEqual(content, "{}")
+        self.assertEqual(tokens, 1)
+
+
+class TestTransportRetries(unittest.TestCase):
+    """ba8bc9f port contract: api() retries transport blips (the launchd
+    ssh -R tunnel to the connector restarts on network changes, observed
+    2026-10-10 killing whole jobs) but NEVER masks HTTP policy answers
+    (403 deny / 404 no-such-grant / 413 range-cap are final)."""
+
+    def _ok(self, payload=None):
+        m = MagicMock()
+        m.read.return_value = json.dumps(payload or {"ok": True}).encode()
+        m.__enter__ = MagicMock(return_value=m)
+        m.__exit__ = MagicMock(return_value=False)
+        return m
+
+    def test_tunnel_blips_retry_until_success(self):
+        import urllib.error
+        good = self._ok()
+        with patch("urllib.request.urlopen",
+                   side_effect=[urllib.error.URLError("reset"),
+                                ConnectionResetError("reset"), good]) as up, \
+             patch.object(index_project.time, "sleep") as sleep:
+            result = index_project.api("http://connector", "t", "/manifest")
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(up.call_count, 3)
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [5, 10])
+
+    def test_policy_http_errors_are_final(self):
+        import urllib.error
+        for code in (403, 404, 413):
+            with patch("urllib.request.urlopen",
+                       side_effect=urllib.error.HTTPError("u", code, "no", None, None)) as up, \
+                 patch.object(index_project.time, "sleep") as sleep:
+                with self.assertRaises(urllib.error.HTTPError):
+                    index_project.api("http://connector", "t", "/read?grant=g")
+            up.assert_called_once()
+            sleep.assert_not_called()
+
+    def test_exhausted_retries_raise_last_error_without_trailing_sleep(self):
+        import urllib.error
+        with patch("urllib.request.urlopen",
+                   side_effect=urllib.error.URLError("down")) as up, \
+             patch.object(index_project.time, "sleep") as sleep:
+            with self.assertRaises(urllib.error.URLError):
+                index_project.api("http://connector", "t", "/manifest")
+        self.assertEqual(up.call_count, 5)
+        # no backoff after the FINAL failure: the job's failure must record
+        # promptly instead of sleeping a pointless 60s
+        self.assertEqual(sleep.call_count, 4)
+
+    def test_torn_json_body_is_treated_as_transport(self):
+        torn = MagicMock()
+        torn.read.return_value = b"{trunc"
+        torn.__enter__ = MagicMock(return_value=torn)
+        torn.__exit__ = MagicMock(return_value=False)
+        with patch("urllib.request.urlopen", side_effect=[torn, self._ok()]), \
+             patch.object(index_project.time, "sleep"):
+            self.assertEqual(index_project.api("http://connector", "t", "/manifest"),
+                             {"ok": True})
+
+
 if __name__ == "__main__":
     unittest.main()
