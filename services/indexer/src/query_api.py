@@ -908,8 +908,16 @@ def local_group_context(record: dict, member_id: str, jarvis_node_id=None) -> di
 
 class QueryHandler(BaseHTTPRequestHandler):
     def _headers(self, audit: str) -> None:
-        allowed = os.environ.get("UYP_CORS_ORIGIN", "http://127.0.0.1:4173,http://localhost:4173")
-        self.send_header("Access-Control-Allow-Origin", allowed.split(",")[0])
+        allowed = [o.strip() for o in os.environ.get(
+            "UYP_CORS_ORIGIN",
+            "http://127.0.0.1:4173,http://localhost:4173").split(",") if o.strip()]
+        origin = self.headers.get("Origin")
+        # ACAO carries exactly ONE origin: echo the request's origin when it
+        # is allowlisted. Sending a static first-of-list broke every page
+        # opened as localhost:4173 (2026-10-11: Studio fell back to the demo
+        # graph because every live fetch was CORS-blocked).
+        self.send_header("Access-Control-Allow-Origin",
+                         origin if origin in allowed else allowed[0])
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Agent-Member, X-Group-Context")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.send_header("X-UYP-Audit-Id", audit)
