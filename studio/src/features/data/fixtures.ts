@@ -1,0 +1,120 @@
+// Offline fixtures for the Data feature (VITE_STUDIO_FIXTURES=true only): an in-memory policy
+// store that computes inherited/effective like §5 and validates like the server would.
+// Append ?fixtureRole=member to the URL to see the read-only (non-owner) state.
+import { ApiError } from "../../api/client";
+import type { Me, PolicyDoc, PolicyDomain, PolicyScope, Role } from "../../api/contracts";
+import type { DataApi } from "./adapter";
+import { CATEGORIES, deepMerge, getPath, isEntityId, isObj, scopeChain, validatePrivacy, validateSchedule } from "./inherit";
+
+const wait = (ms = 160) => new Promise((r) => setTimeout(r, ms));
+const clone = <T,>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
+
+function role(): Role {
+  try {
+    const r = new URLSearchParams(window.location.search).get("fixtureRole");
+    return r === "member" || r === "guest" ? r : "owner";
+  } catch { return "owner"; }
+}
+
+const SCOPES: PolicyScope[] = [
+  { scope: "town_default", label: "Town default", parent: null, kind: "town" },
+  { scope: "household", label: "Household", parent: "town_default", kind: "household" },
+  { scope: "member:robin", label: "Robin", parent: "household", kind: "member" },
+  { scope: "member:dr_lee", label: "Dr. Lee", parent: "household", kind: "member" },
+  { scope: "member:mia", label: "Mia", parent: "household", kind: "member" },
+  { scope: "guest", label: "Guest", parent: "household", kind: "guest" },
+];
+
+type Store = Record<string, Partial<Record<PolicyDomain, Record<string, unknown>>>>;
+const meta: Record<string, { at: string; by: string }> = {};
+
+const store: Store = {
+  town_default: {
+    privacy: {
+      categories: Object.fromEntries(CATEGORIES.map((c) => [c, { ring: c === "profile" ? "R4" : "R1", share_with_agents: c === "profile" }])),
+    },
+    ha: { live: false, rooms: {}, guest_actions: [] },
+    schedule: { calendar_visibility: "private", agents_can_propose: false, agents_can_book: false, quiet_hours: null, reminder_lead_minutes: 10 },
+  },
+  household: {
+    privacy: { categories: { calendar: { ring: "R4", share_with_agents: true }, shopping: { ring: "R3", share_with_agents: false }, family_messages: { ring: "R2", share_with_agents: false }, reminders: { ring: "R2", share_with_agents: false } } },
+    ha: {
+      live: true,
+      rooms: {
+        living_room: { entities: ["light.living_room", "media_player.tv"], allowed_actions: ["turn_on", "turn_off", "set_brightness"] },
+        kitchen: { entities: ["light.kitchen", "switch.kettle"], allowed_actions: ["turn_on", "turn_off"] },
+      },
+      guest_actions: ["turn_on", "turn_off"],
+    },
+    schedule: { calendar_visibility: "household", agents_can_propose: true, quiet_hours: { start: "22:00", end: "07:00" } },
+  },
+  "member:robin": {
+    privacy: { categories: { projects: { ring: "R4", share_with_agents: true }, location: { ring: "R2", share_with_agents: false }, health: { ring: "R1", share_with_agents: false } } },
+    ha: { rooms: { office: { entities: ["light.office", "climate.office"], allowed_actions: ["turn_on", "turn_off", "set_temperature"] } } },
+    schedule: { reminder_lead_minutes: 15 },
+  },
+  "member:dr_lee": { privacy: { categories: { calendar: { ring: "R3" } } } },
+  guest: { privacy: { categories: { profile: { ring: "R3", share_with_agents: false } } }, ha: { guest_actions: ["turn_on"] } },
+};
+meta["member:robin/privacy"] = { at: new Date(Date.now() - 3 * 86_400_000).toISOString(), by: "robin" };
+
+function doc<T>(scope: string, domain: PolicyDomain): PolicyDoc<T> {
+  const chain = scopeChain(SCOPES, scope);
+  if (!chain.length) throw new ApiError(404, `unknown scope ${scope}`);
+  let inherited: unknown = {};
+  for (const s of chain.slice(0, -1)) inherited = deepMerge(inherited, store[s.scope]?.[domain] ?? {});
+  const values = clone(store[scope]?.[domain] ?? {});
+  let effective = deepMerge<Record<string, unknown>>(inherited, values);
+  if (scope === "guest" && domain === "ha") effective = { ...effective, live: Boolean(getPath(inherited, ["live"])) };
+  const m = meta[`${scope}/${domain}`];
+  return {
+    scope, domain, values: values as Partial<T>, inherited: inherited as Partial<T>, effective: effective as T,
+    updated_at: m?.at ?? null, updated_by: m?.by ?? null,
+  };
+}
+
+function validate(scope: string, domain: PolicyDomain, values: Record<string, unknown>): void {
+  if (!isObj(values)) throw new ApiError(422, "values must be an object");
+  const errs: string[] = [];
+  if (domain === "privacy") {
+    errs.push(...validatePrivacy(values));
+    const cats = getPath(values, ["categories"]);
+    if (isObj(cats)) for (const k of Object.keys(cats)) if (!CATEGORIES.includes(k as never)) errs.push(`unknown privacy category '${k}'`);
+  }
+  if (domain === "schedule") errs.push(...validateSchedule(values));
+  if (domain === "ha") {
+    const rooms = getPath(values, ["rooms"]);
+    if (isObj(rooms)) {
+      for (const [room, r] of Object.entries(rooms)) {
+        const ents = getPath(r, ["entities"]);
+        if (Array.isArray(ents)) ents.forEach((e, i) => { if (!isEntityId(String(e))) errs.push(`ha.rooms.${room}.entities[${i}]: '${e}' is not an entity id (domain.object_id)`); });
+      }
+    }
+    if (scope === "guest" && getPath(values, ["live"]) === true) errs.push("guest cannot enable live control beyond the household");
+  }
+  if (errs.length) throw new ApiError(422, errs.join("; "));
+}
+
+export function createFixtureApi(): DataApi {
+  return {
+    async me(): Promise<Me> {
+      await wait(60);
+      const r = role();
+      return {
+        member_id: "robin", role: r, display_name: "Robin", household_id: "household",
+        jarvis: { node_id: "hub_7f3a", display_name: "Robin's Jarvis", number: "J-4829-1300", urn: "urn:ai:domain:robin.jarvis.home", town: null },
+        agent_box: { enrolled: true, box_id: "box_jetson1" },
+      };
+    },
+    async policyTree() { await wait(); return { scopes: clone(SCOPES), domains: ["privacy", "ha", "schedule"] }; },
+    async policy<T>(scope: string, domain: PolicyDomain) { await wait(200); return doc<T>(scope, domain); },
+    async putPolicy<T>(scope: string, domain: PolicyDomain, values: Partial<T>) {
+      await wait(450);
+      if (role() !== "owner") throw new ApiError(403, "only the household owner can change policy");
+      validate(scope, domain, values as Record<string, unknown>);
+      (store[scope] ??= {})[domain] = clone(values as Record<string, unknown>);
+      meta[`${scope}/${domain}`] = { at: new Date().toISOString(), by: "robin" };
+      return doc<T>(scope, domain);
+    },
+  };
+}
