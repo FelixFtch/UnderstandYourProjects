@@ -444,11 +444,33 @@ class IndexJobStore:
         return record
 
 
-def connector_call(host: str, token: str, path: str, *, binary: bool = False, timeout: int = 90):
-    request = urllib.request.Request(host.rstrip("/") + path, headers={"Authorization": f"Bearer {token}"})
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        body = response.read()
-    return body if binary else json.loads(body)
+def connector_call(host: str, token: str, path: str, *, binary: bool = False,
+                    timeout: int = 90, retries: int = 5):
+    """Connector fetch with the same transport hardening as index_project.api:
+
+    percent-encoded request lines (CJK source paths) and retry-with-backoff
+    on transport failures (launchd tunnel blips raise IncompleteRead /
+    HTTPException mid-body). Policy answers (HTTPError) stay final.
+    """
+    import http.client
+    safe_path = urllib.parse.quote(path, safe="/?=&")
+    last: Exception | None = None
+    for attempt in range(retries):
+        request = urllib.request.Request(
+            host.rstrip("/") + safe_path,
+            headers={"Authorization": f"Bearer {token}"})
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                body = response.read()
+            return body if binary else json.loads(body)
+        except urllib.error.HTTPError:
+            raise
+        except (OSError, urllib.error.URLError, json.JSONDecodeError,
+                http.client.IncompleteRead, http.client.HTTPException) as exc:
+            last = exc
+            if attempt < retries - 1:
+                time.sleep(min(2 ** attempt * 5, 60))
+    raise last
 
 
 def _run_command(command: list[str], env: dict[str, str]) -> None:
