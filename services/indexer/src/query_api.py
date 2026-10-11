@@ -50,6 +50,7 @@ from homehub_adapter import (
     load_context_for_member as load_homehub_context_for_member,
     load_context_for_token as load_homehub_context_for_token,
 )
+from nandatown_client import NandaTownClient
 
 
 VERSION = "0.1.0"
@@ -333,21 +334,55 @@ def registry_agent_nodes(context: dict | None = None) -> list[dict]:
     return list(by_node.values())
 
 
-def load_nandatown_peers() -> list[dict]:
-    """Load public directory metadata emitted by the NandaTown adapter only."""
-    path = os.environ.get("UYP_NANDATOWN_DIRECTORY_FILE")
-    if not path:
-        return []
+# Live NandaTown directory state: the coordinator is queried directly (join
+# -> directory) so real Jarvis boxes surface each other in the Studio.  The
+# projection - and the honest failure, when there is one - is cached briefly
+# so a down town cannot stall every snapshot; the cache never turns a
+# failure into data.  UYP_NANDATOWN_CACHE_TTL=0 disables it (tests do).
+_NANDATOWN_CACHE_LOCK = threading.Lock()
+_nandatown_cache: dict = {"expires": 0.0, "peers": [], "error": None}
+
+
+def nandatown_peers_projection() -> tuple[list[dict], dict | None]:
+    """Query the town coordinator for the live peer directory.
+
+    Returns ``(peers, error)``: ``peers`` is the Studio PeerJarvisSummary
+    projection of the run's participant directory (empty on any failure),
+    and ``error`` is ``None`` on success or ``{"code", "message"}`` with
+    the client's fail-closed diagnosis - unreachable, unauthorized,
+    unconfigured, or unknown run.  Peers are directory metadata only,
+    never a HomeHub grant or a source listing.
+    """
     try:
-        with open(os.path.expanduser(path), encoding="utf-8") as fh:
-            value = json.load(fh)
-        peers = value.get("peers", []) if isinstance(value, dict) else value
-        if not isinstance(peers, list):
-            return []
-        allowed = {"peerId", "nodeId", "displayLabel", "handle", "transport", "trust", "status", "lastSeen", "capabilities", "advertisedProjectCount"}
-        return [{key: peer[key] for key in peer.keys() & allowed} for peer in peers if isinstance(peer, dict) and peer.get("peerId") and peer.get("displayLabel")]
-    except (OSError, json.JSONDecodeError):
-        return []
+        configured = os.environ.get("UYP_NANDATOWN_CACHE_TTL")
+        ttl = max(0.0, float(configured)) if configured is not None else 30.0
+    except ValueError:
+        ttl = 30.0
+    now = time.monotonic()
+    with _NANDATOWN_CACHE_LOCK:
+        if now < _nandatown_cache["expires"]:
+            return list(_nandatown_cache["peers"]), _nandatown_cache["error"]
+    client = NandaTownClient()
+    peers = client.list_peers()
+    error = (None if client.error_code is None else
+             {"code": client.error_code,
+              "message": client.last_error or client.error_code})
+    with _NANDATOWN_CACHE_LOCK:
+        _nandatown_cache["expires"] = now + ttl
+        _nandatown_cache["peers"] = list(peers)
+        _nandatown_cache["error"] = error
+    return peers, error
+
+
+def load_nandatown_peers() -> list[dict]:
+    """The public NandaTown peer directory; empty when town is unavailable.
+
+    Fail-closed for the snapshot path: a town that cannot be reached or
+    joined yields no peers rather than stale or fabricated entries; the
+    dedicated /api/nandatown/peers endpoint additionally reports the
+    honest error instead of pretending metadata-only success.
+    """
+    return nandatown_peers_projection()[0]
 
 
 def project_snapshot(project_id: str | None = None) -> dict:
@@ -649,7 +684,19 @@ class QueryHandler(BaseHTTPRequestHandler):
             }, audit=audit)
             return
         if parsed.path == "/api/nandatown/peers":
-            self.json_response({"peers": load_nandatown_peers(), "metadataOnly": True}, audit=audit)
+            peers, error = nandatown_peers_projection()
+            if error is None:
+                self.json_response({"peers": peers, "metadataOnly": False, "source": "town"}, audit=audit)
+            else:
+                # Honest refusal: the town directory could not be read, so no
+                # peers are served and no metadata-only success is pretended.
+                self.json_response({
+                    "ok": False,
+                    "error": error["code"],
+                    "peers": [],
+                    "metadataOnly": True,
+                    "message": f"NandaTown directory unavailable: {error['message']}",
+                }, 503, audit)
             return
         if parsed.path == "/api/groups":
             # Groups listing: the deployment's owner pin (UYP_OWNER_MEMBER)
