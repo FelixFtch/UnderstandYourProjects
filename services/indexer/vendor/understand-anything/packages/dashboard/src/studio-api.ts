@@ -28,6 +28,58 @@ export interface NandatownPeersProjection {
   metadataOnly?: boolean;
 }
 
+/** A registry group record (GET /api/groups); membership/view authority stays server-side. */
+export interface GroupRecordProjection {
+  group_id: string;
+  name: string;
+  owner_member: string;
+  member_members: string[];
+  knowledge_view: { project_ids: string[] | "*"; source_ids: string[] | "*" };
+  town_run_id?: string | null;
+  created_at?: string | null;
+  grant_epoch?: string | null;
+}
+
+/** GET /api/groups — the caller's visible slice of the registry. */
+export interface GroupsProjection {
+  ok?: boolean;
+  groups: GroupRecordProjection[];
+  ownerView?: boolean;
+}
+
+/** One row of a group's local message log (send echoes + received mail). */
+export interface GroupMessageRow {
+  message_id: string | null;
+  group_id: string;
+  sender: string;
+  sent_at: string | null;
+  received_at?: string | null;
+  text: string;
+  direction: "in" | "out";
+  delivery?: Array<{ to: string; ok: boolean; error?: string }>;
+}
+
+/** GET /api/groups/{id}/messages — the member-scoped local log a chat UI polls. */
+export interface GroupMessagesProjection {
+  ok?: boolean;
+  groupId: string;
+  memberId?: string;
+  total?: number;
+  messages: GroupMessageRow[];
+}
+
+/** POST /api/groups/{id}/messages — per-recipient fan-out results, honestly reported. */
+export interface SendGroupMessageResult {
+  ok?: boolean;
+  groupId?: string;
+  memberId?: string;
+  sent?: GroupMessageRow;
+  delivery?: Array<{ to: string; ok: boolean; message_id?: string; error?: string }>;
+  deliveredTo?: string[];
+  error?: string;
+  message?: string;
+}
+
 /**
  * The web client only talks to this adapter. It never calls Ollama, a
  * Connector, or HomeHub directly. In the static demo the adapter is absent and
@@ -73,6 +125,23 @@ export async function fetchNandatownPeers(signal?: AbortSignal): Promise<PeerJar
   if (apiBase() === null) return null;
   const projection = await request<NandatownPeersProjection>("/api/nandatown/peers", undefined, signal);
   return Array.isArray(projection?.peers) ? projection.peers : [];
+}
+
+export async function fetchGroups(signal?: AbortSignal): Promise<GroupRecordProjection[] | null> {
+  if (apiBase() === null) return null;
+  const projection = await request<GroupsProjection>("/api/groups", undefined, signal);
+  return Array.isArray(projection?.groups) ? projection.groups : [];
+}
+
+export async function fetchGroupMessages(groupId: string, limit = 200, signal?: AbortSignal): Promise<GroupMessagesProjection | null> {
+  if (apiBase() === null) return null;
+  const path = `/api/groups/${encodeURIComponent(groupId)}/messages?limit=${limit}`;
+  return request<GroupMessagesProjection>(path, undefined, signal);
+}
+
+export async function sendGroupMessage(groupId: string, text: string, signal?: AbortSignal): Promise<SendGroupMessageResult> {
+  const path = `/api/groups/${encodeURIComponent(groupId)}/messages`;
+  return request<SendGroupMessageResult>(path, { method: "POST", body: JSON.stringify({ text }) }, signal);
 }
 
 export async function searchProjectKnowledge(query: string, projectId: string, signal?: AbortSignal): Promise<KnowledgeSearchResult> {

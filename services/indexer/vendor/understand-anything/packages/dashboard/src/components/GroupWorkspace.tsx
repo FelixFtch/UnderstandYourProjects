@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import type { PrivacyItem, PrivacyLayer } from "./privacy-model";
 import type { PeerJarvisSummary } from "../studio-contracts";
-import { fetchNandatownPeers, studioApiConfigured } from "../studio-api";
+import type { GroupMessageRow, GroupRecordProjection } from "../studio-api";
+import { fetchGroupMessages, fetchGroups, fetchNandatownPeers, sendGroupMessage, studioApiConfigured } from "../studio-api";
 import { privacyLayers, usePrivacyWorkspace } from "./privacy-model";
 import "./group-workspace.css";
 
@@ -69,6 +70,43 @@ function toDirectoryAgents(peers: PeerJarvisSummary[]): DirectoryAgent[] {
     initials: peer.displayLabel.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "J",
     color: peer.status === "available" ? "dark" : peer.status === "recent" ? "gold" : "cream",
   }));
+}
+
+const GROUP_CARD_COLORS: GroupRecord["color"][] = ["dark", "gold", "bright", "cream"];
+
+function initialsFor(name: string): string {
+  return (name.split(/[\s:_\-]+/).filter(Boolean).map((part) => part[0]).join("").slice(0, 2).toUpperCase()) || "G";
+}
+
+function timeFor(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
+/** Map the registry group projection onto the rail card shape. */
+function toGroupCards(records: GroupRecordProjection[]): GroupRecord[] {
+  return records.map((record, index) => ({
+    id: record.group_id,
+    name: record.name || record.group_id,
+    detail: `${record.member_members.length} member${record.member_members.length === 1 ? "" : "s"} · town run ${record.town_run_id || "default"}`,
+    members: Math.max(1, record.member_members.length),
+    initials: initialsFor(record.name || record.group_id),
+    color: GROUP_CARD_COLORS[index % GROUP_CARD_COLORS.length],
+  }));
+}
+
+/** Map one local-log row onto the chat bubble shape (no rewording: body verbatim). */
+function rowToChatMessage(row: GroupMessageRow, selfMember: string | null): ChatMessage {
+  const mine = row.direction === "out" || (!!selfMember && row.sender === selfMember);
+  return {
+    id: row.message_id ?? `${row.direction}-${row.sent_at ?? ""}-${row.sender}`,
+    author: mine ? "You" : row.sender || "Member",
+    initials: mine ? "Y" : initialsFor(row.sender || "Member"),
+    role: mine ? "you" : "member",
+    body: row.text,
+    time: timeFor(row.sent_at ?? row.received_at),
+  };
 }
 
 const initialMessages: Record<string, ChatMessage[]> = {
@@ -146,6 +184,16 @@ export default function GroupWorkspace({ onOpenPrivacy, onCreateGroup, initialGr
   const [directoryNotice, setDirectoryNotice] = useState("");
   const [directoryMode, setDirectoryMode] = useState<"pending" | "live" | "offline">(studioApiConfigured() ? "pending" : "offline");
   const [livePeers, setLivePeers] = useState<PeerJarvisSummary[] | null>(null);
+  // Group messaging (NandaTown wiring): the rail's group list and the
+  // conversation both have a live/local split, mirroring the directory's
+  // pending/live/offline discipline — demo content is the fallback, never a
+  // stand-in for a live answer.
+  const [groupsMode, setGroupsMode] = useState<"pending" | "live" | "offline">(studioApiConfigured() ? "pending" : "offline");
+  const [chatMode, setChatMode] = useState<"local" | "live" | "offline">(studioApiConfigured() ? "offline" : "local");
+  const [history, setHistory] = useState<GroupMessageRow[]>([]);
+  const [selfMember, setSelfMember] = useState<string | null>(null);
+  const [chatNotice, setChatNotice] = useState("");
+  const [sending, setSending] = useState(false);
 
   // The NandaTown directory is fetched directly from the Jetson query API so
   // the surface can distinguish live metadata, the last server projection,
@@ -171,6 +219,68 @@ export default function GroupWorkspace({ onOpenPrivacy, onCreateGroup, initialGr
     return () => { cancelled = true; controller.abort(); };
   }, []);
 
+  // The live group list (registry records) replaces the demo rail once the
+  // query API answers; a failure keeps the labeled demo groups.
+  useEffect(() => {
+    if (!studioApiConfigured()) return;
+    const controller = new AbortController();
+    let cancelled = false;
+    fetchGroups(controller.signal)
+      .then((records) => {
+        if (cancelled) return;
+        if (records?.length) {
+          setGroupList(toGroupCards(records));
+          setGroupsMode("live");
+        } else {
+          // Unreachable/unauthorized API or an empty registry: the demo
+          // rail stays (it is the offline fallback surface).
+          setGroupsMode("offline");
+        }
+      })
+      .catch((error) => {
+        if (cancelled || (error instanceof DOMException && error.name === "AbortError")) return;
+        setGroupsMode("offline");
+      });
+    return () => { cancelled = true; controller.abort(); };
+  }, []);
+
+  // When the live rail replaces the demo one, a stale demo selection is
+  // re-pointed at the first live group so history loads for a real group.
+  useEffect(() => {
+    if (groupsMode === "live" && groupList.length && !groupList.some((group) => group.id === selectedId)) {
+      setSelectedId(groupList[0].id);
+    }
+  }, [groupsMode, groupList, selectedId]);
+
+  // Group history (the local message log) for the selected group: loaded on
+  // select and polled every 15s while live, so received mail appears without
+  // a reload.  A failure is spoken honestly and the demo conversation stays.
+  useEffect(() => {
+    if (!studioApiConfigured() || groupsMode !== "live") return;
+    let cancelled = false;
+    const controller = new AbortController();
+    const load = () => {
+      fetchGroupMessages(selectedId, 200, controller.signal)
+        .then((projection) => {
+          if (cancelled) return;
+          if (projection) {
+            setHistory(projection.messages ?? []);
+            setSelfMember(projection.memberId ?? null);
+            setChatMode("live");
+          }
+        })
+        .catch((error) => {
+          if (cancelled || (error instanceof DOMException && error.name === "AbortError")) return;
+          setChatMode("offline");
+          setChatNotice(error instanceof Error ? error.message : "Group history is unavailable right now.");
+        });
+    };
+    setHistory([]);
+    load();
+    const timer = window.setInterval(load, 15000);
+    return () => { cancelled = true; controller.abort(); window.clearInterval(timer); };
+  }, [selectedId, groupsMode]);
+
   const selectedGroup = groupList.find((group) => group.id === selectedId) ?? groupList[0];
   const conversationId = `group:${selectedGroup.id}`;
   const draft = draftFor(conversationId);
@@ -188,7 +298,9 @@ export default function GroupWorkspace({ onOpenPrivacy, onCreateGroup, initialGr
   }, [directoryMode, livePeers, directoryLive, peers]);
   const visibleDirectoryAgents = useMemo(() => directory.filter((agent) => `${agent.name} ${agent.handle} ${agent.detail} ${agent.capabilities.join(" ")}`.toLowerCase().includes(directoryFilter.trim().toLowerCase())), [directory, directoryFilter]);
   const invitedForGroup = invitedAgents[selectedGroup.id] ?? [];
-  const currentMessages = messages[selectedGroup.id] ?? [];
+  const currentMessages = chatMode === "live"
+    ? history.map((row) => rowToChatMessage(row, selfMember))
+    : (messages[selectedGroup.id] ?? []);
 
   // A layer toggle in this rail is a local group override. It must never mutate
   // the account-wide privacy map; HomeHub remains the authority for any grant.
@@ -209,7 +321,41 @@ export default function GroupWorkspace({ onOpenPrivacy, onCreateGroup, initialGr
     setComposer("");
   };
 
-  const submitComposer = (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); askJarvis(composer); };
+  // Live send: the composer POSTs to the group's message endpoint.  The
+  // server reports delivery honestly; a refusal (503 + error) is shown as a
+  // notice and nothing is appended — no faked echo, ever.
+  const sendLiveMessage = async () => {
+    const text = composer.trim();
+    if (!text || sending) return;
+    setSending(true);
+    setChatNotice("");
+    try {
+      const result = await sendGroupMessage(selectedGroup.id, text);
+      if (result.sent) {
+        setHistory((current) => [...current, result.sent as GroupMessageRow]);
+        setComposer("");
+        const failed = (result.delivery ?? []).filter((entry) => !entry.ok);
+        if (failed.length) {
+          setChatNotice(`Delivered to ${(result.deliveredTo ?? []).join(", ") || "no recipient"}; ${failed.length} recipient${failed.length === 1 ? "" : "s"} failed (${failed.map((entry) => entry.error ?? "unknown").join(", ")}).`);
+        }
+      } else {
+        setChatNotice(result.message || result.error || "The message was not delivered.");
+      }
+    } catch (error) {
+      setChatNotice(error instanceof Error ? error.message : "The group is not answering right now.");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const submitComposer = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (chatMode === "live") {
+      void sendLiveMessage();
+      return;
+    }
+    askJarvis(composer);
+  };
 
   const submitNewGroup = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -254,10 +400,11 @@ export default function GroupWorkspace({ onOpenPrivacy, onCreateGroup, initialGr
       <header className="gw-chat-header"><div className="gw-chat-title"><GroupMark group={selectedGroup} /><div><span className="gw-kicker">GROUP CONVERSATION</span><h1>{selectedGroup.name}</h1><p>{selectedGroup.members} participants · {selectedGroup.detail}</p></div></div><div className="gw-chat-actions"><span className="gw-draft-badge"><span aria-hidden="true" /> Draft only</span><button type="button" className="gw-header-button" onClick={onOpenPrivacy}>Privacy map <span aria-hidden="true">↗</span></button></div></header>
       <div className="gw-chat-boundary"><span className="gw-boundary-icon" aria-hidden="true">⌁</span><span><strong>HomeHub boundary</strong> · audience and grant status are unavailable</span><span className="gw-boundary-tag">Local draft</span></div>
       {invitedForGroup.length > 0 && <div className="gw-participant-strip"><span className="gw-kicker">INVITE DRAFT</span>{invitedForGroup.map((agentId) => { const agent = directory.find((candidate) => candidate.id === agentId); return agent ? <span className="gw-participant-chip" key={agent.id}><span>{agent.initials}</span>{agent.name}<em>Pending HomeHub</em></span> : null; })}</div>}
+      {chatNotice && <div className="gw-directory-notice gw-chat-notice"><span aria-hidden="true">⌁</span><p>{chatNotice}</p><button type="button" aria-label="Dismiss message notice" onClick={() => setChatNotice("")}>×</button></div>}
       <div className="gw-messages" role="log" aria-live="polite" aria-label="Group messages">{currentMessages.map((message) => <article className={`gw-message gw-message-${message.role}`} key={message.id}><span className="gw-message-avatar">{message.initials}</span><div className="gw-message-content"><div className="gw-message-meta"><strong>{message.author}</strong><span>{message.role === "jarvis" ? "Graph-derived preview" : message.role === "you" ? "You" : "Member"}</span><time>{message.time}</time></div><div className="gw-message-bubble"><p>{message.body}</p>{message.citations && <div className="gw-citations" aria-label="Draft evidence references">{message.citations.map((citation) => <button type="button" key={citation} onClick={onOpenPrivacy}><span aria-hidden="true">▤</span>{citation}</button>)}</div>}</div></div></article>)}<div className="gw-typing"><span className="gw-typing-dots" aria-hidden="true"><i /><i /><i /></span><span>Jarvis can search this group's approved project scope</span></div></div>
       <div className="gw-quick-prompts"><span className="gw-kicker">ASK JARVIS</span><button type="button" onClick={() => setComposer("Which project can we reuse for this feature?")}>Find reusable work</button><button type="button" onClick={() => setComposer("Summarize what changed since yesterday.")}>Summarize changes</button><button type="button" onClick={() => setComposer("Build an onboarding path for a new contributor.")}>Onboard someone</button></div>
-      <form className="gw-composer" onSubmit={submitComposer}><button type="button" className={`gw-voice-button ${isListening ? "is-listening" : ""}`} onClick={() => setIsListening((value) => !value)} aria-pressed={isListening} aria-label={isListening ? "Stop voice input" : "Start voice input"}><span aria-hidden="true">{isListening ? "■" : "◉"}</span></button><input value={composer} onChange={(event) => setComposer(event.target.value)} placeholder={isListening ? "Listening…" : "Ask Jarvis about this group's projects"} aria-label="Ask Jarvis in this group" /><span className="gw-composer-hint">⌘ ↵</span><button type="submit" className="gw-send-button" disabled={!composer.trim()}>Send <span aria-hidden="true">↑</span></button></form>
-      <p className="gw-composer-note"><span aria-hidden="true">✦</span> Answers are graph-derived previews and remain bounded by the sharing draft.</p>
+      <form className="gw-composer" onSubmit={submitComposer}><button type="button" className={`gw-voice-button ${isListening ? "is-listening" : ""}`} onClick={() => setIsListening((value) => !value)} aria-pressed={isListening} aria-label={isListening ? "Stop voice input" : "Start voice input"}><span aria-hidden="true">{isListening ? "■" : "◉"}</span></button><input value={composer} onChange={(event) => setComposer(event.target.value)} placeholder={isListening ? "Listening…" : chatMode === "live" ? "Message this group (carried over NandaTown)" : "Ask Jarvis about this group's projects"} aria-label={chatMode === "live" ? "Message this group" : "Ask Jarvis in this group"} /><span className="gw-composer-hint">⌘ ↵</span><button type="submit" className="gw-send-button" disabled={!composer.trim() || sending}>{sending ? "Sending" : "Send"} <span aria-hidden="true">↑</span></button></form>
+      <p className="gw-composer-note"><span aria-hidden="true">✦</span> {chatMode === "live" ? "Messages fan out to this group's town participants per recipient; delivery failures are reported, never faked." : "Answers are graph-derived previews and remain bounded by the sharing draft."}</p>
     </main>
 
     <aside className="gw-scope-rail" aria-label={`Sharing scope for ${selectedGroup.name}`}>

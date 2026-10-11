@@ -79,6 +79,7 @@ and filesystem paths — are dropped by design.
       "owner_member": "member:lee",
       "member_members": ["member:lee", "member:chen"],
       "knowledge_view": {"project_ids": ["project:alpha"], "source_ids": ["connector:alpha"]},
+      "town_run_id": null,
       "created_at": "2026-10-10T00:00:00Z",
       "grant_epoch": "epoch-1d0b6aa5f7c2"
     }
@@ -93,6 +94,7 @@ and filesystem paths — are dropped by design.
 | `owner_member`    | the HomeHub member who owns/defines the group |
 | `member_members`  | HomeHub members of the group (deduped, ≤64; `members` is accepted as an input alias) |
 | `knowledge_view`  | the slice this group opens: `{"project_ids": [...] \| "*", "source_ids": [...] \| "*"}` |
+| `town_run_id`     | nullable transport routing only: which NandaTown run carries this group's messages (else `UYP_NANDATOWN_RUN_ID`, else messaging answers an honest 503).  Never an access signal — changing it does not re-issue `grant_epoch`.  Run creation stays with the town admin; this is mapping. |
 | `created_at`      | set on create, preserved on every update |
 | `grant_epoch`     | cache-invalidation epoch; see below |
 
@@ -201,27 +203,45 @@ is always stale; a cache that cannot be proven fresh is never served.
 
 ## What waits
 
-- **NandaTown group transport** — carrying group invites/queries between
-  boxes (`federation_protocol` already validates the envelopes; the
-  transport adapter does not exist).
+- **NandaTown group transport** — group MESSAGING now exists
+  (`nandatown_client.py` + the query API send/receive/history wiring in
+  `docs/QUERY_API.md` "Group messaging"; pinned by
+  `tests/test_nandatown_wiring.py`): per-recipient fan-out sends, a
+  poll-loop receive path into `state/groups/<id>/messages.jsonl`, and a
+  member-scoped history endpoint.  What still waits here: per-group run
+  CREATION automation (the town admin API provisions runs and join
+  tokens; the registry only maps `town_run_id`), and group
+  invites/queries as `federation_protocol` envelopes (the current
+  transport is chat messages, not invite drafts).
 - **HomeHub group-issuance** — the endpoint that resolves a member inside a
-  group and issues the projection above.
+  group and issues the projection above.  Until it exists, messaging uses
+  the same pre-issuance local bridge as group search (registry record +
+  requesting member), so HomeHub revocation of a messaging grant cannot be
+  expressed yet.
+- **Voice-originated sends** — the voice chain's `group_knowledge` seam is
+  read-only (list + search).  A spoken send would need a POST turn there;
+  the API side already accepts the loopback `X-Agent-Member` tier.
 - **Answer synthesis scrubbing** — rewriting or refusing a non-clean answer
   (`source_overlap` is the input; the canonical miss sentence from
   `knowledge_search` is the refusal shape).
 - **Per-group result caches** — the snapshot/staleness hook exists; no
   cache layer stores anything yet.
-- **UI** — Studio group views (group cards, member lists, view editor).
-- **Audit surfacing** — group queries must land in HomeHub audit events;
-  the projection already carries `audit_id`.
+- **UI** — Studio group views: the Groups workspace now shows the live
+  group list, message history, and a real composer (offline demo content
+  remains the fallback); a view editor and member management still wait.
+- **Audit surfacing** — group queries and group messages must land in
+  HomeHub audit events; the projection already carries `audit_id`.
 
 ## query_api integration
 
 The HTTP surface landed on `feat/groups-api` (see `docs/QUERY_API.md` for
-the endpoint contracts): `POST /api/groups` (owner-authored create),
-`GET /api/groups` (owner pin sees all, member sees own),
-`POST /api/groups/{id}/search`, and `DELETE /api/groups/{id}` (dissolve,
-owner only).  The search handler is exactly the pipeline below, plus the
+the endpoint contracts): `POST /api/groups` (owner-authored create,
+optionally carrying `town_run_id`), `GET /api/groups` (owner pin sees all,
+member sees own), `POST /api/groups/{id}/search`, and
+`DELETE /api/groups/{id}` (dissolve, owner only).  Group messaging
+(`POST /api/groups/{id}/messages` send, `GET /api/groups/{id}/messages`
+history, plus the background receive loop) landed on
+`feat/nandatown-messaging`.  The search handler is exactly the pipeline below, plus the
 voice-chain preemptive lock (group search touches
 `/tmp/uyp_interactive.lock` before synthesis so indexing yields):
 

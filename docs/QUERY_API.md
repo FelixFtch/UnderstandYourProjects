@@ -46,6 +46,8 @@ development session. The Studio build variable is `VITE_STUDIO_API_URL`.
 | `POST /api/groups` | create a group record (owner-authored) | caller principal must be the record's `owner_member`; registry-validated |
 | `GET /api/groups` | list groups | `UYP_OWNER_MEMBER` pin sees all; others see only groups they own or belong to |
 | `POST /api/groups/{id}/search` | group-scoped knowledge search ("不同群看到不同知识") | `X-Group-Context` projection or registry+member; `scoped_retrieval` filters before synthesis; out-of-view citations are refused with the canonical miss sentence |
+| `POST /api/groups/{id}/messages` | a member sends a group message over NandaTown | member-scoped like group search (non-member 403); per-recipient fan-out with distinct message_ids; a transport failure is an honest 503 carrying `error_code` and persists no echo — delivery is never faked |
+| `GET /api/groups/{id}/messages?limit=` | a group's local message log (chat history) | member-scoped; the append-only record of this box's sends (echo) and receives (poll loop) under `UYP_STATE_ROOT/groups/<id>/messages.jsonl` |
 | `DELETE /api/groups/{id}` | dissolve a group | owner only; the registry forgets the group, later searches are denied |
 
 `POST /api/knowledge/search` accepts `{ "query": "...", "projectId": "..." }`.
@@ -84,6 +86,67 @@ to group answers exactly as it yields to knowledge search.  Dissolving
 (`DELETE`, owner only) forgets the registry record; later searches are
 denied.  Deployment: `groups.py` must be copied alongside `query_api.py`
 into `~/dev/uyp/indexer/`.
+
+## Group messaging (NandaTown, audit A2)
+
+Group chat that actually sends and receives between Jarvis boxes, on top
+of the same authority split: `groups.py` decides WHO may speak
+(registry membership, the same member tiers as group search —
+`X-Group-Context` projection, body/query `member_id`, loopback
+`X-Agent-Member` voice header, then the caller principal), and
+`nandatown_client.py` carries the bytes.
+
+- **Send** — `POST /api/groups/{id}/messages` with `{"text": "...",
+  "member_id": "..."}` (text bounded to 4000 chars).  The message fans
+  out per recipient — the town has no broadcast primitive, so every peer
+  in the run directory except this box's own participant gets its own
+  message with its own `message_id`; the declared `sender` in each
+  envelope is the resolved member.  201 returns the local echo plus the
+  per-recipient `delivery` rows.  Failures are honest: an unreachable
+  town, refused join, unreadable directory, or all-per-recipient
+  rejection answers 503 with the client's `error_code`
+  (`nandatown_unreachable`, `nandatown_unauthorized`,
+  `nandatown_unconfigured`, ...) and persists NOTHING — a message that
+  did not leave the box never appears in history as if it had.  A
+  non-member gets 403 `not_a_member` before anything is sent; an
+  unknown/dissolved group is 404 (the message log and run mapping live
+  in the registry record, so messaging requires local registration even
+  when a group context is presented).
+- **Receive** — a background poll thread inside `query_api`
+  (`UYP_NANDATOWN_POLL_SECONDS`, default 15; `<= 0` or a missing join
+  token disables it — fail-closed and quiet).  Each pass joins as the
+  configured participant (`UYP_NANDATOWN_PARTICIPANT`, e.g.
+  `uyp-indexer`) and claims the inbox once per locally-mapped group;
+  inbound rows are appended to
+  `UYP_STATE_ROOT/groups/<id>/messages.jsonl`
+  (`message_id`/`group_id`/`sender`/`sent_at`/`text`/`direction`),
+  deduped on `message_id` (town delivery is at-least-once).  The client
+  re-offers foreign-group messages (`retryable`) instead of consuming
+  them, so mail for a group this box does not map is never lost to this
+  poller.  The `since_ts` watermark is derived from the group's newest
+  INBOUND row only — this box's own later sends can never hide a peer's
+  skewed-clock message.
+- **History** — `GET /api/groups/{id}/messages?limit=` returns the
+  member-scoped local log (newest `limit`, oldest first).  This is what
+  a chat UI polls; the voice chain's `group_knowledge` needs only
+  search, which was already live.
+
+**Run mapping v1.**  A group's messages route to the town run named by
+the registry field `town_run_id` (nullable, carried on
+`POST /api/groups` create/upsert), else the deployment default
+`UYP_NANDATOWN_RUN_ID`.  With neither set the messaging endpoints
+answer 503 `nandatown_run_unconfigured` instead of silently guessing —
+the client's hardcoded `DEFAULT_RUN_ID` stays a transport default for
+directory/health, never a group-routing decision.  Per-group run
+CREATION automation (town admin API) is future work; this is mapping
+only — the town admin provisions runs and join tokens, the registry
+records which run serves which group.
+
+Studio: the Groups workspace loads the live group list and history
+through these endpoints (plus `GET /api/groups` for the rail) and its
+composer sends real messages when the query API is configured; the demo
+conversations remain the offline fallback, never a stand-in for live
+answers.
 
 ## Connector registry
 
