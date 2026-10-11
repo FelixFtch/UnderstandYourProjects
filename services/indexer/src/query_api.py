@@ -360,7 +360,11 @@ def nandatown_peers_projection() -> tuple[list[dict], dict | None]:
         ttl = 30.0
     now = time.monotonic()
     with _NANDATOWN_CACHE_LOCK:
-        if now < _nandatown_cache["expires"]:
+        # TTL=0 must be a HARD no-cache switch read at CHECK time too:
+        # a poisoned entry stored under a longer TTL (e.g. a snapshot
+        # call while the town env was absent) would otherwise keep
+        # serving its error even after the operator disables caching.
+        if ttl > 0 and now < _nandatown_cache["expires"]:
             return list(_nandatown_cache["peers"]), _nandatown_cache["error"]
     client = NandaTownClient()
     peers = client.list_peers()

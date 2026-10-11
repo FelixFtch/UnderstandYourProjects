@@ -349,6 +349,22 @@ class QueryApiNandaTownEndpointTests(unittest.TestCase):
         self.assertTrue(all(peer["transport"] == "nandatown"
                             for peer in body["peers"]))
 
+    def test_peers_cache_poison_bypassed_when_ttl_zero(self):
+        # Regression (2026-10-11 merge): a snapshot call made while the
+        # town env was absent stores an unconfigured error with a 30s
+        # expiry.  A later request with UYP_NANDATOWN_CACHE_TTL=0 must
+        # treat that as a HARD no-cache switch and re-query - the TTL
+        # was previously read only at store time, so the poisoned entry
+        # kept serving its error even with caching disabled.
+        import time as _time
+        query_api._nandatown_cache["peers"] = []
+        query_api._nandatown_cache["error"] = {"code": "nandatown_unconfigured",
+                                               "message": "poisoned"}
+        query_api._nandatown_cache["expires"] = _time.monotonic() + 30.0
+        status, body = self._get("/api/nandatown/peers")
+        self.assertEqual(status, 200)
+        self.assertNotEqual(body.get("error", {}).get("code"), "nandatown_unconfigured")
+
     def test_peers_endpoint_is_honest_503_when_town_unreachable(self):
         os.environ["UYP_NANDATOWN_URL"] = "http://127.0.0.1:1"
         status, body = self._get("/api/nandatown/peers")
