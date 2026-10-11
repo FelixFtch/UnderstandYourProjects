@@ -291,6 +291,90 @@ class QueryApiVoiceHandshakeTests(unittest.TestCase):
         self.assertEqual(body["error"], "access_context_unavailable")
         self.assertEqual(self.search_calls, [])
 
+    # ---- slow-answer hint: headers precede the synthesis body -------------
+
+    def _raw_search_request(self, question):
+        import socket
+        body = json.dumps({"query": question}).encode("utf-8")
+        sock = socket.create_connection(self.api.server_address, timeout=5)
+        sock.sendall(
+            b"POST /api/knowledge/search HTTP/1.0\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+            b"\r\n" + body)
+        return sock
+
+    @staticmethod
+    def _recv_headers(sock):
+        head = b""
+        while b"\r\n\r\n" not in head:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            head += chunk
+        return head
+
+    def test_slow_search_sends_hint_headers_before_the_body(self):
+        # Root-cause fix (2026-10-10): a retrieval HIT means qwen synthesis
+        # (5-15s + queue wait).  The response HEADERS - including
+        # X-UYP-Slow-Hint - must be flushed BEFORE the synthesis runs, so a
+        # streaming voice caller can speak a filler while the answer is
+        # computed.  The synthesis is held on an event to prove the ordering.
+        self._start_homehub()
+        self._configure_box_token()
+        release = threading.Event()
+        synthesis_started = threading.Event()
+
+        def blocking_answer(question, items):
+            synthesis_started.set()
+            release.wait(timeout=10)
+            return {"answer": "slow but grounded", "sources": [], "confidence": "high"}
+
+        with patch.object(query_api, "search_will_synthesize",
+                          return_value=True), \
+             patch.object(query_api, "search_answer", blocking_answer):
+            sock = self._raw_search_request("哪里实现了委托签名")
+            head = self._recv_headers(sock)
+        self.assertIn(b"X-UYP-Slow-Hint: true", head)
+        # headers arrived while the synthesis was still blocked, and no
+        # Content-Length frames the body: it ends at connection close
+        self.assertTrue(synthesis_started.is_set())
+        self.assertNotIn(b"Content-Length", head)
+        release.set()
+        body = b""
+        sock.settimeout(5)
+        while True:
+            try:
+                chunk = sock.recv(4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            body += chunk
+        sock.close()
+        payload = json.loads(body.decode("utf-8"))
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["answer"], "slow but grounded")
+
+    def test_instant_miss_keeps_normal_framing_without_hint(self):
+        # A miss is answered with the canonical sentence instantly: no
+        # X-UYP-Slow-Hint, and the body stays framed by Content-Length.
+        self._start_homehub()
+        self._configure_box_token()
+        with patch.object(query_api, "search_will_synthesize",
+                          return_value=False):
+            request = urllib.request.Request(
+                "http://127.0.0.1:%d/api/knowledge/search" % self.api.server_address[1],
+                data=json.dumps({"query": "量子退火算法在哪里实现"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(request, timeout=5) as response:
+                payload = json.loads(response.read())
+                self.assertIsNone(response.headers.get("X-UYP-Slow-Hint"))
+                self.assertEqual(
+                    response.headers.get("Content-Length"),
+                    str(len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))))
+        self.assertTrue(payload["ok"])
+
 
 class RequestContextResolutionTests(unittest.TestCase):
     """Unit pins on the resolution order with mocked loads: which tier a

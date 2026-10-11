@@ -11,7 +11,7 @@ Usage: index_project.py --host http://127.0.0.1:7121 --grant g_xxx [--limit 20]
 Requires: Laya llama-server on :8901 (start_laya.sh), ollama qwen3.5:4b.
 """
 from __future__ import annotations
-import argparse, json, os, re, subprocess, sys, time, urllib.error, urllib.request
+import argparse, json, os, re, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
 import threading
 
 MODELS = os.environ.get("UYP_MODELS_ROOT", "/home/jetson/dev/uyp/models")
@@ -39,7 +39,8 @@ def api(host, token, path, binary=False, timeout=90, retries=5):
             raise  # policy answers (403/404/413) are final - do not mask them
         except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
             last = exc
-            time.sleep(min(2 ** attempt * 5, 60))
+            if attempt < retries - 1:  # no backoff after the FINAL attempt: the
+                time.sleep(min(2 ** attempt * 5, 60))  # failure must record promptly
     raise last
 
 def laya_decide(head: str, mid: str = "") -> tuple[str, float]:
@@ -105,6 +106,7 @@ def _yield_to_interactive(max_wait_s: int = 600):
 
 def qwen_enrich(content: str, think: bool):
     _yield_to_interactive()
+    _pace_llm_slots()
     instr = ("You are a project file analyzer. Output ONLY a JSON object with keys: "
              "purpose (one sentence), key_points (max 3 strings), components (max 3), "
              "depends_on (max 3). Answer in the SAME LANGUAGE as the file. No other text.")

@@ -71,10 +71,26 @@ def answer(question: str, items: list[dict]) -> dict:
         _clear_interactive_lock()
 
 
-def _answer_locked(question: str, items: list[dict]) -> dict:
+def _retrieval(question: str, items: list[dict]) -> list[tuple[float, dict]]:
+    """Lexical top-3 (score>0). Pure code, instant, shared by answer() and
+    will_synthesize() so the hint can never disagree with the answer path."""
     tokens = tokenize(question)
     scored = sorted(((score(i, tokens), i) for i in items), key=lambda x: -x[0])
-    top = [(s, i) for s, i in scored[:3] if s > 0]
+    return [(s, i) for s, i in scored[:3] if s > 0]
+
+
+def will_synthesize(question: str, items: list[dict]) -> bool:
+    """True when answering requires the qwen synthesis pass (retrieval hit).
+
+    The query API calls this BEFORE answering: lexical retrieval is instant,
+    but a hit means qwen synthesis (5-15s plus queue wait under load), which
+    is exactly the wait the X-UYP-Slow-Hint response header exists to flag.
+    A miss is answered instantly, so it is never hinted slow."""
+    return bool(_retrieval(question, items))
+
+
+def _answer_locked(question: str, items: list[dict]) -> dict:
+    top = _retrieval(question, items)
     if not top:
         # Same canonical miss sentence the synthesis prompt demands - a genuine
         # miss is never partially hedged, from either path.
