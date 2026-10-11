@@ -43,6 +43,10 @@ development session. The Studio build variable is `VITE_STUDIO_API_URL`.
 | `GET /api/connectors` | durable multi-connector health and manifest projection | metadata-only without HomeHub; never mints pairing or grants |
 | `GET /api/index/jobs` | persisted IndexJob phase/progress projection | requires HomeHub scopes; grant IDs and filesystem paths are omitted |
 | `POST /api/knowledge/search` | bounded lexical retrieval plus Qwen synthesis | requires a HomeHub AccessContext and filters before synthesis |
+| `POST /api/groups` | create a group record (owner-authored) | caller principal must be the record's `owner_member`; registry-validated |
+| `GET /api/groups` | list groups | `UYP_OWNER_MEMBER` pin sees all; others see only groups they own or belong to |
+| `POST /api/groups/{id}/search` | group-scoped knowledge search ("不同群看到不同知识") | `X-Group-Context` projection or registry+member; `scoped_retrieval` filters before synthesis; out-of-view citations are refused with the canonical miss sentence |
+| `DELETE /api/groups/{id}` | dissolve a group | owner only; the registry forgets the group, later searches are denied |
 
 `POST /api/knowledge/search` accepts `{ "query": "...", "projectId": "..." }`.
 Without a valid HomeHub context projection it returns `503
@@ -57,6 +61,29 @@ invites, or browser-triggered IndexJob mutation. Pairing, grants, revocation,
 and NandaTown remain behind their HomeHub/connector adapters. The local
 IndexJob worker described below owns only durable indexing execution after
 HomeHub has supplied an AccessContext.
+
+## Groups endpoints
+
+The Groups endpoints (engine: `groups.py`, design: `docs/GROUPS_DESIGN.md`)
+expose "这个群只开放这些知识" over HTTP.  `POST /api/groups` accepts
+`{group_id, name, owner_member, member_members[], knowledge_view}` and
+returns the registry record (201); the calling principal must BE the
+`owner_member` — no member authors a group in someone else's name.
+`POST /api/groups/{id}/search` accepts `{"query": "...", "member_id": "..."}`
+and resolves the requesting member as body `member_id`, then loopback
+`X-Agent-Member` (the voice-chain tier), then the caller's own principal.
+A HomeHub-issued group context may instead be presented whole as the
+`X-Group-Context` JSON header (strict `validate_group_context`; expired or
+revoked is a 403).  Every search runs `scoped_retrieval` — context
+validation, registry membership, view intersection, pre-retrieval filter —
+then synthesis, then a `source_overlap` post-check: an answer citing files
+outside the group's view is refused with the canonical miss sentence
+(`Not in the indexed projects.`), sharing no paths.  Group search also
+touches `/tmp/uyp_interactive.lock` before synthesis, so indexing yields
+to group answers exactly as it yields to knowledge search.  Dissolving
+(`DELETE`, owner only) forgets the registry record; later searches are
+denied.  Deployment: `groups.py` must be copied alongside `query_api.py`
+into `~/dev/uyp/indexer/`.
 
 ## Connector registry
 

@@ -215,17 +215,23 @@ is always stale; a cache that cannot be proven fresh is never served.
 - **Audit surfacing** — group queries must land in HomeHub audit events;
   the projection already carries `audit_id`.
 
-## query_api integration plan
+## query_api integration
 
-`services/indexer/src/query_api.py` is under concurrent edits; this lands
-once that work stabilizes.  The integration point is the search handler:
+The HTTP surface landed on `feat/groups-api` (see `docs/QUERY_API.md` for
+the endpoint contracts): `POST /api/groups` (owner-authored create),
+`GET /api/groups` (owner pin sees all, member sees own),
+`POST /api/groups/{id}/search`, and `DELETE /api/groups/{id}` (dissolve,
+owner only).  The search handler is exactly the pipeline below, plus the
+voice-chain preemptive lock (group search touches
+`/tmp/uyp_interactive.lock` before synthesis so indexing yields):
 
 ```python
 from groups import GroupRegistry, scoped_retrieval   # src/groups.py
 
-# do_POST /api/knowledge/search, after load_request_context resolves a
-# GROUP-tier context (transport for that tier is the HomeHub group-issuance
-# work above):
+# do_POST /api/groups/{id}/search - the group context arrives as a
+# HomeHub-issued X-Group-Context projection, or is constructed locally
+# from the registry record + the requesting member (the pre-HomeHub
+# bridge; scoped_retrieval still clamps it to the registered view):
 allowed_items = scoped_retrieval(
     [item for values in grouped_items().values() for item in values],
     group_context_projection,
@@ -235,8 +241,11 @@ result = search_answer(question, allowed_items)
 # post-synthesis, before responding:
 report = groups.source_overlap(result["sources"], effective_view, all_items)
 if not report["clean"]:
-    ...  # scrubbing step (future): refuse or rewrite
+    ...  # refuse: speak the canonical miss sentence instead
 ```
+
+Deployment note: `query_api.py` now imports `groups`, so the Jetson copy
+step must ship `groups.py` alongside it into `~/dev/uyp/indexer/`.
 
 `/api/health` and `/api/studio/snapshot` stay principal-scoped; the group
 tier is search-only initially.  The knowledge count in health remains the
