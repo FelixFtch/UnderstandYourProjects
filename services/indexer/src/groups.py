@@ -414,6 +414,11 @@ def normalize_group(value: Any) -> dict[str, Any] | None:
         "owner_member": owner_member,
         "member_members": members,
         "knowledge_view": knowledge_view,
+        # Transport routing only (which NandaTown run carries this group's
+        # messages); nullable and NEVER an access signal - changing it does
+        # not re-issue grant_epoch because it cannot widen what the group
+        # sees.  Run CREATION stays with the town admin; this is mapping.
+        "town_run_id": _id(value.get("town_run_id")),
         "created_at": _text(value.get("created_at")),
         "grant_epoch": _id(value.get("grant_epoch")),
     }
