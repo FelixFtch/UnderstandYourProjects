@@ -87,7 +87,11 @@ INTERACTIVE_LOCK = "/tmp/uyp_interactive.lock"
 def _yield_to_interactive(max_wait_s: int = 600):
     """语音>查询>索引 + 强制抢占 (owner design 2026-10-10):
     语音进来 -> 杀掉在途 qwen curl -> GPU 立刻 100% 给语音
-    -> 30秒无交互 -> 恢复索引, 被截断的文件从零重做。"""
+    -> 30秒无交互 -> 恢复索引, 被截断的文件从零重做。
+    pkill 模式必须锚定到 index 标记后紧跟的 ollama URL (2026-10-10 二次
+    友军伤害: "X-UYP-Worker.*index" 的 .* 能跨过整个命令行, 检索 curl 的
+    提示词里有 "indexed" 一词, 于是每次抢占把检索综合也杀了 - 语音问知识
+    必得 "本地模型服务暂不可用"。锚定后只匹配真正的 index worker curl。)"""
     import time as _t
     import subprocess as _sp
     waited = 0.0
@@ -98,7 +102,8 @@ def _yield_to_interactive(max_wait_s: int = 600):
             return
         if _t.time() - ts > 30:
             return
-        _sp.run(["pkill", "-f", "X-UYP-Worker.*index"],
+        _sp.run(["pkill", "-f",
+                 "X-UYP-Worker: index 127[.]0[.]0[.]1:11434/api/chat"],
                 capture_output=True)
         time.sleep(0.5)
         waited += 0.5

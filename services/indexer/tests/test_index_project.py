@@ -232,13 +232,18 @@ class TestPreemptiveYield(unittest.TestCase):
             index_project._yield_to_interactive()
         self.assertEqual(
             [call.args[0] for call in run.call_args_list],
-            [["pkill", "-f", "X-UYP-Worker.*index"]] * 2)
+            [["pkill", "-f",
+              "X-UYP-Worker: index 127[.]0[.]0[.]1:11434/api/chat"]] * 2)
         self.assertEqual([call.args[0] for call in sleep.call_args_list],
                          [0.5, 0.5])
 
     def test_preempt_pattern_targets_only_index_marked_curls(self):
-        # Friendly-fire contract (7704047): the pkill pattern must match the
-        # index worker marker and never voice / knowledge-search traffic.
+        # Friendly-fire contract (7704047 + 2026-10-10 second incident): the
+        # pkill pattern is anchored to the index marker + ollama URL so it
+        # can never cross into the -d body.  The search synthesis prompt
+        # contains the word "indexed" - the old "X-UYP-Worker.*index"
+        # pattern matched it across the command line and every preempt
+        # killed the in-flight search curl too.
         lock = self._lock_file(100.0)
         with patch.object(index_project, "INTERACTIVE_LOCK", lock), \
              patch.object(index_project.time, "time", return_value=100.5), \
@@ -247,10 +252,15 @@ class TestPreemptiveYield(unittest.TestCase):
             index_project._yield_to_interactive(max_wait_s=0.5)
         self.assertEqual(run.call_count, 1)
         pattern = run.call_args_list[0].args[0][2]
-        self.assertRegex("curl -H X-UYP-Worker: index 127.0.0.1:11434", pattern)
-        self.assertNotRegex("curl -H X-UYP-Worker: voice 127.0.0.1:11434",
-                            pattern)
-        self.assertNotRegex("curl -H X-UYP-Worker: knowledge-search", pattern)
+        self.assertRegex(
+            "curl -s -H X-UYP-Worker: index 127.0.0.1:11434/api/chat "
+            "-d {\"model\": \"qwen3.5-route\"} --max-time 400", pattern)
+        self.assertNotRegex(
+            "curl -s -H X-UYP-Worker: search 127.0.0.1:11434/api/chat "
+            "-d {\"messages\": [{\"content\": \"Answer using ONLY the "
+            "indexed file knowledge below.\"}}}", pattern)
+        self.assertNotRegex(
+            "curl -s -H X-UYP-Worker: voice 127.0.0.1:11434", pattern)
 
     def test_yield_wait_is_bounded_by_max_wait_s(self):
         # A lock that stays fresh forever still cannot stall the index past

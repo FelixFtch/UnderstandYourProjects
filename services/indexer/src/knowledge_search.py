@@ -55,10 +55,18 @@ INTERACTIVE_LOCK = "/tmp/uyp_interactive.lock"
 
 def _touch_interactive_lock():
     """交互查询在途标志: 索引侧富集看到新鲜旗标即让路(语音>查询>索引铁律,
-    2026-10-10 现场事故: 全量索引占满 ollama 5 槽, 'say OK' 都 10s 超时)。"""
+    2026-10-10 现场事故: 全量索引占满 ollama 5 槽, 'say OK' 都 10s 超时)。
+    锁只是让路提示, 绝不是闸门: root 属主的锁文件(satellite yield watcher
+    以 root 运行时创建)写入失败时降级为 mtime touch, 绝不让查询本身挂掉。"""
     import time as _t
-    with open(INTERACTIVE_LOCK, "w") as fh:
-        fh.write(str(_t.time()))
+    try:
+        with open(INTERACTIVE_LOCK, "w") as fh:
+            fh.write(str(_t.time()))
+    except OSError:
+        try:
+            os.utime(INTERACTIVE_LOCK, None)
+        except OSError:
+            pass
 
 def _clear_interactive_lock():
     try:

@@ -562,9 +562,21 @@ def _touch_interactive_lock() -> None:
     Group search sets the same /tmp/uyp_interactive.lock knowledge_search
     sets before synthesis, so an indexing worker holding the qwen slots
     yields to a group answer exactly like it yields to a knowledge search.
+
+    The lock is a yield HINT, never a gate (2026-10-10 live incident: the
+    satellite yield watcher runs as root and created the lock root-owned,
+    so this open() raised PermissionError and killed the whole response
+    with a bare connection close).  A failed touch degrades to a
+    best-effort mtime bump and never takes the answer down with it.
     """
-    with open(INTERACTIVE_LOCK, "w") as fh:
-        fh.write(str(time.time()))
+    try:
+        with open(INTERACTIVE_LOCK, "w") as fh:
+            fh.write(str(time.time()))
+    except OSError:
+        try:
+            os.utime(INTERACTIVE_LOCK, None)
+        except OSError:
+            pass
 
 
 def _member_key(value) -> str:
