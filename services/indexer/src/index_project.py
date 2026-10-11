@@ -11,7 +11,7 @@ Usage: index_project.py --host http://127.0.0.1:7121 --grant g_xxx [--limit 20]
 Requires: Laya llama-server on :8901 (start_laya.sh), ollama qwen3.5:4b.
 """
 from __future__ import annotations
-import argparse, json, os, re, subprocess, sys, time, urllib.error, urllib.request
+import argparse, json, os, re, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
 import threading
 
 MODELS = os.environ.get("UYP_MODELS_ROOT", "/home/jetson/dev/uyp/models")
@@ -39,7 +39,8 @@ def api(host, token, path, binary=False, timeout=90, retries=5):
             raise  # policy answers (403/404/413) are final - do not mask them
         except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
             last = exc
-            time.sleep(min(2 ** attempt * 5, 60))
+            if attempt < retries - 1:  # no backoff after the FINAL attempt: the
+                time.sleep(min(2 ** attempt * 5, 60))  # failure must record promptly
     raise last
 
 def laya_decide(head: str, mid: str = "") -> tuple[str, float]:
@@ -92,7 +93,71 @@ def _yield_to_interactive(max_wait_s: int = 600):
             ts = float(open(INTERACTIVE_LOCK).read().strip())
         except (OSError, ValueError):
             return
-        if _t.time() - ts > 90:
+        if _t.time() - ts > 30:
+            return
+        time.sleep(2)
+        waited += 2
+
+
+OLLAMA_URL = os.environ.get("UYP_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
+
+def _ollama_inflight() -> int:
+    """Best-effort count of in-flight requests on the shared ollama (:11434).
+
+    Layer 1: ``GET /api/ps`` — a server that reports concurrency itself
+    (concurrent / concurrency / in_flight / inflight / requests /
+    active_requests) is honored; stock ollama lists loaded models only.
+    Layer 2 (stock ollama): count ESTABLISHED TCP connections on the ollama
+    port via ``ss`` — every in-flight API request holds one, and curl-based
+    callers close the socket when the answer lands, so idle sockets do not
+    accumulate.  Any probe failure returns 0 ("unknown load"): pacing turns
+    itself off rather than risking the job.
+    """
+    try:
+        with urllib.request.urlopen(f"{OLLAMA_URL}/api/ps", timeout=2) as r:
+            d = json.loads(r.read())
+        if isinstance(d, dict):
+            for key in ("concurrent", "concurrency", "in_flight", "inflight",
+                        "requests", "active_requests"):
+                value = d.get(key)
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                    return value
+    except Exception:
+        pass
+    try:
+        port = urllib.parse.urlparse(OLLAMA_URL).port or 80
+        out = subprocess.run(
+            ["ss", "-tnH", "state", "established", f"( sport = :{port} )"],
+            capture_output=True, text=True, timeout=2)
+        if out.returncode == 0:
+            return len([ln for ln in out.stdout.splitlines() if ln.strip()])
+    except Exception:
+        pass
+    return 0
+
+
+def _max_concurrent() -> int:
+    """UYP_MAX_CONCURRENT (default 3): the ceiling the index workers
+    self-impose on the shared ollama.  Read per call so the operator can
+    retune it without restarting a running job."""
+    try:
+        return max(1, int(os.environ.get("UYP_MAX_CONCURRENT", "3")))
+    except ValueError:
+        return 3
+
+
+def _pace_llm_slots(max_wait_s: float = 600.0):
+    """Slot pacing (root-cause fix, 2026-10-10): the interactive lock only
+    pauses enrichment while a query is IN FLIGHT.  Between queries the index
+    workers immediately refill every ollama slot, so the NEXT voice/text
+    query waits 5-30s for a slot to free - the "all stoves occupied when
+    you walk in" problem.  Before EACH qwen call, if the shared ollama
+    already runs >= UYP_MAX_CONCURRENT requests, sleep 2s and re-check:
+    with the Jetson's 5-slot runner and the default 3, at least 2 slots
+    always stay free for voice/text even without the lock."""
+    waited = 0.0
+    while waited < max_wait_s:
+        if _ollama_inflight() < _max_concurrent():
             return
         time.sleep(2)
         waited += 2
@@ -100,6 +165,7 @@ def _yield_to_interactive(max_wait_s: int = 600):
 
 def qwen_enrich(content: str, think: bool):
     _yield_to_interactive()
+    _pace_llm_slots()
     instr = ("You are a project file analyzer. Output ONLY a JSON object with keys: "
              "purpose (one sentence), key_points (max 3 strings), components (max 3), "
              "depends_on (max 3). Answer in the SAME LANGUAGE as the file. No other text.")
