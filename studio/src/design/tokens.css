@@ -1,0 +1,271 @@
+@import "tailwindcss";
+/*
+ * Jarvis Studio — the single token sheet (FRONTEND-A owns this file).
+ * Every colour, font and radius is a --j-* custom property. Tailwind utilities map to them
+ * through `@theme inline`, so `bg-surface`, `text-muted`, `border-line`, `bg-g-act/10` all
+ * follow the active theme. Themes: light (default) and dark via <html data-theme="…">.
+ * `.j-stage` re-scopes the dark palette to a subtree (the Jarvis chat stage), so primitives
+ * render correctly on the stage in either theme.
+ */
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *, .j-stage, .j-stage *));
+
+@theme inline {
+  --color-canvas: var(--j-canvas);
+  --color-surface: var(--j-surface);
+  --color-raised: var(--j-raised);
+  --color-sunk: var(--j-sunk);
+  --color-ink: var(--j-ink);
+  --color-ink-2: var(--j-ink-2);
+  --color-muted: var(--j-muted);
+  --color-faint: var(--j-faint);
+  --color-line: var(--j-line);
+  --color-line-strong: var(--j-line-strong);
+  --color-accent: var(--j-accent);
+  --color-accent-ink: var(--j-accent-ink);
+  --color-accent-soft: var(--j-accent-soft);
+  --color-on-accent: var(--j-on-accent);
+  --color-ok: var(--j-ok);
+  --color-ok-soft: var(--j-ok-soft);
+  --color-warn: var(--j-warn);
+  --color-warn-soft: var(--j-warn-soft);
+  --color-err: var(--j-err);
+  --color-err-soft: var(--j-err-soft);
+  --color-info: var(--j-info);
+  --color-info-soft: var(--j-info-soft);
+  --color-g-understand: var(--j-g-understand);
+  --color-g-retrieve: var(--j-g-retrieve);
+  --color-g-act: var(--j-g-act);
+  --color-g-respond: var(--j-g-respond);
+  --color-stage: var(--j-stage);
+
+  --font-sans: var(--j-font-sans);
+  --font-serif: var(--j-font-serif);
+  --font-mono: var(--j-font-mono);
+
+  --radius-card: var(--j-radius-card);
+  --radius-control: var(--j-radius-control);
+  --shadow-card: var(--j-shadow-card);
+  --shadow-pop: var(--j-shadow-pop);
+}
+
+:root {
+  /* type */
+  --j-font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Helvetica Neue", "PingFang SC", "Hiragino Sans GB", sans-serif;
+  --j-font-serif: "Iowan Old Style", "Palatino Linotype", Palatino, Charter, "Bitstream Charter", "Songti SC", Georgia, serif;
+  --j-font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+
+  /* shape */
+  --j-radius-card: 14px;
+  --j-radius-control: 9px;
+
+  /* light (default) */
+  --j-canvas: #f4f0e8;
+  --j-surface: #fffdf9;
+  --j-raised: #ffffff;
+  --j-sunk: #eee8dc;
+  --j-ink: #1c1a15;
+  --j-ink-2: #3b372e;
+  --j-muted: #6b6559;
+  --j-faint: #78715f;
+  --j-line: #e3dccd;
+  --j-line-strong: #cfc5b2;
+  --j-accent: #986318;
+  --j-accent-ink: #855516;
+  --j-accent-soft: #f4e7cf;
+  --j-on-accent: #fffaf1;
+  --j-ok: #376f48;
+  --j-ok-soft: #e1eedf;
+  --j-warn: #8f6110;
+  --j-warn-soft: #f5e9cc;
+  --j-err: #b0432e;
+  --j-err-soft: #f6e0d9;
+  --j-info: #3c6890;
+  --j-info-soft: #dfe8f1;
+  --j-g-understand: #4d64a6;
+  --j-g-retrieve: #21705f;
+  --j-g-act: #a04d24;
+  --j-g-respond: #7c579f;
+  --j-stage: #171611;
+  --j-shadow-card: 0 1px 0 rgb(60 45 20 / 0.04), 0 1px 3px rgb(60 45 20 / 0.06);
+  --j-shadow-pop: 0 12px 40px rgb(30 22 10 / 0.18), 0 2px 8px rgb(30 22 10 / 0.08);
+  color-scheme: light;
+}
+
+/* dark theme, and the always-dark Jarvis stage */
+:root[data-theme="dark"],
+.j-stage {
+  --j-canvas: #11100d;
+  --j-surface: #1a1814;
+  --j-raised: #221f1a;
+  --j-sunk: #0d0c0a;
+  --j-ink: #ece6d9;
+  --j-ink-2: #d2cbbb;
+  --j-muted: #a0998a;
+  --j-faint: #857e70;
+  --j-line: #2b2822;
+  --j-line-strong: #3d3930;
+  --j-accent: #d9a24f;
+  --j-accent-ink: #e9bb70;
+  --j-accent-soft: #33281a;
+  --j-on-accent: #1a1408;
+  --j-ok: #7bbb8c;
+  --j-ok-soft: #1c2a1f;
+  --j-warn: #dcae5a;
+  --j-warn-soft: #2f2615;
+  --j-err: #e48a72;
+  --j-err-soft: #35201a;
+  --j-info: #8cb1d6;
+  --j-info-soft: #1a2531;
+  --j-g-understand: #93a6e2;
+  --j-g-retrieve: #6fc2b4;
+  --j-g-act: #e79f74;
+  --j-g-respond: #bc9bdb;
+  --j-stage: #0c0b09;
+  --j-shadow-card: 0 1px 0 rgb(0 0 0 / 0.3);
+  --j-shadow-pop: 0 16px 48px rgb(0 0 0 / 0.55), 0 2px 8px rgb(0 0 0 / 0.4);
+  color-scheme: dark;
+}
+
+/* the stage keeps its own deep background in both themes */
+.j-stage {
+  --j-stage: #171611;
+  --j-surface: #1d1b16;
+  --j-raised: #26231d;
+  --j-sunk: #12110d;
+  --j-line: #2e2b24;
+}
+@layer components {
+  .j-stage {
+    background: var(--j-stage);
+    color: var(--j-ink);
+  }
+}
+:root[data-theme="dark"] .j-stage {
+  --j-stage: #0b0a08;
+  --j-surface: #16140f;
+  --j-raised: #1f1c17;
+  --j-line: #26231d;
+}
+
+@layer base {
+html,
+body,
+#root {
+  height: 100%;
+}
+html {
+  -webkit-text-size-adjust: 100%;
+  text-rendering: optimizeLegibility;
+}
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--j-canvas);
+  color: var(--j-ink);
+  font-family: var(--j-font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--j-accent);
+  outline-offset: 2px;
+}
+::selection {
+  background: color-mix(in oklab, var(--j-accent) 30%, transparent);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--j-line-strong) transparent;
+}
+}
+
+@layer components {
+/* ── skeleton / motion ─────────────────────────────────────────────────── */
+@keyframes j-shimmer {
+  0% { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
+.j-skeleton {
+  background: linear-gradient(90deg, var(--j-sunk) 0%, color-mix(in oklab, var(--j-sunk) 55%, var(--j-surface)) 50%, var(--j-sunk) 100%);
+  background-size: 200% 100%;
+  animation: j-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes j-pulse-ring {
+  0% { box-shadow: 0 0 0 0 color-mix(in oklab, currentColor 45%, transparent); }
+  100% { box-shadow: 0 0 0 6px transparent; }
+}
+.j-pulse { animation: j-pulse-ring 1.6s ease-out infinite; }
+@keyframes j-caret {
+  50% { opacity: 0; }
+}
+.j-caret > :last-child:not(ul, ol, pre, table)::after,
+.j-caret > :is(ul, ol):last-child > li:last-child::after {
+  content: "";
+  display: inline-block;
+  width: 0.5em;
+  height: 1.05em;
+  margin-left: 2px;
+  vertical-align: -0.15em;
+  background: var(--j-accent);
+  animation: j-caret 1s steps(1) infinite;
+}
+@keyframes j-rise {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+.j-rise { animation: j-rise 0.22s ease-out both; }
+@media (prefers-reduced-motion: reduce) {
+  .j-skeleton, .j-pulse, .j-rise, .j-caret > *::after, .j-caret li::after { animation: none; }
+}
+
+/* ── prose (markdown) ──────────────────────────────────────────────────── */
+.j-prose {
+  overflow-wrap: anywhere;
+  line-height: 1.62;
+}
+.j-prose > :first-child { margin-top: 0; }
+.j-prose > :last-child { margin-bottom: 0; }
+.j-prose p, .j-prose ul, .j-prose ol, .j-prose pre, .j-prose blockquote, .j-prose table { margin: 0.55em 0; }
+.j-prose ul { list-style: disc; padding-left: 1.3em; }
+.j-prose ol { list-style: decimal; padding-left: 1.4em; }
+.j-prose li { margin: 0.2em 0; }
+.j-prose li::marker { color: var(--j-faint); }
+.j-prose h1, .j-prose h2, .j-prose h3, .j-prose h4 {
+  font-family: var(--j-font-serif);
+  font-weight: 600;
+  line-height: 1.25;
+  margin: 0.9em 0 0.35em;
+}
+.j-prose h1 { font-size: 1.35em; }
+.j-prose h2 { font-size: 1.2em; }
+.j-prose h3, .j-prose h4 { font-size: 1.05em; }
+.j-prose a { color: var(--j-accent-ink); text-decoration: underline; text-underline-offset: 2px; text-decoration-thickness: 1px; }
+.j-prose strong { font-weight: 600; color: var(--j-ink); }
+.j-prose code {
+  font-family: var(--j-font-mono);
+  font-size: 0.86em;
+  background: var(--j-sunk);
+  border: 1px solid var(--j-line);
+  border-radius: 5px;
+  padding: 0.05em 0.35em;
+}
+.j-prose pre {
+  background: var(--j-sunk);
+  border: 1px solid var(--j-line);
+  border-radius: 10px;
+  padding: 0.75em 0.9em;
+  overflow-x: auto;
+  font-size: 0.86em;
+  line-height: 1.5;
+}
+.j-prose pre code { background: none; border: 0; padding: 0; font-size: 1em; }
+.j-prose blockquote { border-left: 2px solid var(--j-line-strong); padding-left: 0.85em; color: var(--j-muted); }
+.j-prose hr { border: 0; border-top: 1px solid var(--j-line); margin: 1em 0; }
+.j-prose table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; font-size: 0.92em; }
+.j-prose th, .j-prose td { border: 1px solid var(--j-line); padding: 0.3em 0.6em; text-align: left; }
+.j-prose th { background: var(--j-sunk); font-weight: 600; }
+}
