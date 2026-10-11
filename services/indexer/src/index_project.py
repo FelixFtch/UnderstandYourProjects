@@ -106,7 +106,6 @@ def _yield_to_interactive(max_wait_s: int = 600):
 
 def qwen_enrich(content: str, think: bool):
     _yield_to_interactive()
-    _pace_llm_slots()
     instr = ("You are a project file analyzer. Output ONLY a JSON object with keys: "
              "purpose (one sentence), key_points (max 3 strings), components (max 3), "
              "depends_on (max 3). Answer in the SAME LANGUAGE as the file. No other text.")
