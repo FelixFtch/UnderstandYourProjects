@@ -113,6 +113,16 @@ class SynthesisPromptTests(unittest.TestCase):
         self.assertEqual(result["confidence"], "none")
         self.assertEqual(curl.calls, [])
 
+    def test_will_synthesize_flags_exactly_the_slow_path(self):
+        # Slow-hint predicate (root-cause fix, 2026-10-10): a retrieval HIT
+        # means qwen synthesis (the wait X-UYP-Slow-Hint exists to flag); a
+        # miss is answered instantly and must never be hinted slow.  The
+        # predicate shares _retrieval with answer(), so it can never
+        # disagree with the answer path.
+        self.assertTrue(knowledge_search.will_synthesize("哪里实现了委托签名", fixture_items()))
+        self.assertFalse(knowledge_search.will_synthesize("量子退火算法在哪里实现", fixture_items()))
+        self.assertFalse(knowledge_search.will_synthesize("哪里实现了委托签名", []))
+
 
 if __name__ == "__main__":
     unittest.main()

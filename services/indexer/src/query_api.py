@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from knowledge_search import answer as search_answer, load_items
+from knowledge_search import answer as search_answer, load_items, will_synthesize as search_will_synthesize
 from connector_registry import load_registry, public_projection, registry_health
 from homehub_adapter import (
     load_context as load_homehub_context,
@@ -606,8 +606,28 @@ class QueryHandler(BaseHTTPRequestHandler):
             self.json_response({"ok": False, "error": "query_required"}, 400, audit)
             return
         allowed_items = scoped_items(context)
+        # Slow-answer hint (root-cause fix, 2026-10-10): lexical retrieval is
+        # instant, but a retrieval HIT means qwen synthesis - 5-15s plus
+        # queue wait when the GPU is busy indexing.  For hinted-slow answers
+        # the response HEADERS (X-UYP-Slow-Hint) are sent and flushed BEFORE
+        # the synthesis runs, and the body is framed by connection close
+        # instead of Content-Length, so a streaming voice caller can speak
+        # "Let me look that up..." while the answer is still computed.  A
+        # miss (instant canonical sentence) keeps the normal framing.
+        slow = search_will_synthesize(question, allowed_items)
+        if slow:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self._headers(audit)
+            self.send_header("X-UYP-Slow-Hint", "true")
+            self.end_headers()
+            self.wfile.flush()
         result = search_answer(question, allowed_items)
         result.update({"ok": True, "auditId": audit, "projectId": payload.get("projectId"), "access": {"grantEpoch": context.get("grantEpoch"), "expiresAt": context.get("expiresAt")}})
+        if slow:
+            self.wfile.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+            self.wfile.flush()
+            return
         self.json_response(result, audit=audit)
 
     def log_message(self, *_args) -> None:
