@@ -11,7 +11,7 @@ Usage: index_project.py --host http://127.0.0.1:7121 --grant g_xxx [--limit 20]
 Requires: Laya llama-server on :8901 (start_laya.sh), ollama qwen3.5:4b.
 """
 from __future__ import annotations
-import argparse, json, os, re, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
+import argparse, http.client, json, os, re, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
 import threading
 
 MODELS = os.environ.get("UYP_MODELS_ROOT", "/home/jetson/dev/uyp/models")
@@ -43,7 +43,12 @@ def api(host, token, path, binary=False, timeout=90, retries=5):
                 return d if binary else json.loads(d)
         except urllib.error.HTTPError:
             raise  # policy answers (403/404/413) are final - do not mask them
-        except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        except (OSError, urllib.error.URLError, json.JSONDecodeError,
+                http.client.IncompleteRead, http.client.HTTPException) as exc:
+            # IncompleteRead (2026-10-11 field): a large /read cut mid-body by
+            # the launchd tunnel blip killed the worker - the jetson hotfix
+            # had this and a repo redeploy regressed it. HTTPException broadly
+            # covers truncation/reset shapes; retries are idempotent reads.
             last = exc
             if attempt < retries - 1:  # no backoff after the FINAL attempt: the
                 time.sleep(min(2 ** attempt * 5, 60))  # failure must record promptly
