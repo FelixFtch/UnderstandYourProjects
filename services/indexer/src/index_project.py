@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """First-real-index runner (UYP indexer v0).
 
-Chain: Connector manifest -> rule layer -> Laya triage (/v1/systemone) ->
+Chain: Connector manifest -> rule layer -> key-file classifier (importance
+tiers A/B/C, key_file_classifier.py) -> Laya triage (/v1/systemone) ->
 qwen3.5 enrichment (think per gate, brace-extraction fallback) -> derived
 KnowledgeItems to ~/dev/uyp/output/, state to ~/dev/uyp/state/.
 Red lines: reads source bytes ONLY via the connector; never writes anything
@@ -13,6 +14,8 @@ Requires: Laya llama-server on :8901 (start_laya.sh), ollama qwen3.5:4b.
 from __future__ import annotations
 import argparse, http.client, json, os, re, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
 import threading
+
+import key_file_classifier as kfc
 
 MODELS = os.environ.get("UYP_MODELS_ROOT", "/home/jetson/dev/uyp/models")
 BIN = os.environ.get("UYP_LLAMACPP_BIN", "/home/jetson/dev/uyp/llama.cpp-build/build/bin")
@@ -53,6 +56,33 @@ def api(host, token, path, binary=False, timeout=90, retries=5):
             if attempt < retries - 1:  # no backoff after the FINAL attempt: the
                 time.sleep(min(2 ** attempt * 5, 60))  # failure must record promptly
     raise last
+
+def fetch_full_manifest(host, token, grant, *, api_fn=None) -> dict:
+    """Follow the connector's page cursor (PAGE_CAP 2000) to the end.
+
+    The first page alone silently dropped every file sorting after entry
+    2000 - e.g. a project with a large vendored folder lost its own top-level
+    packages that sort later alphabetically (2026-10-11, commontasks).
+    """
+    api_fn = api_fn or api
+    # No quoting here: api() percent-encodes the request line itself, and
+    # pre-quoting the base64 cursor ("=" -> %3D) double-encoded it, so the
+    # connector fell back to page 1 forever (caught by the guard below).
+    q = grant
+    man = api_fn(host, token, f"/manifest?grant={q}")
+    files = list(man.get("files", []))
+    seen_cursors = set()
+    while man.get("has_more") and man.get("next_cursor"):
+        cur = man["next_cursor"]
+        if cur in seen_cursors:
+            raise RuntimeError("connector manifest cursor did not advance")
+        seen_cursors.add(cur)
+        man = api_fn(host, token, f"/manifest?grant={q}&cursor={cur}")
+        files.extend(man.get("files", []))
+    out = dict(man)
+    out["files"], out["has_more"], out["next_cursor"] = files, False, None
+    return out
+
 
 def laya_decide(head: str, mid: str = "") -> tuple[str, float]:
     # Calibration 2026-10-10 (benchmarks/calibration_results_2026-10-10.json,
@@ -95,6 +125,10 @@ def laya_decide(head: str, mid: str = "") -> tuple[str, float]:
 
 INTERACTIVE_LOCK = "/tmp/uyp_interactive.lock"
 
+# Optional orientation text (Studio v2 hierarchy: a sub-folder analysis gets
+# its parent project's overview).  Empty by default -> prompt unchanged.
+EXTRA_CONTEXT = ""
+
 def _yield_to_interactive(max_wait_s: int = 600):
     """语音>查询>索引 + 强制抢占 (owner design 2026-10-10):
     语音进来 -> 杀掉在途 qwen curl -> GPU 立刻 100% 给语音
@@ -125,7 +159,10 @@ def qwen_enrich(content: str, think: bool):
     instr = ("You are a project file analyzer. Output ONLY a JSON object with keys: "
              "purpose (one sentence), key_points (max 3 strings), components (max 3), "
              "depends_on (max 3). Answer in the SAME LANGUAGE as the file. No other text.")
-    body = json.dumps({"model": "qwen3.5-route", "think": think, "stream": False,
+    if EXTRA_CONTEXT:
+        instr += ("\nPROJECT CONTEXT (orientation only; describe THIS file): " + EXTRA_CONTEXT)
+    model = os.environ.get("UYP_OLLAMA_MODEL", "qwen3.5-route")
+    body = json.dumps({"model": model, "think": think, "stream": False,
                        "options": {"num_ctx": 4096},
                        "messages": [{"role": "user", "content": instr + "\n\nFILE CONTENT:\n" + content[:2600]}]})
     # transport retry (2026-10-10 hotfix, second-project run): ollama shares
@@ -144,7 +181,7 @@ def qwen_enrich(content: str, think: bool):
         except (json.JSONDecodeError, ValueError):
             d = None
             subprocess.run(["curl", "-s", "-H", "X-UYP-Worker: index", "127.0.0.1:11434/api/chat", "-d",
-                            json.dumps({"model": "qwen3.5-route", "think": False, "stream": False,
+                            json.dumps({"model": model, "think": False, "stream": False,
                                         "messages": [{"role": "user", "content": "ping"}]}),
                             "--max-time", "30"], capture_output=True, text=True)
             time.sleep(10)
@@ -270,10 +307,16 @@ def main():
                     help="incremental: only (re-)analyze these relpaths")
     ap.add_argument("--changes-file", metavar="PATH",
                     help="incremental: JSON array of relpaths to (re-)analyze; merged with --only-changed")
+    ap.add_argument("--context-file", metavar="PATH",
+                    help="optional orientation text (e.g. the parent project's overview) added to enrichment prompts")
     a = ap.parse_args()
+    if a.context_file:
+        global EXTRA_CONTEXT
+        with open(a.context_file, encoding="utf-8") as fh:
+            EXTRA_CONTEXT = " ".join(fh.read().split())[:1200]
     token = open(a.token_file).read().strip()
 
-    man = api(a.host, token, f"/manifest?grant={a.grant}")
+    man = fetch_full_manifest(a.host, token, a.grant)
     root = str(man["root_name"])
     # Connector root names are metadata, never filesystem paths.  Rejecting
     # separators here keeps a malformed manifest from escaping the configured
@@ -318,6 +361,40 @@ def main():
     print(f"indexing {root}: {len(files)} files (of {man['total']})", flush=True)
     READ_CAP = 16 * 1024 * 1024  # connector /read per-file cap
 
+    # Key-file classifier (stage before Laya).  Heads are fetched once here
+    # (the same 2 KB read process_file used to make) so the classifier can
+    # build an import graph across the whole run before any model call.
+    heads: dict[str, str] = {}
+    keyfile: dict[str, dict] = {}
+    enrich_cap = os.environ.get("UYP_KEYFILE_MAX_ENRICH")
+    enrich_cap = int(enrich_cap) if enrich_cap else None
+    enrich_used = [0]
+    if kfc.enabled() and files:
+        def fetch_head(f):
+            try:
+                return f["relpath"], api(a.host, token,
+                    f"/read?grant={a.grant}&relpath={f['relpath']}&length=2048",
+                    binary=True).decode("utf-8", "replace")
+            except urllib.error.HTTPError as e:
+                if e.code != 413:
+                    raise
+                return f["relpath"], ""
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+        t_k = time.time()
+        with _TPE(max_workers=8) as _pool:
+            heads = dict(_pool.map(fetch_head, files))
+        keyfile = kfc.classify(files, heads, changed=only or ())
+        tiers = {}
+        for v in keyfile.values():
+            tiers[v["tier"]] = tiers.get(v["tier"], 0) + 1
+        files = sorted(files, key=lambda f: -keyfile.get(f["relpath"], {}).get("score", 0.0))
+        with open(f"{STATE}/{root}.keyfiles.json", "w", encoding="utf-8") as fh:
+            json.dump({"ran_at": time.strftime("%FT%T"), "tiers": tiers,
+                       "files": keyfile}, fh, ensure_ascii=False, indent=1)
+        print(f"key-file classifier: {json.dumps(tiers)} in {time.time()-t_k:.1f}s "
+              f"(A -> Laya+qwen, B -> Laya then qwen only if deep, C/gate -> structure-only)",
+              flush=True)
+
     def safe_read(rel, size, maxb):
         if size > READ_CAP:
             return None
@@ -339,15 +416,24 @@ def main():
     def process_file(f):
         rel, size = f["relpath"], f["size"]
 
-        try:
-            # 2048B read for a 600-char window: slack for multibyte (CJK ~3B/char)
-            head = api(a.host, token,
-                       f"/read?grant={a.grant}&relpath={rel}&length=2048", binary=True).decode("utf-8", "replace")
-        except urllib.error.HTTPError as e:
-            head = ""  # unreadable head (e.g. range cap) -> triage on metadata alone
-            if e.code != 413:
-                raise
+        if rel in heads:
+            head = heads[rel]
+        else:
+            try:
+                # 2048B read for a 600-char window: slack for multibyte (CJK ~3B/char)
+                head = api(a.host, token,
+                           f"/read?grant={a.grant}&relpath={rel}&length=2048", binary=True).decode("utf-8", "replace")
+            except urllib.error.HTTPError as e:
+                head = ""  # unreadable head (e.g. range cap) -> triage on metadata alone
+                if e.code != 413:
+                    raise
         rule_verdict = rule_pretriage(rel, size, head)
+        kf = keyfile.get(rel)
+        if rule_verdict is None and kf and kf["tier"] in ("C", "gate"):
+            # Not a key file: keep it findable (path + symbol counts + the UA
+            # structure graph) but spend no Laya/qwen time on it.
+            rule_verdict = "skip" if kf.get("gate") == "minified" else "structure-only"
+            bump("keyfile_" + kf["tier"])
         verdict, gate = rule_verdict, 0.0
         if rule_verdict is None:
             # Mid-file sample via connector offset read: calibration showed
@@ -368,6 +454,22 @@ def main():
         item = {"file": rel, "version": {"mtime": f["mtime"], "size": size},
                 "verdict": verdict, "think_gate": round(gate, 2),
                 "source": "mac-connector", "analyzed_at": time.strftime("%FT%T")}
+        if kf:
+            item["keyfile"] = {"tier": kf["tier"], "score": kf["score"],
+                               "rank": kf.get("rank"), "gate": kf.get("gate"),
+                               "embedded": kf.get("embedded")}
+        if kf and verdict in ("quick-summary", "deep-analysis"):
+            # Tier B: Laya judged it, but qwen only for deep-analysis.  Any
+            # tier: respect the absolute enrichment budget when set.
+            with stats_lock:
+                over = enrich_cap is not None and enrich_used[0] >= enrich_cap
+                demote = (kf["tier"] == "B" and verdict != "deep-analysis") or over
+                if not demote:
+                    enrich_used[0] += 1
+            if demote:
+                item["laya_verdict"] = verdict
+                verdict = item["verdict"] = "structure-only"
+                bump("keyfile_budget_demoted" if over else "keyfile_B_demoted")
         if verdict == "skip":
             bump("rule_skip" if rule_verdict is not None else "laya_skip")
         elif verdict == "structure-only":

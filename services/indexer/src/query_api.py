@@ -16,6 +16,7 @@ it outside the Jetson.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import glob
@@ -26,7 +27,7 @@ import urllib.request
 import uuid
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from knowledge_search import (
     INTERACTIVE_LOCK,
@@ -51,6 +52,9 @@ from homehub_adapter import (
     load_context_for_token as load_homehub_context_for_token,
 )
 from nandatown_client import NandaTownClient
+import project_digest
+import project_jobs
+import projects as project_registry
 
 
 VERSION = "0.1.0"
@@ -906,6 +910,120 @@ def local_group_context(record: dict, member_id: str, jarvis_node_id=None) -> di
     }
 
 
+# ---- Projects / analyzed folders (Studio v2, docs/STUDIO_V2.md §6.2) -------
+#
+# The /api/projects* endpoints accept ONLY a caller credential: (a) the
+# caller's HomeHub Companion bearer, or (b) on a loopback bind, the voice /
+# agent-runtime tier's X-Agent-Member (resolved with this service's own
+# HomeHub token).  There is no service-level fallback: no credential -> 401,
+# unresolvable bearer -> 401, member without grants -> 403, HomeHub transport
+# unconfigured -> 503.  Projects are then filtered by the context's project
+# and source scopes; the owner gets grants from the companion proxy.
+
+_ROLE_CACHE: dict = {}
+_ROLE_CACHE_LOCK = threading.Lock()
+MAX_QUESTION = 2000
+
+
+def resolve_project_caller(headers, *, loopback_voice: bool = False):
+    """Return ``(caller, error)``; ``error`` is ``(status, code, message)``."""
+    url = os.environ.get("UYP_HOMEHUB_ACCESS_CONTEXT_URL")
+    auth = str(headers.get("Authorization") or "")
+    if auth[:7].lower() == "bearer " and auth[7:].strip():
+        if not url:
+            return None, (503, "access_context_unavailable", "HomeHub access-context transport is not configured.")
+        bearer = auth[7:].strip()
+        context = load_homehub_context_for_token(bearer)
+        if context is None:
+            return None, (401, "invalid_credentials", "HomeHub did not accept the presented bearer.")
+        return {"context": context, "principal": str(context["principalId"]), "bearer": bearer, "tier": "bearer"}, None
+    member = str(headers.get("X-Agent-Member") or "").strip()
+    if member:
+        if not loopback_voice:
+            return None, (401, "credentials_required", "X-Agent-Member is accepted only on a loopback bind.")
+        if not url or not os.environ.get("UYP_HOMEHUB_TOKEN_FILE"):
+            return None, (503, "access_context_unavailable", "HomeHub member resolution is not configured on this Agent Box.")
+        context = load_homehub_context_for_member(member)
+        if context is None:
+            return None, (403, "member_access_denied", "HomeHub has no active project grant for this member.")
+        return {"context": context, "principal": member, "bearer": None, "tier": "member"}, None
+    return None, (401, "credentials_required", "A HomeHub bearer (or loopback X-Agent-Member) is required.")
+
+
+def _homehub_members_url() -> str | None:
+    explicit = os.environ.get("UYP_HOMEHUB_MEMBERS_URL")
+    if explicit:
+        return explicit
+    base = os.environ.get("UYP_HOMEHUB_ACCESS_CONTEXT_URL")
+    if not base:
+        return None
+    parts = urlparse(base)
+    return f"{parts.scheme}://{parts.netloc}/api/members" if parts.scheme and parts.netloc else None
+
+
+def resolve_member_role(caller: dict) -> str | None:
+    """The caller's HomeHub role (owner/member/guest), or None if unknown.
+
+    HomeHub is the authority: an explicit ``role`` on the projection wins,
+    then the deployment owner pin (UYP_OWNER_MEMBER), then HomeHub's members
+    list read with the caller's own bearer (or, for the loopback member
+    tier, this service's HomeHub token).  Unknown -> None (fail closed).
+    """
+    context = caller.get("context") or {}
+    if isinstance(context.get("role"), str) and context["role"].strip():
+        return context["role"].strip()
+    principal = _member_key(caller.get("principal"))
+    if not principal:
+        return None
+    if _same_member(principal, configured_owner_member()):
+        return "owner"
+    url = _homehub_members_url()
+    token = caller.get("bearer")
+    if not token:
+        token_file = os.environ.get("UYP_HOMEHUB_TOKEN_FILE")
+        try:
+            with open(os.path.expanduser(token_file or ""), encoding="utf-8") as fh:
+                token = fh.read().strip()
+        except OSError:
+            token = None
+    if not url or not token:
+        return None
+    key = (principal, hashlib.sha256(token.encode("utf-8")).hexdigest()[:16])
+    now = time.monotonic()
+    with _ROLE_CACHE_LOCK:
+        cached = _ROLE_CACHE.get(key)
+        if cached and now < cached[0]:
+            return cached[1]
+    role = None
+    try:
+        request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})
+        with urllib.request.urlopen(request, timeout=3) as response:
+            value = json.loads(response.read())
+        rows = value.get("members") if isinstance(value, dict) else value
+        for row in rows if isinstance(rows, list) else []:
+            if isinstance(row, dict) and _same_member(row.get("member_id"), principal):
+                role = str(row.get("role") or "").strip() or None
+                break
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError):
+        return None
+    with _ROLE_CACHE_LOCK:
+        _ROLE_CACHE[key] = (now + 60.0, role)
+    return role
+
+
+def _parse_window_bound(value, default: float) -> float | None:
+    if value is None or str(value).strip() == "":
+        return default
+    text = str(value).strip()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
 class QueryHandler(BaseHTTPRequestHandler):
     def _headers(self, audit: str) -> None:
         allowed = [o.strip() for o in os.environ.get(
@@ -1007,6 +1125,9 @@ class QueryHandler(BaseHTTPRequestHandler):
                 and parts[2] == "groups" and parts[3] and parts[4] == "messages"):
             self._get_group_messages(parts[3], query, audit)
             return
+        if parsed.path == "/api/projects" or parsed.path.startswith("/api/projects/"):
+            self._get_projects(parsed.path, query, audit)
+            return
         if parsed.path == "/api/index/jobs":
             context = load_access_context()
             project = (query.get("projectId") or [None])[0]
@@ -1038,6 +1159,9 @@ class QueryHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/groups":
             self._post_group_create(payload, audit)
+            return
+        if parsed.path == "/api/projects" or parsed.path.startswith("/api/projects/"):
+            self._post_projects(parsed.path, payload, audit)
             return
         parts = parsed.path.split("/")
         if (len(parts) == 5 and parts[0] == "" and parts[1] == "api"
@@ -1100,6 +1224,105 @@ class QueryHandler(BaseHTTPRequestHandler):
             self.wfile.flush()
             return
         self.json_response(result, audit=audit)
+
+    # ---- Projects (Studio v2 §6.2) ------------------------------------------
+
+    def _project_caller(self, audit: str):
+        caller, error = resolve_project_caller(
+            self.headers, loopback_voice=getattr(self.server, "loopback_voice", False))
+        if error is not None:
+            status, code, message = error
+            self.json_response({"ok": False, "error": code, "message": message}, status, audit)
+            return None
+        return caller
+
+    def _project_not_found(self, audit: str) -> None:
+        # Absent and not-authorized are indistinguishable to the caller.
+        self.json_response({"ok": False, "error": "project_not_found", "message": "No such project in your authorized scope."}, 404, audit)
+
+    def _get_projects(self, path: str, query: dict, audit: str) -> None:
+        caller = self._project_caller(audit)
+        if caller is None:
+            return
+        context = caller["context"]
+        parts = [unquote(part) for part in path.split("/")[3:] if part != ""]
+        if not parts:
+            self.json_response(project_digest.list_projects(context), audit=audit)
+            return
+        if parts == ["ids"]:
+            if resolve_member_role(caller) != "owner":
+                self.json_response({"ok": False, "error": "owner_session_required", "message": "Only the owner can list every registered project."}, 403, audit)
+                return
+            doc = project_registry.sync_registry(jobs_by_project=project_jobs.jobs_by_project())
+            self.json_response({"project_ids": sorted(r["project_id"] for r in doc["projects"])}, audit=audit)
+            return
+        if len(parts) == 2 and parts[0] == "jobs":
+            state = project_jobs.job_state(parts[1])
+            record = project_registry.ProjectRegistry().get(state["project_id"]) if state else None
+            allowed = record is not None and (project_registry.visible(context, record)
+                                              or resolve_member_role(caller) == "owner")
+            if state is None or not allowed:
+                self.json_response({"ok": False, "error": "job_not_found"}, 404, audit)
+                return
+            self.json_response(project_jobs.public_job(state), audit=audit)
+            return
+        if len(parts) == 1:
+            result = project_digest.digest(context, parts[0])
+            if result is None:
+                self._project_not_found(audit)
+                return
+            self.json_response(result, audit=audit)
+            return
+        if len(parts) == 2 and parts[1] == "activity":
+            now = time.time()
+            until = _parse_window_bound((query.get("until") or [None])[0], now)
+            since = _parse_window_bound((query.get("since") or [None])[0], (until or now) - 7 * 86400)
+            if since is None or until is None or since > until:
+                self.json_response({"ok": False, "error": "invalid_window", "message": "since/until must be ISO-8601 and since <= until."}, 400, audit)
+                return
+            result = project_digest.activity(context, parts[0], since, until)
+            if result is None:
+                self._project_not_found(audit)
+                return
+            self.json_response(result, audit=audit)
+            return
+        self.json_response({"ok": False, "error": "not_found"}, 404, audit)
+
+    def _post_projects(self, path: str, payload: dict, audit: str) -> None:
+        caller = self._project_caller(audit)
+        if caller is None:
+            return
+        parts = [unquote(part) for part in path.split("/")[3:] if part != ""]
+        if parts == ["analyze"]:
+            if resolve_member_role(caller) != "owner":
+                self.json_response({"ok": False, "error": "owner_session_required", "message": "Only the owner can start a folder analysis."}, 403, audit)
+                return
+            try:
+                result = project_jobs.create_analyze_job(
+                    payload.get("path"), payload.get("device_id"), actor=_member_key(caller["principal"]))
+            except project_jobs.AnalyzeError as exc:
+                self.json_response({"ok": False, "error": exc.code, "message": exc.message}, exc.status, audit)
+                return
+            result.pop("_existing", None)
+            self.json_response(result, 202, audit)
+            return
+        if len(parts) == 2 and parts[1] == "ask":
+            question = str(payload.get("question") or "").strip()
+            if not question:
+                self.json_response({"ok": False, "error": "question_required"}, 400, audit)
+                return
+            if len(question) > MAX_QUESTION:
+                self.json_response({"ok": False, "error": "question_too_long", "message": f"Questions are bounded to {MAX_QUESTION} characters."}, 400, audit)
+                return
+            role = resolve_member_role(caller)
+            result = project_digest.ask(caller["context"], parts[0], question,
+                                        member=_member_key(caller["principal"]), role=role)
+            if result is None:
+                self._project_not_found(audit)
+                return
+            self.json_response(result, audit=audit)
+            return
+        self.json_response({"ok": False, "error": "not_found"}, 404, audit)
 
     # ---- Groups (P10) endpoints -------------------------------------------
 
@@ -1165,17 +1388,9 @@ class QueryHandler(BaseHTTPRequestHandler):
             if record is None:
                 self.json_response({"ok": False, "error": "group_not_found", "message": "This group is not registered locally or has been dissolved."}, 404, audit)
                 return
-            context = caller_context(self.headers)
-            member_id = str(payload.get("member_id") or "").strip()
-            if not member_id:
-                # The voice chain asserts the speaking member on loopback the
-                # same way /api/knowledge/search does; membership is then
-                # checked against the registry by scoped_retrieval.
-                voice_member = str(self.headers.get("X-Agent-Member") or "").strip()
-                if voice_member and getattr(self.server, "loopback_voice", False):
-                    member_id = voice_member
-            if not member_id and context is not None:
-                member_id = str(context.get("principalId") or "").strip()
+            member_id, context, ok = self._bound_group_member(payload.get("member_id"), audit)
+            if not ok:
+                return
             if not member_id:
                 self.json_response({"ok": False, "error": "member_required", "message": "A requesting member is required to search a group."}, 400, audit)
                 return
@@ -1201,6 +1416,56 @@ class QueryHandler(BaseHTTPRequestHandler):
         self.json_response(result, audit=audit)
 
     # ---- Group messaging (NandaTown wiring, audit A2) ----------------------
+
+    def _bound_group_member(self, asserted, audit: str):
+        """The requesting member for a group call, bound to a credential.
+
+        Security fix (Studio v2, 2026-10-11): a body/query ``member_id`` used
+        to win over every credential, so any caller could act as any member.
+        Now the asserted id must agree with the resolved principal:
+
+        * ``Authorization: Bearer`` - the caller's own HomeHub principal; an
+          unresolvable bearer is 401 (never a fallback), a different
+          ``member_id`` is 403 ``member_mismatch``;
+        * loopback ``X-Agent-Member`` (voice tier) - that member; a different
+          ``member_id`` is 403;
+        * neither - a body/query ``member_id`` is a loopback machine caller's
+          assertion (same trust as the voice header) and is honoured only on
+          a loopback bind and only for non-browser requests (no ``Origin``),
+          so a web page cannot post a forged member; otherwise it must equal
+          the service context's principal.
+
+        Returns ``(member_id, context, ok)``; on refusal the error response
+        has already been sent and ``ok`` is False.
+        """
+        asserted = str(asserted or "").strip()
+        auth = str(self.headers.get("Authorization") or "")
+        loopback = getattr(self.server, "loopback_voice", False)
+        if auth[:7].lower() == "bearer " and auth[7:].strip():
+            context = load_homehub_context_for_token(auth[7:])
+            if context is None:
+                self.json_response({"ok": False, "error": "invalid_credentials", "message": "The presented bearer could not be resolved by HomeHub."}, 401, audit)
+                return None, None, False
+            principal = str(context.get("principalId") or "").strip()
+            if asserted and not _same_member(asserted, principal):
+                self.json_response({"ok": False, "error": "member_mismatch", "message": "member_id must match the authenticated member."}, 403, audit)
+                return None, None, False
+            return principal, context, True
+        voice_member = str(self.headers.get("X-Agent-Member") or "").strip()
+        if voice_member and loopback:
+            if asserted and not _same_member(asserted, voice_member):
+                self.json_response({"ok": False, "error": "member_mismatch", "message": "member_id must match the speaking member."}, 403, audit)
+                return None, None, False
+            return voice_member, caller_context(self.headers), True
+        context = caller_context(self.headers)
+        principal = str((context or {}).get("principalId") or "").strip()
+        if asserted:
+            machine_caller = loopback and not self.headers.get("Origin")
+            if not machine_caller and not _same_member(asserted, principal):
+                self.json_response({"ok": False, "error": "member_assertion_refused", "message": "A member_id assertion requires that member's own credentials."}, 403, audit)
+                return None, None, False
+            return asserted, context, True
+        return principal or None, context, True
 
     def _resolve_group_member(self, group_id: str, member_hint, audit: str):
         """Resolve ``(record, member_id)`` for a group messaging call.
@@ -1235,18 +1500,9 @@ class QueryHandler(BaseHTTPRequestHandler):
                 return None, None
             member_id = context["member_id"]
         else:
-            member_id = str(member_hint or "").strip()
-            if not member_id:
-                # The voice chain asserts the speaking member on loopback the
-                # same way group search does; registry membership is then
-                # checked below, so a non-member voice member cannot send.
-                voice_member = str(self.headers.get("X-Agent-Member") or "").strip()
-                if voice_member and getattr(self.server, "loopback_voice", False):
-                    member_id = voice_member
-            if not member_id:
-                context = caller_context(self.headers)
-                if context is not None:
-                    member_id = str(context.get("principalId") or "").strip()
+            member_id, _context, ok = self._bound_group_member(member_hint, audit)
+            if not ok:
+                return None, None
             if not member_id:
                 self.json_response({"ok": False, "error": "member_required", "message": "A requesting member is required to message a group."}, 400, audit)
                 return None, None
