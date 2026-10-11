@@ -506,6 +506,64 @@ class IndexJobTests(unittest.TestCase):
         self.assertEqual(again["scheduled"], 0)
         self.assertEqual(self.store.get(job["jobId"])["retryCount"], 1)
 
+    # ---- escape hatch: any non-terminal phase -> discovered ---------------
+
+    def test_any_nonterminal_phase_may_reset_to_discovered(self):
+        # Root-cause fix (2026-10-10): the state machine must never strand a
+        # job.  "discovered" re-validates manifest, scope and both epochs from
+        # scratch, so it is admissible from every phase that is not a
+        # recorded answer.  Field evidence: three running->authorized
+        # transition errors in one night, each needing a manual kick script.
+        paths = {
+            "authorized": ("authorized",),
+            "queued": ("authorized", "queued"),
+            "running": ("authorized", "queued", "running"),
+            "staged": ("authorized", "queued", "running", "staged"),
+            "retry_wait": ("retry_wait",),
+        }
+        for phase, path in paths.items():
+            job = self.make_job()
+            for step in path:
+                self.store.event(job["jobId"], step, {})
+            self.store.event(job["jobId"], "discovered", {"reason": "manual_reset"})
+            record = self.store.get(job["jobId"])
+            self.assertEqual(record["phase"], "discovered", phase)
+            self.assertEqual(record["reason"], "manual_reset", phase)
+
+    def test_terminal_phases_stay_terminal_for_discovered(self):
+        # published/revoked/blocked/offline/failed are answers, not stranded
+        # work; resetting them would bypass the retry budget and revocation.
+        terminals = {
+            "published": ("authorized", "queued", "running", "staged", "published"),
+            "revoked": ("revoked",),
+            "blocked": ("blocked",),
+            "offline": ("offline",),
+            "failed": ("failed",),
+        }
+        for phase, path in terminals.items():
+            job = self.make_job()
+            for step in path:
+                self.store.event(job["jobId"], step, {})
+            with self.assertRaises(index_job.JobError):
+                self.store.event(job["jobId"], "discovered", {"reason": "must_refuse"})
+            self.assertEqual(self.store.get(job["jobId"])["phase"], phase)
+
+    def test_recover_stranded_cli_pushes_running_jobs_to_discovered(self):
+        # The CLI shipped with the running->discovered edge called
+        # store.list_jobs(), which does not exist -- it crashed with
+        # AttributeError instead of recovering anything.
+        job = self.make_job()
+        for step in ("authorized", "queued", "running"):
+            self.store.event(job["jobId"], step, {})
+        argv = ["index_job.py", "--state-root", str(self.root / "state"),
+                "--output-root", str(self.root / "output"), "--ua-root", str(self.root / "ua"),
+                "recover-stranded"]
+        with patch.object(sys, "argv", argv), patch("builtins.print") as printed:
+            index_job.main()
+        self.assertEqual(self.store.get(job["jobId"])["phase"], "discovered")
+        self.assertEqual(
+            json.loads(printed.call_args[0][0]), {"recovered": 1})
+
     # ---- P8 incremental: changed_files -> worker command ----
 
     def publishing_runner(self, captured):

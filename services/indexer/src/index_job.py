@@ -85,6 +85,10 @@ RETRY_BACKOFF_BASE_SECONDS = 60
 # Events that are logged for observability but never move the durable phase.
 INFORMATIONAL_PHASES = {"resumed"}
 
+# NOTE: transitions TO ``discovered`` are NOT enumerated per phase below.
+# ``IndexJobStore.event`` admits ``discovered`` from ANY non-terminal phase
+# (the escape hatch); the table only governs forward progress and failure
+# recording.
 ALLOWED_TRANSITIONS = {
     # The manifest fetch happens before the authorized transition, so every
     # non-terminal phase must be able to record a connector/transport failure
@@ -93,11 +97,12 @@ ALLOWED_TRANSITIONS = {
     "discovered": {"authorized", "retry_wait", "blocked", "revoked", "failed", "offline"},
     "authorized": {"queued", "blocked", "revoked", "failed", "offline"},
     "queued": {"running", "offline", "retry_wait", "revoked", "failed"},
-    # "discovered" added 2026-10-10: a worker that dies mid-run leaves the
-    # job stranded in running; the recovery sweep needs to push it back to
-    # discovered for a clean re-entry (field evidence: three separate
-    # livelocks tonight from this missing edge).
-    "running": {"staged", "offline", "retry_wait", "revoked", "failed", "discovered"},
+    # -> discovered is always legal from running via the escape hatch: a
+    # worker that dies mid-run leaves the job stranded here, and the recovery
+    # sweep pushes it back to discovered for a clean re-entry (field
+    # evidence: three running->authorized transition errors in one night,
+    # each previously needing a manual kick script).
+    "running": {"staged", "offline", "retry_wait", "revoked", "failed"},
     "staged": {"published", "failed", "revoked", "offline"},
     # ``blocked`` is reachable from retry_wait because a resumed job can find
     # its scope narrowed between attempts; it must block, not crash.
@@ -394,7 +399,25 @@ class IndexJobStore:
         current = str(record.get("phase"))
         informational = phase in INFORMATIONAL_PHASES
         if not informational:
-            if phase != current and phase not in ALLOWED_TRANSITIONS.get(current, set()):
+            # Escape hatch (root-cause fix, 2026-10-10): ``discovered`` is
+            # admissible from ANY non-terminal phase.  ``discovered`` is
+            # always safe because run_job re-validates everything from
+            # scratch before doing work -- manifest fetch, HomeHub context,
+            # scope, grant epoch, source epoch -- so a reset can never skip
+            # policy; the worst it can do is repeat a validation.  Without
+            # this edge, any bug or crash that left a job in a non-terminal
+            # phase stranded it forever (field evidence: three
+            # running->authorized transition errors in one night, each
+            # needing a manual "kick" script).  This rule is what makes
+            # manual recovery unnecessary: the state machine can never
+            # strand a job that has not reached a recorded answer.
+            # Terminal phases stay excluded: published/revoked/blocked/
+            # offline/failed are answers, not stranded work, and
+            # failed/offline requeue only through _recover_failed_jobs so
+            # the bounded retry budget is honored.
+            allowed = ALLOWED_TRANSITIONS.get(current, set())
+            if phase != current and phase not in allowed and not (
+                    phase == "discovered" and current not in TERMINAL):
                 raise JobError(f"invalid IndexJob transition: {current} -> {phase}")
         stamp = now_iso()
         if not informational:
@@ -843,13 +866,21 @@ def main() -> None:
             metadata={"limit": args.limit},
         )
     elif args.action == "recover-stranded":
+        # Dead-worker sweep: run_pending is synchronous, so a job still in
+        # ``running`` means its worker is gone.  The escape hatch in event()
+        # makes running->discovered legal; discovered re-validates manifest,
+        # grant and epoch from scratch on the next pass.
         count = 0
-        for job_id, job in store.list_jobs().items():
-            if job.get("phase") == "running":
-                store.event(job_id, "discovered",
+        for job in store.list():
+            if str(job.get("phase")) != "running":
+                continue
+            try:
+                store.event(str(job["jobId"]), "discovered",
                             {"reason": "stranded_running_recovered"})
-                count += 1
-        print(json.dumps({"recovered": count}))
+            except (JobError, KeyError):
+                continue  # a concurrent actor moved the job first
+            count += 1
+        result = {"recovered": count}
     elif args.action == "list":
         result = store.list()
     elif args.action == "run-pending":
