@@ -47,6 +47,10 @@ def score(item: dict, tokens: list[str]) -> float:
                 if v in rel or v in purpose: s += 1.2
     return s
 
+# 统一口径的"知识真缺"回答: 检索无命中、或(群检索)引用越界时都说这一句,
+# 不许半遮半掩的免责声明。query_api 的群检索后置检查也复用同一常量。
+MISS_SENTENCE = "Not in the indexed projects."
+
 INTERACTIVE_LOCK = "/tmp/uyp_interactive.lock"
 
 def _touch_interactive_lock():
@@ -94,7 +98,7 @@ def _answer_locked(question: str, items: list[dict]) -> dict:
     if not top:
         # Same canonical miss sentence the synthesis prompt demands - a genuine
         # miss is never partially hedged, from either path.
-        return {"answer": "Not in the indexed projects.",
+        return {"answer": MISS_SENTENCE,
                 "sources": [], "confidence": "none"}
     ctx_blocks = []
     for s, i in top:

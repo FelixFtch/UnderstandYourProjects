@@ -20,15 +20,31 @@ import json
 import os
 import glob
 import threading
+import time
 import urllib.error
 import urllib.request
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-from knowledge_search import answer as search_answer, load_items, will_synthesize as search_will_synthesize
+from knowledge_search import (
+    INTERACTIVE_LOCK,
+    MISS_SENTENCE,
+    answer as search_answer,
+    load_items,
+    will_synthesize as search_will_synthesize,
+)
 from connector_registry import load_registry, public_projection, registry_health
+from groups import (
+    GroupRegistry,
+    GroupsError,
+    group_allows_member,
+    intersect_views,
+    scoped_retrieval,
+    source_overlap,
+    validate_group_context,
+)
 from homehub_adapter import (
     load_context as load_homehub_context,
     load_context_for_member as load_homehub_context_for_member,
@@ -490,12 +506,96 @@ def health_payload() -> dict:
     }
 
 
+# ---- Groups (P10) HTTP surface -------------------------------------------
+#
+# The groups engine (groups.py) owns the group -> knowledge-view model; these
+# helpers only adapt it to HTTP.  Authority stays where it was: HomeHub for
+# identity/policy/revocation, the owner-authored registry for membership and
+# views, and scoped_retrieval as the single fail-closed retrieval pipeline.
+# HomeHub group-issuance is not deployed yet, so a group search without a
+# HomeHub-issued projection builds one from the registry record plus the
+# requesting member; scoped_retrieval still validates it and clamps it back
+# to the registered view, so the local bridge can never widen access.
+
+GROUP_CONTEXT_TTL = timedelta(minutes=10)
+GROUP_LOCAL_POLICY_DIGEST = "sha256:uyp-local-registry"
+
+
+def _touch_interactive_lock() -> None:
+    """Voice-chain preemptive flag (语音>查询>索引, 2026-10-10).
+
+    Group search sets the same /tmp/uyp_interactive.lock knowledge_search
+    sets before synthesis, so an indexing worker holding the qwen slots
+    yields to a group answer exactly like it yields to a knowledge search.
+    """
+    with open(INTERACTIVE_LOCK, "w") as fh:
+        fh.write(str(time.time()))
+
+
+def _member_key(value) -> str:
+    """One canonical form for member ids: bare or ``member:``-prefixed."""
+    text = str(value or "").strip()
+    return text[len("member:"):] if text.startswith("member:") else text
+
+
+def _same_member(one, other) -> bool:
+    left, right = _member_key(one), _member_key(other)
+    return bool(left) and left == right
+
+
+def group_registry() -> GroupRegistry:
+    """The durable registry (state/groups.json); path resolved per call."""
+    return GroupRegistry()
+
+
+def configured_owner_member() -> str:
+    """The deployment's owner pin for the owner-sees-all group listing.
+
+    Unset by default: without an explicit owner pin every caller sees only
+    the groups they own or belong to - never the whole registry.
+    """
+    return str(os.environ.get("UYP_OWNER_MEMBER") or "").strip()
+
+
+def caller_context(headers):
+    """Resolve the calling principal for group management endpoints.
+
+    Same tiers as search minus the loopback voice tier: a caller-presented
+    Bearer resolves that caller, otherwise today's service-level env/file
+    context.  Group membership itself is checked against the registry (or a
+    HomeHub group context), never against the member AccessContext tier.
+    """
+    return load_request_context(headers, loopback_voice=False)[0]
+
+
+def local_group_context(record: dict, member_id: str, jarvis_node_id=None) -> dict:
+    """Construct the per-request group context from a registry record.
+
+    The bridge for the pre-HomeHub-issuance era (docs/GROUPS_DESIGN.md
+    "What waits"): the owner-authored record plus the requesting member are
+    projected into the same shape HomeHub will issue, then handed to
+    scoped_retrieval, which re-validates it, checks registry membership,
+    and intersects it with the registered view.
+    """
+    return {
+        "group_id": record["group_id"],
+        "member_id": member_id,
+        "jarvis_node_id": str(jarvis_node_id or "").strip() or "uyp-local",
+        "project_ids": list(record["knowledge_view"]["project_ids"]),
+        "source_ids": list(record["knowledge_view"]["source_ids"]),
+        "grant_epoch": record["grant_epoch"],
+        "policy_digest": GROUP_LOCAL_POLICY_DIGEST,
+        "expires_at": (datetime.now(timezone.utc) + GROUP_CONTEXT_TTL).isoformat().replace("+00:00", "Z"),
+        "audit_id": f"uyp-local-{uuid.uuid4().hex[:12]}",
+    }
+
+
 class QueryHandler(BaseHTTPRequestHandler):
     def _headers(self, audit: str) -> None:
         allowed = os.environ.get("UYP_CORS_ORIGIN", "http://127.0.0.1:4173,http://localhost:4173")
         self.send_header("Access-Control-Allow-Origin", allowed.split(",")[0])
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Agent-Member, X-Group-Context")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.send_header("X-UYP-Audit-Id", audit)
 
     def json_response(self, value: dict, status: int = 200, audit: str | None = None) -> None:
@@ -551,6 +651,21 @@ class QueryHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/nandatown/peers":
             self.json_response({"peers": load_nandatown_peers(), "metadataOnly": True}, audit=audit)
             return
+        if parsed.path == "/api/groups":
+            # Groups listing: the deployment's owner pin (UYP_OWNER_MEMBER)
+            # sees the whole registry, every other caller sees only the
+            # groups they own or belong to.  No context, no listing.
+            context = caller_context(self.headers)
+            if context is None:
+                self.json_response({"ok": False, "error": "access_context_unavailable", "message": "HomeHub must provide an AccessContext before groups can be listed."}, 503, audit)
+                return
+            principal = str(context.get("principalId") or "")
+            records = group_registry().load()["groups"]
+            owner_view = _same_member(principal, configured_owner_member())
+            if not owner_view:
+                records = [record for record in records if group_allows_member(record, principal)]
+            self.json_response({"ok": True, "groups": records, "ownerView": owner_view}, audit=audit)
+            return
         if parsed.path == "/api/index/jobs":
             context = load_access_context()
             project = (query.get("projectId") or [None])[0]
@@ -577,9 +692,20 @@ class QueryHandler(BaseHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError):
             self.json_response({"ok": False, "error": "invalid_json"}, 400, audit)
             return
-        if parsed.path != "/api/knowledge/search":
-            self.json_response({"ok": False, "error": "not_found"}, 404, audit)
+        if parsed.path == "/api/knowledge/search":
+            self._post_knowledge_search(payload, audit)
             return
+        if parsed.path == "/api/groups":
+            self._post_group_create(payload, audit)
+            return
+        parts = parsed.path.split("/")
+        if (len(parts) == 5 and parts[0] == "" and parts[1] == "api"
+                and parts[2] == "groups" and parts[3] and parts[4] == "search"):
+            self._post_group_search(parts[3], payload, audit)
+            return
+        self.json_response({"ok": False, "error": "not_found"}, 404, audit)
+
+    def _post_knowledge_search(self, payload: dict, audit: str) -> None:
         # Voice handshake (2026-10-10), per-member pass: per-request
         # resolution - caller Bearer, loopback X-Agent-Member voice mode,
         # or today's service-level env/file path.  The loopback guard flag
@@ -629,6 +755,146 @@ class QueryHandler(BaseHTTPRequestHandler):
             self.wfile.flush()
             return
         self.json_response(result, audit=audit)
+
+    # ---- Groups (P10) endpoints -------------------------------------------
+
+    def _post_group_create(self, payload: dict, audit: str) -> None:
+        """POST /api/groups - owner-authored group creation.
+
+        The registry is an owner-authored input: the calling principal must
+        BE the owner_member of the record it submits, so no member can mint
+        a group in someone else's name.  Validation is the registry's own
+        (strict, fail-closed); no scope is inferred or widened here.
+        """
+        context = caller_context(self.headers)
+        if context is None:
+            self.json_response({"ok": False, "error": "access_context_unavailable", "message": "HomeHub must provide an AccessContext before groups can be authored."}, 503, audit)
+            return
+        if not _same_member(context.get("principalId"), payload.get("owner_member")):
+            self.json_response({"ok": False, "error": "owner_session_required", "message": "A group can only be created by the member who owns it."}, 403, audit)
+            return
+        try:
+            record = group_registry().upsert({
+                "group_id": payload.get("group_id"),
+                "name": payload.get("name"),
+                "owner_member": payload.get("owner_member"),
+                "member_members": payload.get("member_members") or [],
+                "knowledge_view": payload.get("knowledge_view"),
+            })
+        except GroupsError as exc:
+            self.json_response({"ok": False, "error": "invalid_group", "message": str(exc)}, 400, audit)
+            return
+        self.json_response({"ok": True, "group": record}, 201, audit)
+
+    def _post_group_search(self, group_id: str, payload: dict, audit: str) -> None:
+        """POST /api/groups/{id}/search - "不同群看到不同知识".
+
+        The group tier of knowledge search: a HomeHub-issued group context
+        (X-Group-Context JSON, the deployed issuance transport when it
+        exists) or the local bridge (registry record + requesting member)
+        feeds scoped_retrieval, which enforces validation, membership, and
+        the view intersection before anything reaches synthesis.  The
+        answer's citations are post-checked with source_overlap; an answer
+        citing files outside the group's view is refused with the canonical
+        miss sentence instead of partially shared.
+        """
+        registry = group_registry()
+        question = str(payload.get("query", "")).strip()
+        if not question:
+            self.json_response({"ok": False, "error": "query_required"}, 400, audit)
+            return
+        record = registry.get(group_id)
+        projection = self.headers.get("X-Group-Context")
+        if projection is not None:
+            try:
+                context = validate_group_context(json.loads(projection))
+            except (json.JSONDecodeError, GroupsError):
+                self.json_response({"ok": False, "error": "group_context_invalid", "message": "The presented group context is malformed, expired, or revoked."}, 403, audit)
+                return
+            if context["group_id"] != group_id:
+                self.json_response({"ok": False, "error": "group_context_mismatch", "message": "The presented group context speaks for a different group."}, 400, audit)
+                return
+            member_id = context["member_id"]
+        else:
+            if record is None:
+                self.json_response({"ok": False, "error": "group_not_found", "message": "This group is not registered locally or has been dissolved."}, 404, audit)
+                return
+            context = caller_context(self.headers)
+            member_id = str(payload.get("member_id") or "").strip()
+            if not member_id:
+                # The voice chain asserts the speaking member on loopback the
+                # same way /api/knowledge/search does; membership is then
+                # checked against the registry by scoped_retrieval.
+                voice_member = str(self.headers.get("X-Agent-Member") or "").strip()
+                if voice_member and getattr(self.server, "loopback_voice", False):
+                    member_id = voice_member
+            if not member_id and context is not None:
+                member_id = str(context.get("principalId") or "").strip()
+            if not member_id:
+                self.json_response({"ok": False, "error": "member_required", "message": "A requesting member is required to search a group."}, 400, audit)
+                return
+            context = local_group_context(record, member_id, (context or {}).get("jarvisNodeId"))
+        all_items = [item for values in grouped_items().values() for item in values]
+        allowed_items = scoped_retrieval(all_items, context, registry)
+        # The effective view scoped_retrieval enforced: the validated context
+        # clamped to the group's registered view (same intersection).
+        view = {"project_ids": context["project_ids"], "source_ids": context["source_ids"]}
+        if record is not None:
+            view = intersect_views(view, record["knowledge_view"])
+        # Preemptive lock (voice > query > index): mark the interactive
+        # window before synthesis so an indexing worker yields the GPU.
+        _touch_interactive_lock()
+        result = search_answer(question, allowed_items)
+        overlap = source_overlap(result.get("sources"), view, all_items)
+        if not overlap["clean"]:
+            # A citation outside the view (or unresolvable) means the answer
+            # cannot be proven inside the group's knowledge: speak the
+            # canonical miss sentence, share no paths, no partial answer.
+            result = {"answer": MISS_SENTENCE, "sources": [], "confidence": "none", "scrubbed": True}
+        result.update({"ok": True, "auditId": audit, "groupId": group_id, "memberId": member_id})
+        self.json_response(result, audit=audit)
+
+    def do_DELETE(self) -> None:
+        audit = str(uuid.uuid4())
+        parsed = urlparse(self.path)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            if length > MAX_BODY:
+                raise ValueError("body_too_large")
+            if length:
+                self.rfile.read(length)
+        except ValueError:
+            pass
+        parts = parsed.path.split("/")
+        if (len(parts) == 4 and parts[0] == "" and parts[1] == "api"
+                and parts[2] == "groups" and parts[3]):
+            self._delete_group(parts[3], audit)
+            return
+        self.json_response({"ok": False, "error": "not_found"}, 404, audit)
+
+    def _delete_group(self, group_id: str, audit: str) -> None:
+        """DELETE /api/groups/{id} - dissolve a group (owner only).
+
+        Revocation of any HomeHub-issued grant stays with HomeHub; locally
+        this forgets the registry record, which is the input to issuance.
+        After dissolution scoped_retrieval no longer knows the group, so
+        searches are denied (404 on the local-bridge path, no results on
+        any still-presented projection).
+        """
+        context = caller_context(self.headers)
+        if context is None:
+            self.json_response({"ok": False, "error": "access_context_unavailable", "message": "HomeHub must provide an AccessContext before groups can be dissolved."}, 503, audit)
+            return
+        registry = group_registry()
+        record = registry.get(group_id)
+        if record is None:
+            self.json_response({"ok": False, "error": "group_not_found", "message": "This group is not registered locally or has been dissolved."}, 404, audit)
+            return
+        if not _same_member(context.get("principalId"), record["owner_member"]):
+            self.json_response({"ok": False, "error": "owner_session_required", "message": "Only the group owner can dissolve a group."}, 403, audit)
+            return
+        removed = registry.remove(group_id)
+        self.json_response({"ok": True, "group_id": group_id, "revoked": True, "removed": removed}, audit=audit)
 
     def log_message(self, *_args) -> None:
         return
