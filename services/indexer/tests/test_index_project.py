@@ -347,6 +347,31 @@ class TestTransportRetries(unittest.TestCase):
             self.assertEqual(index_project.api("http://connector", "t", "/manifest"),
                              {"ok": True})
 
+    def test_cjk_relpath_is_percent_encoded_not_crashed(self):
+        # 2026-10-11 field crash: a CJK-named source file put raw UTF-8 into
+        # the request line and http.client raised UnicodeEncodeError, killing
+        # the whole worker.  api() must percent-encode non-ASCII instead.
+        seen = {}
+
+        def fake_urlopen(req, timeout=90):
+            seen["url"] = req.full_url
+            return self._ok()
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            index_project.api(
+                "http://connector", "t",
+                "/read?grant=g&relpath=audit/\u65b9\u5929/\u6587\u4ef6.md&length=2048",
+                binary=True)
+        url = seen["url"]
+        self.assertEqual(url,
+                         "http://connector/read?grant=g&relpath=audit/%E6%96%B9%E5%A4%A9/%E6%96%87%E4%BB%B6.md&length=2048")
+        # pure-ASCII paths are untouched
+        seen.clear()
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            index_project.api("http://connector", "t", "/manifest")
+        self.assertEqual(seen["url"], "http://connector/manifest")
+
+
 
 if __name__ == "__main__":
     unittest.main()

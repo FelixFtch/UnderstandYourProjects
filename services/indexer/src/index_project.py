@@ -29,7 +29,13 @@ def api(host, token, path, binary=False, timeout=90, retries=5):
     # Retry with backoff instead of crashing the whole IndexJob.
     last = None
     for attempt in range(retries):
-        req = urllib.request.Request(host.rstrip("/") + path,
+        # Percent-encode non-ASCII in the request line (2026-10-11 crash:
+        # a CJK-named source file put raw UTF-8 into the URL and
+        # http.client raised UnicodeEncodeError, killing the whole worker).
+        # Structural chars stay literal; the connector's query parser
+        # percent-decodes values back to the original path.
+        safe_path = urllib.parse.quote(path, safe="/?=&")
+        req = urllib.request.Request(host.rstrip("/") + safe_path,
                                      headers={"Authorization": f"Bearer {token}"})
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
