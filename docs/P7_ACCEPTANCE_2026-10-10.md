@@ -1,6 +1,6 @@
 # P7 Single-Node Acceptance — PASSED (2026-10-10)
 
-Executor: Claude (ground-truth session); Laya service + job run + six-step acceptance.
+Executor: ground-truth session; Laya service + job run + six-step acceptance.
 
 | Step | Result | Evidence |
 |---|---|---|

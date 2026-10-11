@@ -1,7 +1,7 @@
 # gBrain provisioning runbook — first-execution evidence (audit item A8)
 
-Date: 2026-10-10 (late evening EDT) / 2026-10-11 UTC. Executor: Claude (this
-session). Host: jetson-us-cf (Jetson, user jetson). Runbook under test:
+Date: 2026-10-10 (late evening EDT) / 2026-10-11 UTC. Executor: this session.
+Host: jetson-us-cf (Jetson, user jetson). Runbook under test:
 `docs/GBRAIN_PROVISIONING.md`.
 
 Verdict up front: **the provisioning contract works end to end** — brain on
@@ -294,7 +294,7 @@ via `restore_page` (present in surface) — not exercised.
 
 ## 7. F1 fix (2026-10-10/11 follow-up session) — scoped retrieval now surfaces project blocks
 
-Executor: Claude fix session, branch `fix/gbrain-scoped-retrieval` (worktree,
+Executor: fix session, branch `fix/gbrain-scoped-retrieval` (worktree,
 shared tree untouched). Both root causes fixed and verified live against the
 running services. Never touched: `gbrain-serve-family` / :3141 (kept bouncing
 on its own 5-min `gbrain-refresh.timer` cycle throughout, F3), the timer
