@@ -186,75 +186,97 @@ class TestLoadChangedPaths(unittest.TestCase):
             index_project.load_changed_paths(None, changes)
 
 
-class TestSlotPacing(unittest.TestCase):
-    """GPU-aware yield (root-cause fix, 2026-10-10): the interactive lock
-    only helps while a query is IN FLIGHT; between queries the index workers
-    must not fill every ollama slot, or the NEXT voice/text query waits for
-    a slot.  Pacing checks the shared load before each qwen call and waits
-    below the UYP_MAX_CONCURRENT ceiling."""
+class TestPreemptiveYield(unittest.TestCase):
+    """Slot pacing was superseded by the preemptive kill+redo design
+    (merge a308264; friendly-fire fix 7704047): instead of probing shared
+    ollama load (_ollama_inflight/_pace_llm_slots, removed), every qwen
+    enrichment first yields to the interactive lock - a FRESH lock kills the
+    in-flight index curl outright so the GPU goes to voice immediately - and
+    each index curl is marked X-UYP-Worker: index so preemption can never
+    hit voice or knowledge-search traffic."""
 
-    def _ps_response(self, payload):
-        m = MagicMock()
-        m.read.return_value = json.dumps(payload).encode()
-        m.__enter__ = MagicMock(return_value=m)
-        m.__exit__ = MagicMock(return_value=False)
-        return m
+    def _lock_file(self, ts):
+        tmp = tempfile.NamedTemporaryFile("w", suffix=".lock", delete=False)
+        self.addCleanup(os.unlink, tmp.name)
+        tmp.write(str(ts))
+        tmp.close()
+        return tmp.name
 
-    def test_inflight_from_reporting_ps_endpoint(self):
-        # A server that reports its own concurrency is honored directly.
-        with patch("urllib.request.urlopen",
-                   return_value=self._ps_response({"concurrent": 4, "models": []})):
-            self.assertEqual(index_project._ollama_inflight(), 4)
-
-    def test_stock_ps_falls_back_to_established_socket_count(self):
-        # Stock ollama /api/ps lists models only: count ESTABLISHED sockets
-        # on the ollama port instead (one per in-flight request).
-        ps = self._ps_response({"models": [{"name": "qwen3.5-route"}]})
-        ss = MagicMock(returncode=0,
-                       stdout="ESTAB 0 0 127.0.0.1:1 127.0.0.1:11434\n\n"
-                              "ESTAB 0 0 127.0.0.1:2 127.0.0.1:11434\n")
-        with patch("urllib.request.urlopen", return_value=ps), \
-             patch.object(index_project.subprocess, "run", return_value=ss) as run:
-            self.assertEqual(index_project._ollama_inflight(), 2)
-            self.assertEqual(run.call_args[0][0][0], "ss")
-
-    def test_probe_failure_means_unknown_and_disables_pacing(self):
-        with patch("urllib.request.urlopen", side_effect=OSError("down")), \
-             patch.object(index_project.subprocess, "run",
-                          side_effect=FileNotFoundError("ss")):
-            self.assertEqual(index_project._ollama_inflight(), 0)
-
-    def test_pacing_sleeps_while_at_or_above_ceiling(self):
-        levels = iter([3, 3, 1])
-        with patch.object(index_project, "_ollama_inflight",
-                          side_effect=lambda: next(levels)), \
+    def test_yield_returns_immediately_without_lock_file(self):
+        with patch.object(index_project, "INTERACTIVE_LOCK",
+                          "/nonexistent/uyp_interactive.lock"), \
+             patch.object(index_project.subprocess, "run") as run, \
              patch.object(index_project.time, "sleep") as sleep:
-            index_project._pace_llm_slots()
-        self.assertEqual([c.args[0] for c in sleep.call_args_list], [2, 2])
-
-    def test_pacing_ceiling_default_and_env(self):
-        # Default 3: 2 proceeds, 3 waits.  UYP_MAX_CONCURRENT=5: 4 proceeds, 5 waits.
-        with patch.object(index_project, "_ollama_inflight", return_value=2), \
-             patch.object(index_project.time, "sleep") as sleep:
-            index_project._pace_llm_slots()
+            index_project._yield_to_interactive()
+        run.assert_not_called()
         sleep.assert_not_called()
-        with patch.dict(os.environ, {"UYP_MAX_CONCURRENT": "5"}), \
-             patch.object(index_project, "_ollama_inflight", side_effect=[5, 4]), \
-             patch.object(index_project.time, "sleep") as sleep:
-            index_project._pace_llm_slots()
-        self.assertEqual(sleep.call_count, 1)
 
-    def test_qwen_enrich_paces_before_each_call(self):
-        paced = []
+    def test_yield_returns_without_preempt_when_lock_is_stale(self):
+        # Older than the 30s interactive window: indexing resumes untouched.
+        lock = self._lock_file(100.0)
+        with patch.object(index_project, "INTERACTIVE_LOCK", lock), \
+             patch.object(index_project.time, "time", return_value=131.0), \
+             patch.object(index_project.subprocess, "run") as run, \
+             patch.object(index_project.time, "sleep") as sleep:
+            index_project._yield_to_interactive()
+        run.assert_not_called()
+        sleep.assert_not_called()
+
+    def test_fresh_lock_preempts_index_workers_until_it_goes_stale(self):
+        lock = self._lock_file(100.0)
+        with patch.object(index_project, "INTERACTIVE_LOCK", lock), \
+             patch.object(index_project.time, "time",
+                          side_effect=[100.5, 100.6, 131.0]), \
+             patch.object(index_project.subprocess, "run") as run, \
+             patch.object(index_project.time, "sleep") as sleep:
+            index_project._yield_to_interactive()
+        self.assertEqual(
+            [call.args[0] for call in run.call_args_list],
+            [["pkill", "-f", "X-UYP-Worker.*index"]] * 2)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list],
+                         [0.5, 0.5])
+
+    def test_preempt_pattern_targets_only_index_marked_curls(self):
+        # Friendly-fire contract (7704047): the pkill pattern must match the
+        # index worker marker and never voice / knowledge-search traffic.
+        lock = self._lock_file(100.0)
+        with patch.object(index_project, "INTERACTIVE_LOCK", lock), \
+             patch.object(index_project.time, "time", return_value=100.5), \
+             patch.object(index_project.subprocess, "run") as run, \
+             patch.object(index_project.time, "sleep"):
+            index_project._yield_to_interactive(max_wait_s=0.5)
+        self.assertEqual(run.call_count, 1)
+        pattern = run.call_args_list[0].args[0][2]
+        self.assertRegex("curl -H X-UYP-Worker: index 127.0.0.1:11434", pattern)
+        self.assertNotRegex("curl -H X-UYP-Worker: voice 127.0.0.1:11434",
+                            pattern)
+        self.assertNotRegex("curl -H X-UYP-Worker: knowledge-search", pattern)
+
+    def test_yield_wait_is_bounded_by_max_wait_s(self):
+        # A lock that stays fresh forever still cannot stall the index past
+        # max_wait_s: the loop exits and enrichment proceeds.
+        lock = self._lock_file(100.0)
+        with patch.object(index_project, "INTERACTIVE_LOCK", lock), \
+             patch.object(index_project.time, "time", return_value=100.1), \
+             patch.object(index_project.subprocess, "run") as run, \
+             patch.object(index_project.time, "sleep") as sleep:
+            index_project._yield_to_interactive(max_wait_s=1.0)
+        self.assertEqual(run.call_count, 2)  # waited 0.5 + 0.5 -> bound hit
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_qwen_enrich_yields_and_marks_curl_as_index_worker(self):
+        yielded = []
         curl = MagicMock(returncode=0, stdout=json.dumps(
             {"message": {"content": "{}"}, "eval_count": 1}))
-        with patch.object(index_project, "_pace_llm_slots",
-                          side_effect=lambda: paced.append(1)), \
-             patch.object(index_project.subprocess, "run", return_value=curl):
+        with patch.object(index_project, "_yield_to_interactive",
+                          side_effect=lambda: yielded.append(1)), \
+             patch.object(index_project.subprocess, "run", return_value=curl) as run:
             content, tokens = index_project.qwen_enrich("x = 1", False)
-        self.assertEqual(paced, [1])
+        self.assertEqual(yielded, [1])
         self.assertEqual(content, "{}")
         self.assertEqual(tokens, 1)
+        argv = run.call_args_list[0].args[0]
+        self.assertIn("X-UYP-Worker: index", argv)
 
 
 class TestTransportRetries(unittest.TestCase):
