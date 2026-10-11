@@ -126,7 +126,7 @@ def _answer_locked(question: str, items: list[dict]) -> dict:
         "'Not in the indexed projects.' and nothing else - no partial hedging.\n"
         "Answer in the question's language.\n\nQUESTION: " + question + "\n\n" +
         "\n---\n".join(ctx_blocks))
-    body = json.dumps({"model": "qwen3.5-route", "think": False, "stream": False,
+    body = json.dumps({"model": os.environ.get("UYP_OLLAMA_MODEL", "qwen3.5-route"), "think": False, "stream": False,
                        "options": {"num_ctx": 4096},
                        "messages": [{"role": "user", "content": prompt}]})
     r = subprocess.run(["curl", "-s", "-H", "X-UYP-Worker: search", "127.0.0.1:11434/api/chat", "-d", body, "--max-time", "120"],

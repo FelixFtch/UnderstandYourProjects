@@ -62,7 +62,7 @@ def load_symbols(graph_path: str) -> dict[str, list[dict]]:
     return symbols_from_graph(json.load(open(graph_path, encoding="utf-8")))
 
 def qwen(prompt: str) -> tuple[str, int]:
-    body = json.dumps({"model": "qwen3.5-route", "think": False, "stream": False,
+    body = json.dumps({"model": os.environ.get("UYP_OLLAMA_MODEL", "qwen3.5-route"), "think": False, "stream": False,
                        "options": {"num_ctx": 4096},
                        "messages": [{"role": "user", "content": prompt}]})
     import time as _t

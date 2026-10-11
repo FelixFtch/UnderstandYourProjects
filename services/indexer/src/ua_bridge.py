@@ -62,6 +62,14 @@ def run(
 ) -> dict:
     token = Path(os.path.expanduser(token_file)).read_text(encoding="utf-8").strip()
     manifest = api(host, token, "/manifest?grant=" + urllib.parse.quote(grant, safe=""))
+    # Follow the page cursor (connector PAGE_CAP 2000); the first page alone
+    # silently dropped every file sorting after entry 2000.
+    all_files = list(manifest.get("files", []))
+    while manifest.get("has_more") and manifest.get("next_cursor"):
+        manifest = api(host, token, "/manifest?grant=" + urllib.parse.quote(grant, safe="")
+                       + "&cursor=" + urllib.parse.quote(manifest["next_cursor"], safe=""))
+        all_files.extend(manifest.get("files", []))
+    manifest = {**manifest, "files": all_files, "has_more": False}
     root_name = str(project_name or manifest.get("root_name") or "authorized-project")
     safe_root = safe_relative_path(root_name).replace("/", "__")
     state = Path(os.path.expanduser(state_root)).resolve()
