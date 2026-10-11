@@ -147,6 +147,93 @@ through these endpoints (plus `GET /api/groups` for the rail) and its
 composer sends real messages when the query API is configured; the demo
 conversations remain the offline fallback, never a stand-in for live
 answers.
+## MCP surface (P6)
+
+`services/indexer/src/mcp_server.py` is the Coding Agent half of P6: a
+read-only **stdio MCP server** (stdlib-only JSON-RPC 2.0, newline-delimited)
+exposing exactly the six planned tools — `project.search`, `project.get`,
+`project.related`, `source.locate`, `source.read_evidence`, `index.status`.
+No shell, build, test, arbitrary path read, or write operation exists on the
+surface, and no tool mutates output, state, or registry files.
+
+```bash
+# HTTP mode: the three route-bound tools are served by the running query API
+python3 services/indexer/src/mcp_server.py \
+  --api http://127.0.0.1:8787 --principal ly
+
+# direct mode: same shared functions the routes call, no HTTP hop
+UYP_MCP_PRINCIPAL=ly python3 services/indexer/src/mcp_server.py
+```
+
+A Claude Code / coding-agent registration looks like:
+
+```json
+{"mcpServers": {"uyp": {"command": "python3",
+  "args": ["/path/to/services/indexer/src/mcp_server.py",
+           "--api", "http://127.0.0.1:8787", "--principal", "ly"]}}}
+```
+
+### Principal story (fail closed)
+
+The stdio server speaks for a principal it must be given; it never inherits
+the box's ambient service context:
+
+- **member tier** — `--principal` / `UYP_MCP_PRINCIPAL` names the HomeHub
+  member the agent acts for. HTTP mode sends `X-Agent-Member` (the loopback
+  voice tier — the API must be loopback-bound, which is the default); direct
+  mode calls `homehub_adapter.load_context_for_member`, the exact function
+  behind the voice handshake, which requires the projection to speak for
+  exactly that member with a non-empty project scope. An unresolvable member
+  is denied `member_access_denied` in her name — never the box context.
+- **bearer tier** — `UYP_MCP_TOKEN_FILE` holds the agent's own HomeHub
+  Companion bearer (mirroring the voice chain's token-file approach); HTTP
+  mode presents `Authorization: Bearer`, direct mode calls
+  `load_context_for_token`. An absent/unreadable/empty file is denied
+  `principal_required`.
+- **neither configured** — every tool call returns `principal_required`
+  (the server still completes the MCP handshake and `tools/list`, so the
+  surface is discoverable while closed).
+
+Enforcement is the query API's own code, not a reimplementation: `search`
+and the locally computed tools filter through `query_api.scoped_items`,
+`project.get`'s job list through `load_persisted_index_jobs` (scope-filtered),
+graph reads through `query_api.load_ua_graph` (realpath/commonpath
+containment reused untouched), and the symbol tables through
+`anchored_enrich`'s node filter. Out-of-scope requests get the same generic
+denial as nonexistent ones — no names, paths, or counts are shared.
+
+### Tools
+
+| Tool | Arguments | Transport | Returns |
+| --- | --- | --- | --- |
+| `project.search` | `{query, project_id?}` | `POST /api/knowledge/search` (HTTP mode) / `scoped_items` + `search_answer` (direct) | cited answer plus `citations` entries carrying `projectId`, `sourceId`, `file`, `knowledgeVersion`, `evidenceLevel`, `freshness`, `producingJarvis`, `allowedToShare:false` (AGENTFLOW §5 shape) |
+| `project.get` | `{project_id}` | `GET /api/studio/snapshot` (HTTP) / shared projections (direct) | project summary (counts, languages, entry points, freshness, grant epoch) + scope-filtered IndexJobs + evidence sample |
+| `project.related` | `{query}` or `{project_id}` | local (no route exists) | UA-graph import relations and hub files, component tags, and other **in-scope** projects sharing tags/paths; a query with no lexical hit answers the canonical miss sentence |
+| `source.locate` | `{symbol?, file_pattern?, project_id?, limit?}` | local | file/line rows from the indexed tree-sitter symbol tables (anchored enrichment data): `{projectId, file, symbol, kind, lineRange}` |
+| `source.read_evidence` | `{item_id}` or `{path, lines?}` | local | the indexed bounded evidence for one item: labelled key points with snapped line ranges, components, `anchorTop`, purpose, and the verbatim `rawHead` when the indexer kept one |
+| `index.status` | `{}` | `GET /api/health` (HTTP) / health functions parameterized by the principal context (direct) | scoped knowledge count, IndexJob phase summary, connector/registry health, interactive-lock state |
+
+`source.read_evidence` serves **indexed** evidence only. Full verbatim
+line-range reads of live source require the Connector `read` path
+(CONNECTOR_PROTOCOL_V1 §4) and are deliberately not proxied here — the
+Connector stays the only component allowed to resolve a source path.
+Known tier note: in HTTP mode the three route-bound tools inherit the
+query API's per-route context tiers verbatim (search resolves the member
+per request; snapshot/health use the service-level projection), while
+`related`/`locate`/`read_evidence` resolve the configured principal
+locally with the same env (`UYP_HOMEHUB_ACCESS_CONTEXT_URL` +
+`UYP_HOMEHUB_TOKEN_FILE`) — if that env is absent they deny fail-closed
+even while the route-bound tools keep working.
+
+Protocol details: MCP `initialize`/`ping`/`tools/*` over JSON-RPC 2.0;
+protocol version `2025-06-18` negotiated against
+`2024-11-05`/`2025-03-26`; invalid tool arguments are `-32602`; access
+denials are honest `isError` tool results shaped like the HTTP API's
+`{"ok": false, "error", "message"}` bodies; batch requests are rejected
+(`-32600`, removed by MCP 2025-03-26); diagnostics go to stderr only.
+Contracts are pinned in `services/indexer/tests/test_mcp_server.py`
+(framing, the six-tool read-only surface, per-member scoping, and a
+byte-identical store after a full battery of calls).
 
 ## Connector registry
 

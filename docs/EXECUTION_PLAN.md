@@ -190,6 +190,12 @@ Studio must distinguish `current`, `stale`, `partial`, `offline`, `failed`, `rev
 
 ### P6 — Search, reuse, and Coding Agent interface (weeks 7–8)
 
+**Status:** Implemented (2026-10) — the read-only MCP tool surface landed as
+`services/indexer/src/mcp_server.py` (six stdio tools, per-member scoping,
+tests in `services/indexer/tests/test_mcp_server.py`; see docs/QUERY_API.md
+"MCP surface (P6)"). The G6 empty-sandbox demonstration on the live Jetson
+is still pending.
+
 The query path is:
 
 ```text

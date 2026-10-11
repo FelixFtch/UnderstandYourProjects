@@ -40,8 +40,13 @@ def api(host, token, path, binary=False):
         d = r.read()
         return d if binary else json.loads(d)
 
-def load_symbols(graph_path: str) -> dict[str, list[dict]]:
-    g = json.load(open(graph_path, encoding="utf-8"))
+def symbols_from_graph(g: dict) -> dict[str, list[dict]]:
+    """File -> span-sorted symbol table from a UA knowledge-graph dict.
+
+    Split out of load_symbols (behavior identical) so the MCP source.locate
+    tool can reuse the exact same node filter over a graph already loaded by
+    query_api.load_ua_graph instead of re-reading the file.
+    """
     per_file: dict[str, list[dict]] = {}
     for n in g.get("nodes", []):
         if n.get("type") in ("function", "class") and n.get("filePath") and n.get("lineRange"):
@@ -51,6 +56,10 @@ def load_symbols(graph_path: str) -> dict[str, list[dict]]:
     for syms in per_file.values():
         syms.sort(key=lambda s: (s["hi"] - s["lo"]), reverse=True)  # 主角(最大跨度)在前
     return per_file
+
+
+def load_symbols(graph_path: str) -> dict[str, list[dict]]:
+    return symbols_from_graph(json.load(open(graph_path, encoding="utf-8")))
 
 def qwen(prompt: str) -> tuple[str, int]:
     body = json.dumps({"model": "qwen3.5-route", "think": False, "stream": False,
