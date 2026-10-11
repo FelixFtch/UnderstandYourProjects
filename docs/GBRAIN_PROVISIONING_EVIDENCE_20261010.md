@@ -217,6 +217,9 @@ via `restore_page` (present in surface) — not exercised.
   manifest for the hash; 5 epoch-2 pages for "brain_graph verdict"). The
   runbook §4.4's "may return them" is technically true and operationally
   never. Publish/revoke at the brain layer is unaffected.
+  **FIXED 2026-10-10/11 — see §7** (embed provider rebuilt at 768/nomic;
+  scoped slot reservation in knowledge-service; verified live both
+  directions).
 - **F2 (process)**: unrecorded morning session pre-executed §1/§2/§4.1–4.3
   and an epoch-2 publish at 10:47–14:56Z (see table above).
 - **F3 (context, pre-existing)**: the family serve :3141 bounces every 5
@@ -265,7 +268,8 @@ via `restore_page` (present in surface) — not exercised.
    embeddings on :3142). Track two fixes: wire the embed provider on the
    project serve (env var is set but the serve reports `no_provider`), and
    consider brain priority/per-brain quota for requests carrying
-   project+grant_epoch.
+   project+grant_epoch. (Done 2026-10-10/11 — §7; root cause was the bare
+   init in §1.1, not the env var.)
 7. Note `list_pages` 100-per-call pagination (F4) wherever census/monitoring
    is described; §5's `--usage` recipe must switch to the admin HTTP path.
 8. Document that `gbrain mcp verify` leaves a soft-deleted fixture page
@@ -287,3 +291,150 @@ via `restore_page` (present in surface) — not exercised.
   receipt bytes burned on the new principal (probe ×2, 2 puts, 1 delete,
   tombstone put, verify fixture put+delete) — quota exhaustion would surface
   as `probePut: rejected` in seconds, per design.
+
+## 7. F1 fix (2026-10-10/11 follow-up session) — scoped retrieval now surfaces project blocks
+
+Executor: Claude fix session, branch `fix/gbrain-scoped-retrieval` (worktree,
+shared tree untouched). Both root causes fixed and verified live against the
+running services. Never touched: `gbrain-serve-family` / :3141 (kept bouncing
+on its own 5-min `gbrain-refresh.timer` cycle throughout, F3), the timer
+itself, robotdesk-*/voice-*/uyp-query-api/nandatown units, the index worker.
+
+### 7.1 Root cause 1 — the project brain had NO embedding provider (schema, not wiring)
+
+The two serve units are env-identical (`LLAMA_SERVER_BASE_URL=:8108/v1`,
+`OPENAI_BASE_URL=:11434/v1` both present in both units). The difference was in
+each brain's own `.gbrain/config.json` and the DB schema it was born with:
+
+| | family (:3141) | project_knowledge (:3142, before fix) |
+|---|---|---|
+| config.json | `embedding_model: llama-server:nomic-embed-text-v1.5`, `embedding_dimensions: 768` | `embedding_disabled: true`, no model |
+| created by | `init_brains.py` **with** `--embedding-model/--embedding-dimensions` | runbook §1.1's bare `gbrain init --pglite` |
+| chunks.embedding column | `vector(768)` | **`vector(1024)`** — gbrain 0.59's zero-flag default is `voyage:voyage-4` @1024, for which no local provider exists |
+
+So the morning session followed the runbook and got a voyage-1024 brain;
+`embedding_disabled: true` was then set to silence it, and the serve reported
+`_meta.retrieval.degraded: [{stage: embed_unavailable, reason: no_provider}]`
+with lexical-only scores (0.16–0.18). An env-var/config-file fix alone is
+impossible: PGLite (WASM pgvector) cannot `ALTER` vector widths, and
+`gbrain reinit-pglite` refuses via its own managed-root guard
+("This file belongs to a managed canonical worktree", exit 1). Used the
+documented by-hand recipe instead (serve stopped throughout):
+
+1. `gbrain export --dir /tmp/f1/export` → **122 pages** (121 epoch-2 +
+   epoch-5 tombstone manifest; soft-deleted pages are NOT exported, so
+   nothing stale resurrects), slug tree mirrors exactly.
+2. `mv brain.pglite brain.pglite.bak-20261010-f1`; `gbrain init --pglite
+   --embedding-model llama-server:nomic-embed-text-v1.5 --embedding-dimensions 768`
+   → config.json now byte-equivalent to family's (init's spurious
+   `expansion_model` key removed to match). Full pre-wipe .gbrain copy also
+   kept at /tmp/f1/gbrain-dotdir-bak-f1.
+3. `gbrain import --no-embed` (121; vendored `d3.v7.min.js` skipped by
+   import's vendor rule — restored 1:1 via `gbrain put`, uyp_* frontmatter
+   intact) → **122/122 slugs, exact parity** (diff vs export list: clean).
+4. `gbrain embed --all` → **121/122 chunks embedded**; the epoch-2
+   `__manifest__` (120 citations in one page) exceeds llama-server's input
+   limit and stays keyword-only.
+5. Serve restarted; writer principal **reprovisioned** (runbook §2.2 shape):
+   new client `gbrain_cl_87d045aab…`, name `uyp-indexer`, harness `generic`,
+   profile `memory-writer`, fence `boundSlugPrefixes ["project_knowledge/"]`,
+   rescope `--surface full` (revision 2, active, not revoked). Stale creds +
+   stale credential-delivery (referenced the wiped client) moved aside; old
+   creds kept at `.creds/project_knowledge.json.bak-20261010-f1`.
+   `serve_routes.json` unchanged. Fence attack re-verified: `put_page` on
+   `fence_test_outside` and `family/fence_test` → both `permission_denied`
+   (not under bound_slug_prefixes).
+
+**:3142 direct MCP query "brain_graph verdict" (limit 10):**
+
+| | before | after |
+|---|---|---|
+| `_meta.retrieval.vector_enabled` | false | **true** |
+| `_meta.retrieval.degraded` | `[{embed_unavailable: no_provider}]` | **`[]`** |
+| top hit scores | 0.182, 0.182, 0.162, 0.162 … (lexical) | **0.912** (verification/final-graph-full.png), **0.900** (brain_graph.json), 0.889, 0.876, 0.860 … |
+
+### 7.2 Root cause 2 — multi_brain_search starves scoped queries (slot reservation)
+
+`multi_brain_search()` merged every accessible brain into ONE global top-10;
+`project_scope_filter()` ran only AFTER that cut, and a filter can drop but
+never rescue. With family/public hybrid noise scoring 0.82–0.87 for anything,
+scoped requests returned 0 project blocks even when the brain had the right
+hits (the F1 matrix in §3). Fix (runtime + `patches/knowledge-service-project-prefilter.patch`
+regenerated to match byte-for-byte):
+
+- `_reserve_project_slots(all_blocks, params, total)` runs at the ranking
+  stage (before any filter). **Scoped request** (project + grant_epoch both
+  present): final top-N must include up to **K=5** highest-scoring VALID
+  scoped-project blocks (validity = the exact same project+epoch+tombstone
+  rule `project_scope_filter` enforces, factored into
+  `_scoped_project_block`; each reserved block must clear a **0.05 floor**);
+  remaining slots fill by global score order. Scope-INVALID project blocks
+  never occupy a slot — the filter drops them downstream anyway, so admitting
+  them only wastes slots. **Unscoped request**: project blocks are excluded
+  from the cut entirely, so family responses keep their exact pre-F1 shape —
+  necessary because the embed fix made project pages score ~0.83+ and they
+  had started crowding family results only to be dropped (observed 9-of-10
+  family blocks in the first post-deploy verify pass; fixed before final).
+  The deep path's 14-slot cut (`_deep_retrieve`) gets the same treatment
+  (total=14). `multi_brain_search`/`_deep_retrieve`/both synthesize calls
+  now thread the request body through as `params`.
+- **Every fail-closed property unchanged**: `project_scope_filter` itself is
+  behavior-identical (its scope matching merely factored into
+  `_scoped_project_block`); reservation can only promote blocks the filter
+  would keep; wrong epoch / wrong project / tombstone / half-scope /
+  non-scoped principal still yield 0 project blocks (re-run live below).
+- Env gate intact: importing the module without `KNOWLEDGE_PROJECT_BRAIN`
+  still leaves `project_knowledge` out of `ALL_BRAINS` (re-checked on the
+  Jetson against the deployed file).
+
+### 7.3 Live verification matrix (:8790, member felix unless noted)
+
+| check | before fix | after fix |
+|---|---|---|
+| scoped project=jarvis-memory-live epoch 2, "brain_graph verdict" | 0 project (10 family/public noise 0.82–0.86) | **5 project @ 0.860–0.912** + 5 family/personal/public |
+| scoped, "final graph" | — | 5 project @ 0.811–1.092 mixed by merit |
+| scoped WRONG epoch (4) | 0 project | 0 project |
+| scoped WRONG project | 0 project | 0 project |
+| scoped revoked epoch 5, tombstone-body term | 0 project | 0 project (no tombstone leak) |
+| half-scope (project, no epoch) | — | 0 project |
+| non-scoped principal (mom) + scoped params | — | 0 project; `brains_searched` excludes project_knowledge |
+| guest + scoped params | — | public only |
+| family-1 "calendar" (unscoped) | 9 blocks | **identical** (same 9, same order/scores) |
+| family-2 "家庭日历安排" (unscoped) | 10 blocks | **identical** (same 10, incl. trailing 0.8288 family_calendar-1) |
+| family-3 "grocery shopping list" (unscoped) | 10 blocks | **identical** (same 10, incl. trailing 0.8155 municipal_board-3142) |
+
+Offline: 19 logic tests on the new module (unscoped cut equality incl. the
+crowd-out guard, K cap, floor, invalid/tombstone exclusion, deep-path width,
+filter identity, garbage-query shape) — all pass; `py_compile` clean on both
+Mac and Jetson; regenerated patch passes `git apply --check` against the
+pristine `.bak-uyp` baseline (md5 82fafe72b3e39562b555dac350e5a266) and
+reproduces the deployed runtime md5-exactly (`6bf47cfedb80094a962fa742fbe6d838`).
+
+### 7.4 What was restarted (and recovery)
+
+| unit | restarts | recovery |
+|---|---|---|
+| `gbrain-serve-project-knowledge.service` (:3142) | stop/start ×4 during the rebuild (export → init/import/embed → grant → rescope window), final start 23:54:26 EDT | `/health` ok within ~3 s every time; allowed — not in the live voice path |
+| `knowledge-service.service` (:8790) | **2 deliberate restarts**: 03:57:53Z (deploy) and 03:59:32Z (v2: unscoped family-shape regression found in the first verify pass) | back up in ~1 s each (`/health` ok), `NRestarts=0` (no crash-restarts) |
+
+Untouched and healthy at end: :3141 (own timer cycle), `llama-embed.service`
+(up since boot 23:16:23 EDT), `gbrain-refresh.timer` (firing normally),
+`gbrain-dream` inactive as before.
+
+### 7.5 Residual notes / runbook corrections
+
+- Runbook §1.1 must gain the two init flags
+  (`--embedding-model llama-server:nomic-embed-text-v1.5 --embedding-dimensions 768`)
+  — the bare init births a voyage-1024 brain that can never use the shared
+  llama-embed provider. This also supersedes §5 correction #6's guess that
+  the :3142 problem was a missing env var (the env was identical all along).
+- epoch-2 `__manifest__` page has no embedding (input too large for
+  llama-server); keyword-searchable only. Cosmetic for retrieval.
+- The rebuild reset the writer principal's quota ledger (fresh client,
+  spending unlimited) and the MCP request log; publisher creds file replaced
+  in place (old kept at `.bak-20261010-f1`). Run the publisher `check`
+  (probe PUT/DELETE) at next convenience to re-confirm the lane end to end.
+- Rollback points on the Jetson: `knowledge-service.py.bak-20261010-f1`
+  (pre-F1 runtime), `brain.pglite.bak-20261010-f1` (pre-rebuild DB),
+  `.gbrain/config.json.bak-20261010-f1`, and /tmp/f1/gbrain-dotdir-bak-f1
+  (full pre-wipe .gbrain) — /tmp copies evaporate on reboot.

@@ -1,5 +1,7 @@
 # knowledge-service: project_knowledge brain registration + read-time prefilter
-# Origin: UnderstandAnyProjects_MIT feat/gbrain-launch-prep (launch-prep 2026-10-10)
+#          + scoped-request slot reservation (F1 fix)
+# Origin: UnderstandAnyProjects_MIT feat/gbrain-launch-prep (launch-prep 2026-10-10);
+#         F1 slot reservation added 2026-10-10/11 (fix/gbrain-scoped-retrieval).
 # Target: jetson ~/jarvis/gbrain/knowledge-service.py (knowledge-service v3, 588 lines,
 #         md5 82fafe72b3e39562b555dac350e5a266, pulled 2026-10-10)
 # Apply:  scp this file to the Jetson, then:
@@ -7,7 +9,8 @@
 #           git apply knowledge-service-project-prefilter.patch
 #         (works with plain `git apply` from the directory holding the file;
 #          `git apply --check` first if you prefer a dry run)
-# Rollback: restore the .bak-uyp copy and restart knowledge-service.service.
+# Rollback: restore the .bak-uyp copy (or .bak-20261010-f1, taken right before
+#         the F1 deploy) and restart knowledge-service.service.
 #
 # What this changes and why (details also inline in the hunks):
 #  1. ALL_BRAINS gains "project_knowledge" ENV-GATED, DEFAULT OFF
@@ -21,12 +24,29 @@
 #     (uyp_revoked tombstone) are always dropped. Fail-closed: mismatch =
 #     excluded, never an error, so the filter cannot be an oracle.
 #  3. The filter is wired into /query and both /synthesize retrieval paths.
+#  4. F1 fix -- slot reservation for project-scoped requests: the prefilter
+#     could only DROP blocks, never rescue them, and multi_brain_search()
+#     kept one global top-10 by score, so family/public hybrid noise
+#     (~0.85 for anything) starved project blocks out of the cut before the
+#     filter ever ran (the 2026-10-10 rehearsal saw 0 project blocks for
+#     correct scoped queries). _reserve_project_slots() runs at the ranking
+#     stage: a scoped request's top-N must include up to 5 (K) of the scoped
+#     brain's highest-scoring VALID blocks (score >= 0.05 floor; same
+#     project+epoch+tombstone validation the filter enforces -- the filter
+#     stays authoritative and unchanged). Scope-INVALID project blocks never
+#     occupy a slot (dropped downstream anyway). Unscoped requests: project
+#     blocks are excluded from the cut entirely, so family responses keep
+#     their exact pre-F1 shape (embed-fixed project pages can no longer
+#     crowd a slot only to be dropped). The deep path's 14-slot cut gets the
+#     same treatment. Verified live: fail-closed matrix unchanged, family
+#     queries byte-identical before/after, scoped epoch-2 queries return
+#     5 project blocks at 0.81-1.09 (was 0).
 
 diff --git a/knowledge-service.py b/knowledge-service.py
-index 8ddf49d..f6a60a4 100644
---- a/knowledge-service.py
-+++ b/knowledge-service.py
-@@ -36,6 +36,18 @@ ALL_BRAINS = [
+index 8ddf49dc6776..5f7a11024769 100644
+--- a/knowledge-service.py	2026-10-10 23:40:49
++++ b/knowledge-service.py	2026-10-10 23:58:59
+@@ -36,6 +36,18 @@
      "personal_felix", "personal_mom", "personal_ly",
      "family", "public", "external",
  ]
@@ -45,10 +65,11 @@ index 8ddf49d..f6a60a4 100644
  
  
  # ── Dynamic permission lookup (from brain_grants table) ──
-@@ -372,6 +384,48 @@ def subject_scope_filter(blocks: list[dict], member: str, role: str) -> list[dic
+@@ -372,7 +384,126 @@
      return kept
  
  
+-def multi_brain_search(question: str, member: str, role: str) -> tuple[list[dict], list[str]]:
 +# ── UYP project-knowledge prefilter (launch-prep 2026-10-10) ──
 +# project_knowledge pages are mirrored project KnowledgeVersions, not
 +# household memories.  Two isolation rules, both enforced READ-TIME and
@@ -64,9 +85,35 @@ index 8ddf49d..f6a60a4 100644
 +# Ambiguity resolves to EXCLUSION, never to an error: a mismatched or
 +# half-specified request just gets empty results, so this filter cannot be
 +# used as an oracle for which projects or grant epochs exist.
++def _project_scope_of(params: dict | None) -> tuple[str, str]:
++    """(project, grant_epoch) request params, stripped ('' when absent)."""
++    return (str((params or {}).get("project", "")).strip(),
++            str((params or {}).get("grant_epoch", "")).strip())
++
++
++def _scoped_project_block(b: dict, project: str, epoch: str) -> bool:
++    """True when b is a project_knowledge block THIS scope may see: slug
++    under project_knowledge/<project>/<epoch>/ and no revoked marker.
++    Same validity rule project_scope_filter enforces, factored out so the
++    ranking stage (F1 fix below) reserves slots only for blocks the
++    read-time filter would actually keep."""
++    source = str(b.get("source", ""))
++    if not source.startswith("project_knowledge/"):
++        return False
++    parts = source.split("/")
++    # expected shape: project_knowledge/<project>/<grant_epoch>/<relpath...>
++    if len(parts) < 4 or parts[1] != project or parts[2] != epoch:
++        return False  # different project or grant epoch: excluded
++    text = str(b.get("text", ""))
++    if ("uyp_revoked: true" in text
++            or "uyp_revoked: true" in text.replace('"', "")
++            or "grant epoch behind these pages was revoked" in text):
++        return False  # revoked epoch's tombstone or a marked page: excluded
++    return True
++
++
 +def project_scope_filter(blocks: list[dict], params: dict) -> list[dict]:
-+    project = str((params or {}).get("project", "")).strip()
-+    epoch = str((params or {}).get("grant_epoch", "")).strip()
++    project, epoch = _project_scope_of(params)
 +    if not (project and epoch):
 +        # No project scope on the request: drop every project block.  This
 +        # is the default path for all existing callers.
@@ -78,23 +125,83 @@ index 8ddf49d..f6a60a4 100644
 +        if not source.startswith("project_knowledge/"):
 +            kept.append(b)  # family/personal/public blocks: unchanged
 +            continue
-+        parts = source.split("/")
-+        # expected shape: project_knowledge/<project>/<grant_epoch>/<relpath...>
-+        if len(parts) < 4 or parts[1] != project or parts[2] != epoch:
-+            continue  # different project or grant epoch: excluded
-+        text = str(b.get("text", ""))
-+        if ("uyp_revoked: true" in text
-+                or "uyp_revoked: true" in text.replace('"', "")
-+                or "grant epoch behind these pages was revoked" in text):
-+            continue  # revoked epoch's tombstone or a marked page: excluded
-+        kept.append(b)
++        if _scoped_project_block(b, project, epoch):
++            kept.append(b)
 +    return kept
 +
 +
- def multi_brain_search(question: str, member: str, role: str) -> tuple[list[dict], list[str]]:
++# ── F1 fix (2026-10-10): slot reservation for scoped requests ──
++# multi_brain_search() merges every accessible brain into ONE global
++# top-10 by score.  Family/public hybrid-expansion noise scores 0.82-0.87
++# even for queries that match nothing there, so (with lexical-only scores
++# before the project serve's embed provider was wired) project blocks
++# could never reach the top-10 -- project_scope_filter then had nothing
++# to keep: it can only drop blocks, never rescue them.  Reservation runs
++# at the RANKING stage, before any filter: a project-scoped request's
++# final top-N must include up to PROJECT_RESERVED_SLOTS of the scoped
++# brain's highest-scoring VALID blocks (same project+epoch+tombstone
++# validation the filter enforces -- the read-time filter stays the
++# authority and still runs, unchanged, on the result).  Scope-INVALID
++# project blocks never occupy a slot (the filter would drop them anyway;
++# admitting them only wastes slots).  UNscoped requests (every legacy
++# caller: voice, family chat) are byte-identical to the old behavior.
++PROJECT_RESERVED_SLOTS = 5
++PROJECT_SLOT_FLOOR = 0.05  # real hits score >= ~0.16 lexical / ~0.85 hybrid;
++                          # below this floor a block never displaces anything
++
++
++def _reserve_project_slots(all_blocks: list[dict], params: dict | None,
++                           total: int = 10) -> list[dict]:
++    """all_blocks must be echo-filtered and sorted by score descending.
++    Scoped request: top-`total` with up to PROJECT_RESERVED_SLOTS valid
++    scoped project blocks (each >= PROJECT_SLOT_FLOOR) guaranteed in,
++    remaining slots filled by global score order.  Unscoped request:
++    plain all_blocks[:total] (pre-F1 behavior, byte-identical)."""
++    project, epoch = _project_scope_of(params)
++    if not (project and epoch):
++        # Unscoped request (every legacy caller: voice, family chat):
++        # project blocks are dropped downstream anyway; once the project
++        # serve's embed provider is wired they score family-level (~0.83+)
++        # and can crowd the global cut, silently starving family results
++        # (observed 9-of-10 family blocks after the embed fix).  Cut from
++        # the non-project pool so unscoped responses keep their pre-F1
++        # shape exactly -- same blocks, same order, same count.
++        return [b for b in all_blocks
++                if not str(b.get("source", "")).startswith("project_knowledge/")][:total]
++    # Eligible fill: everything except scope-INVALID project blocks (the
++    # downstream filter would drop those anyway, so admitting them only
++    # wastes slots; the caller still sees exactly the family/personal/
++    # public blocks an unscoped request would see -- nothing is revealed).
++    eligible = [b for b in all_blocks
++                if not str(b.get("source", "")).startswith("project_knowledge/")
++                or _scoped_project_block(b, project, epoch)]
++    reserved = [b for b in eligible
++                if str(b.get("source", "")).startswith("project_knowledge/")
++                and float(b.get("score", 0) or 0) >= PROJECT_SLOT_FLOOR]
++    reserved = reserved[:PROJECT_RESERVED_SLOTS]
++    if not reserved:
++        return eligible[:total]
++    rids = {id(b) for b in reserved}
++    fill = [b for b in eligible if id(b) not in rids]
++    merged = reserved + fill[: total - len(reserved)]
++    merged.sort(key=lambda b: float(b.get("score", 0) or 0), reverse=True)
++    return merged
++
++
++def multi_brain_search(question: str, member: str, role: str,
++                       params: dict | None = None) -> tuple[list[dict], list[str]]:
      accessible = get_accessible_brains(member, role)
      with ThreadPoolExecutor(max_workers=max(len(accessible), 1)) as pool:
-@@ -385,7 +439,7 @@ def multi_brain_search(question: str, member: str, role: str) -> tuple[list[dict
+         futures = {pool.submit(search_brain, b, question): b for b in accessible}
+@@ -381,11 +512,14 @@
+             all_blocks.extend(future.result(timeout=10))
+     all_blocks = [b for b in all_blocks if not _is_echo_page(b.get("text", ""))]
+     all_blocks.sort(key=lambda b: float(b.get("score", 0)), reverse=True)
+-    return all_blocks[:10], accessible
++    # F1 fix (2026-10-10): project-scoped requests reserve ranking slots
++    # for the scoped brain's valid blocks instead of a pure global top-10
++    # (see _reserve_project_slots); unscoped requests unchanged.
++    return _reserve_project_slots(all_blocks, params), accessible
  
  
  def _deep_retrieve(question: str, member: str, role: str,
@@ -103,19 +210,29 @@ index 8ddf49d..f6a60a4 100644
      """Wide retrieval for deep answers: more chunks per brain than the
      fast path, echo-filtered, best-first across the speaker's brains."""
      accessible = get_accessible_brains(member, role)
-@@ -401,6 +455,9 @@ def _deep_retrieve(question: str, member: str, role: str,
+@@ -398,9 +532,15 @@
+     all_blocks = [b for b in all_blocks
+                   if not _is_echo_page(b.get("text", ""))]
+     all_blocks.sort(key=lambda b: float(b.get("score", 0)), reverse=True)
++    # F1 fix (2026-10-10): same slot reservation on the deep path's 14-slot
++    # cut as on /query's 10 (scoped requests only; unscoped unchanged).
++    all_blocks = _reserve_project_slots(all_blocks, params, total=14)
      # Owner ruling 2026-09-29: same cross-member medical filter on the
      # deep/synthesize path as on /query, so answers cannot leak either.
-     all_blocks = subject_scope_filter(all_blocks[:14], member, role)
+-    all_blocks = subject_scope_filter(all_blocks[:14], member, role)
++    all_blocks = subject_scope_filter(all_blocks, member, role)
 +    # UYP project prefilter on the deep path, same fail-closed rules as
 +    # /query (see project_scope_filter).
 +    all_blocks = project_scope_filter(all_blocks, params or {})
      return all_blocks
  
  
-@@ -477,6 +534,10 @@ class Handler(BaseHTTPRequestHandler):
+@@ -475,8 +615,12 @@
+             self._json({"blocks": [], "error": "empty question"}); return
+ 
          t0 = time.time()
-         blocks, searched = multi_brain_search(question, member, role)
+-        blocks, searched = multi_brain_search(question, member, role)
++        blocks, searched = multi_brain_search(question, member, role, params=body)
          blocks = subject_scope_filter(blocks, member, role)  # owner ruling 2026-09-29
 +        # UYP project prefilter (fail-closed; see project_scope_filter):
 +        # project_knowledge blocks survive only when the request itself
@@ -124,10 +241,12 @@ index 8ddf49d..f6a60a4 100644
          latency = round((time.time() - t0) * 1000)
          self._json({
              "blocks": blocks, "brains_searched": searched,
-@@ -499,6 +560,10 @@ class Handler(BaseHTTPRequestHandler):
+@@ -498,7 +642,11 @@
+             self._json({"answer": "", "error": "empty question"}); return
  
          # pick the speaker's hottest brain for this question (hybrid query)
-         blocks, _searched = multi_brain_search(question, member, role)
+-        blocks, _searched = multi_brain_search(question, member, role)
++        blocks, _searched = multi_brain_search(question, member, role, params=body)
 +        # Same project prefilter on the synthesize paths, so a deep answer
 +        # cannot cite project evidence the requester's params do not cover
 +        # (and legacy callers see none at all).
@@ -135,11 +254,13 @@ index 8ddf49d..f6a60a4 100644
          top_brain = blocks[0]["brain"] if blocks else "public"
  
          # Self-composed deep answer (2026-09-20): retrieve a WIDE net of
-@@ -508,7 +573,7 @@ class Handler(BaseHTTPRequestHandler):
+@@ -507,8 +655,8 @@
+         # Replaces the CLI `gbrain think` shell-out, which the resident
          # serve's exclusive brain lock blocks (and the serve's own
          # synthesize only speaks Anthropic-style keys).
-         blocks, _searched = multi_brain_search(question, member, role)
+-        blocks, _searched = multi_brain_search(question, member, role)
 -        wide = _deep_retrieve(question, member, role)
++        blocks, _searched = multi_brain_search(question, member, role, params=body)
 +        wide = _deep_retrieve(question, member, role, params=body)
          t0 = time.time()
          answer = _deep_compose(question, wide)
