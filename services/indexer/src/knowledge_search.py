@@ -117,7 +117,7 @@ def _answer_locked(question: str, items: list[dict]) -> dict:
     body = json.dumps({"model": "qwen3.5-route", "think": False, "stream": False,
                        "options": {"num_ctx": 4096},
                        "messages": [{"role": "user", "content": prompt}]})
-    r = subprocess.run(["curl", "-s", "127.0.0.1:11434/api/chat", "-d", body, "--max-time", "120"],
+    r = subprocess.run(["curl", "-s", "-H", "X-UYP-Worker: search", "127.0.0.1:11434/api/chat", "-d", body, "--max-time", "120"],
                        capture_output=True, text=True)
     if r.returncode != 0 or not r.stdout.strip():
         return {"answer": "本地模型服务暂不可用，无法生成带出处的回答。", "sources": [{"file": i["file"], "match": round(s, 1)} for s, i in top], "confidence": "unavailable"}

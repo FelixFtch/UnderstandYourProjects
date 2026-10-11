@@ -98,7 +98,7 @@ def _yield_to_interactive(max_wait_s: int = 600):
             return
         if _t.time() - ts > 30:
             return
-        _sp.run(["pkill", "-f", "curl.*127.0.0.1:11434/api/chat"],
+        _sp.run(["pkill", "-f", "X-UYP-Worker.*index"],
                 capture_output=True)
         time.sleep(0.5)
         waited += 0.5
@@ -120,14 +120,14 @@ def qwen_enrich(content: str, think: bool):
     # job keeps going.
     d = None
     for _attempt in range(3):
-        r = subprocess.run(["curl", "-s", "127.0.0.1:11434/api/chat", "-d", body, "--max-time", "400"],
+        r = subprocess.run(["curl", "-s", "-H", "X-UYP-Worker: index", "127.0.0.1:11434/api/chat", "-d", body, "--max-time", "400"],
                            capture_output=True, text=True)
         try:
             d = json.loads(r.stdout)
             break
         except (json.JSONDecodeError, ValueError):
             d = None
-            subprocess.run(["curl", "-s", "127.0.0.1:11434/api/chat", "-d",
+            subprocess.run(["curl", "-s", "-H", "X-UYP-Worker: index", "127.0.0.1:11434/api/chat", "-d",
                             json.dumps({"model": "qwen3.5-route", "think": False, "stream": False,
                                         "messages": [{"role": "user", "content": "ping"}]}),
                             "--max-time", "30"], capture_output=True, text=True)
@@ -140,7 +140,7 @@ def qwen_enrich(content: str, think: bool):
         # thinking 空转修复 (2026-10-09 实测: thinking 偶发把预算全烧在 reasoning,
         # content 为空)。降档 think:false 重试一次 - 15s 封顶, 保证必有可解析输出。
         body2 = body.replace('"think": true', '"think": false')
-        r2 = subprocess.run(["curl", "-s", "127.0.0.1:11434/api/chat", "-d", body2, "--max-time", "120"],
+        r2 = subprocess.run(["curl", "-s", "-H", "X-UYP-Worker: index", "127.0.0.1:11434/api/chat", "-d", body2, "--max-time", "120"],
                             capture_output=True, text=True)
         try:
             d2 = json.loads(r2.stdout)
