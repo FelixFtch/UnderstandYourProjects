@@ -385,6 +385,271 @@ def load_nandatown_peers() -> list[dict]:
     return nandatown_peers_projection()[0]
 
 
+# ---- Group messaging over NandaTown (audit A2, P10/G9) --------------------
+#
+# The groups engine owns WHO may speak in a group; nandatown_client owns the
+# transport.  This block wires the two to a local per-group message log and
+# adds nothing to identity or scope:
+#
+# * send: POST /api/groups/{id}/messages - a member's message fans out to
+#   the group's town peers (one message per recipient with its own
+#   message_id; the town has no broadcast primitive).  The local echo is
+#   persisted only when at least one copy was accepted (or the directory
+#   was honestly empty) - a transport failure is an honest 503 carrying
+#   the client's error_code, never a faked delivery.
+# * receive: a background poll loop claims this participant's inbox once
+#   per group and routes inbound messages into the group's local log.
+#   The client re-offers foreign-group messages instead of consuming
+#   them, so a message for a group this box does not know is never lost
+#   to this poller.
+# * history: GET /api/groups/{id}/messages - the member-scoped local log
+#   a chat UI polls.  (The voice chain's group_knowledge tool needs only
+#   search, which was already live.)
+#
+# Run mapping v1: a group's messages route to the town run named by its
+# registry field ``town_run_id``, else the deployment default
+# (``UYP_NANDATOWN_RUN_ID``).  With neither set the endpoints answer an
+# honest 503 ``nandatown_run_unconfigured`` instead of silently guessing
+# the client's hardcoded DEFAULT_RUN_ID - that constant stays a transport
+# default for directory/health, never a group-routing decision.
+# Per-group run CREATION automation (town admin API) is future work;
+# this is mapping only.
+
+DEFAULT_POLL_SECONDS = 15.0
+MAX_MESSAGE_TEXT = 4000
+MAX_MESSAGE_LOG_ROWS = 2000
+MAX_MESSAGE_LOG_BYTES = 4 * 1024 * 1024
+
+_GROUP_MESSAGE_LOCK = threading.Lock()
+
+
+def group_town_run(record) -> str | None:
+    """The town run a group's messages route to, or None when unmapped.
+
+    ``town_run_id`` on the registry record wins; the deployment's
+    ``UYP_NANDATOWN_RUN_ID`` is the default; nothing else is guessed.
+    """
+    explicit = str((record or {}).get("town_run_id") or "").strip()
+    if explicit:
+        return explicit
+    configured = str(os.environ.get("UYP_NANDATOWN_RUN_ID") or "").strip()
+    return configured or None
+
+
+def town_transport_configured() -> bool:
+    """Whether this process holds a town join token (the un-defaultable env).
+
+    URL, run, and participant all have deployment defaults; a join token
+    does not.  Without one no town call can succeed, so the poll loop
+    stays disabled - fail-closed and quiet.
+    """
+    return bool(str(os.environ.get("UYP_NANDATOWN_JOIN_TOKEN") or "").strip())
+
+
+def group_messages_path(group_id: str) -> str | None:
+    """``<state-root>/groups/<id>/messages.jsonl``; None for an unsafe id."""
+    component = safe_state_project(str(group_id or ""))
+    if component is None:
+        return None
+    return os.path.join(state_root(), "groups", component, "messages.jsonl")
+
+
+def load_group_messages(group_id: str) -> list[dict]:
+    """The group's local message log (oldest first), fail-closed to [].
+
+    Bounded: only the last ``MAX_MESSAGE_LOG_BYTES`` of the file and the
+    last ``MAX_MESSAGE_LOG_ROWS`` rows are returned; malformed lines are
+    skipped, never fatal.
+    """
+    path = group_messages_path(group_id)
+    if path is None:
+        return []
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return []
+    rows: list[dict] = []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            if size > MAX_MESSAGE_LOG_BYTES:
+                fh.seek(max(0, size - MAX_MESSAGE_LOG_BYTES))
+                fh.readline()  # drop the partial line the seek landed in
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict):
+                    rows.append(row)
+    except OSError:
+        return []
+    return rows[-MAX_MESSAGE_LOG_ROWS:]
+
+
+def append_group_message(group_id: str, row: dict) -> bool:
+    """Append one row to a group's local log; False when it is a duplicate.
+
+    Dedupe is on ``message_id`` (town delivery is at-least-once; a lease
+    expiry can re-offer a message this log already holds).  A row without
+    a message_id is always appended.
+    """
+    path = group_messages_path(group_id)
+    if path is None or not isinstance(row, dict):
+        return False
+    with _GROUP_MESSAGE_LOCK:
+        message_id = row.get("message_id")
+        if message_id and any(existing.get("message_id") == message_id
+                              for existing in load_group_messages(group_id)):
+            return False
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        try:
+            os.chmod(os.path.dirname(path), 0o700)
+        except OSError:
+            pass
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        return True
+
+
+def _message_epoch(value) -> float | None:
+    """Parse an ISO-8601 sent_at; None when absent or malformed."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.timestamp()
+
+
+def inbound_watermark(group_id: str) -> float:
+    """The newest INBOUND sent_at this group's log already holds (0.0 if none).
+
+    Restart safety for the poll loop's ``since_ts``: replays older than
+    what the log recorded are filtered by the client.  Outbound echoes
+    are deliberately excluded - a peer's skewed clock must never hide an
+    inbound message behind this box's own later send.
+    """
+    latest = 0.0
+    for row in load_group_messages(group_id):
+        if row.get("direction") != "in":
+            continue
+        sent = _message_epoch(row.get("sent_at") or row.get("received_at"))
+        if sent is not None and sent > latest:
+            latest = sent
+    return latest
+
+
+def nandatown_poll_seconds() -> float:
+    """Poll interval from ``UYP_NANDATOWN_POLL_SECONDS`` (default 15)."""
+    raw = os.environ.get("UYP_NANDATOWN_POLL_SECONDS")
+    if raw is None or not str(raw).strip():
+        return DEFAULT_POLL_SECONDS
+    try:
+        return float(raw)
+    except ValueError:
+        return DEFAULT_POLL_SECONDS
+
+
+def poll_nandatown_groups() -> dict:
+    """One bounded receive pass over every locally-mapped group.
+
+    For each distinct town run the mapped groups resolve to, join as this
+    process's configured participant and claim that group's pending
+    messages (the client consumes same-group messages and re-offers
+    foreign ones).  Inbound rows are deduped on ``message_id`` and
+    appended to the group's local log.  Never raises; failures land in
+    the returned report's ``error`` so callers (the loop, tests) can see
+    the honest code without the loop ever dying to it.
+    """
+    report: dict = {"polled_runs": 0, "polled_groups": 0, "received": 0,
+                    "stored": 0, "error": None, "finished_at": now_iso()}
+    if not town_transport_configured():
+        report["error"] = "nandatown_unconfigured"
+        return report
+    by_run: dict[str, list[dict]] = {}
+    for record in group_registry().load()["groups"]:
+        run = group_town_run(record)
+        if run:
+            by_run.setdefault(run, []).append(record)
+    for run in sorted(by_run):
+        client = NandaTownClient(run_id=run)
+        report["polled_runs"] += 1
+        for record in by_run[run]:
+            group_id = record["group_id"]
+            report["polled_groups"] += 1
+            for message in client.poll_group_messages(
+                    group_id, since_ts=inbound_watermark(group_id)):
+                report["received"] += 1
+                body = message.get("body") if isinstance(message.get("body"), dict) else {}
+                text = body.get("text")
+                if not isinstance(text, str):
+                    text = json.dumps(body, ensure_ascii=False)[:MAX_MESSAGE_TEXT] if body else ""
+                row = {
+                    "message_id": message.get("message_id"),
+                    "group_id": group_id,
+                    "sender": str(message.get("from") or body.get("sender") or ""),
+                    "sent_at": message.get("sent_at"),
+                    "received_at": message.get("received_at") or now_iso(),
+                    "text": text[:MAX_MESSAGE_TEXT],
+                    "direction": "in",
+                }
+                if append_group_message(group_id, row):
+                    report["stored"] += 1
+        if client.error_code is not None and report["error"] is None:
+            report["error"] = client.error_code
+    return report
+
+
+_nandatown_poll_lock = threading.Lock()
+_nandatown_poll_thread: threading.Thread | None = None
+_nandatown_poll_stop = threading.Event()
+nandatown_poll_status: dict = {"started": False, "interval_seconds": None,
+                               "last_report": None}
+
+
+def _nandatown_poll_loop(interval: float) -> None:
+    while not _nandatown_poll_stop.is_set():
+        try:
+            nandatown_poll_status["last_report"] = poll_nandatown_groups()
+        except Exception as exc:  # noqa: BLE001 - the loop outlives any one pass
+            nandatown_poll_status["last_report"] = {
+                "error": "nandatown_poll_failed", "detail": str(exc),
+                "finished_at": now_iso()}
+        _nandatown_poll_stop.wait(interval)
+
+
+def start_nandatown_poller() -> bool:
+    """Start the inbound receive loop once per process.
+
+    Disabled - quietly, fail-closed - when the town transport env is
+    absent (no join token) or ``UYP_NANDATOWN_POLL_SECONDS`` is set to
+    zero or below.  Never raises; returns whether a loop was started.
+    """
+    global _nandatown_poll_thread
+    interval = nandatown_poll_seconds()
+    if interval <= 0.0 or not town_transport_configured():
+        return False
+    with _nandatown_poll_lock:
+        if _nandatown_poll_thread is not None and _nandatown_poll_thread.is_alive():
+            return False
+        _nandatown_poll_stop.clear()
+        _nandatown_poll_thread = threading.Thread(
+            target=_nandatown_poll_loop, args=(interval,),
+            name="uyp-nandatown-poll", daemon=True)
+        _nandatown_poll_thread.start()
+    nandatown_poll_status.update({"started": True, "interval_seconds": interval})
+    return True
+
+
 def project_snapshot(project_id: str | None = None) -> dict:
     context = load_access_context()
     all_groups = grouped_items()
@@ -725,6 +990,11 @@ class QueryHandler(BaseHTTPRequestHandler):
                 records = [record for record in records if group_allows_member(record, principal)]
             self.json_response({"ok": True, "groups": records, "ownerView": owner_view}, audit=audit)
             return
+        parts = parsed.path.split("/")
+        if (len(parts) == 5 and parts[0] == "" and parts[1] == "api"
+                and parts[2] == "groups" and parts[3] and parts[4] == "messages"):
+            self._get_group_messages(parts[3], query, audit)
+            return
         if parsed.path == "/api/index/jobs":
             context = load_access_context()
             project = (query.get("projectId") or [None])[0]
@@ -761,6 +1031,10 @@ class QueryHandler(BaseHTTPRequestHandler):
         if (len(parts) == 5 and parts[0] == "" and parts[1] == "api"
                 and parts[2] == "groups" and parts[3] and parts[4] == "search"):
             self._post_group_search(parts[3], payload, audit)
+            return
+        if (len(parts) == 5 and parts[0] == "" and parts[1] == "api"
+                and parts[2] == "groups" and parts[3] and parts[4] == "messages"):
+            self._post_group_message(parts[3], payload, audit)
             return
         self.json_response({"ok": False, "error": "not_found"}, 404, audit)
 
@@ -839,6 +1113,7 @@ class QueryHandler(BaseHTTPRequestHandler):
                 "owner_member": payload.get("owner_member"),
                 "member_members": payload.get("member_members") or [],
                 "knowledge_view": payload.get("knowledge_view"),
+                "town_run_id": payload.get("town_run_id"),
             })
         except GroupsError as exc:
             self.json_response({"ok": False, "error": "invalid_group", "message": str(exc)}, 400, audit)
@@ -913,6 +1188,149 @@ class QueryHandler(BaseHTTPRequestHandler):
         result.update({"ok": True, "auditId": audit, "groupId": group_id, "memberId": member_id})
         self.json_response(result, audit=audit)
 
+    # ---- Group messaging (NandaTown wiring, audit A2) ----------------------
+
+    def _resolve_group_member(self, group_id: str, member_hint, audit: str):
+        """Resolve ``(record, member_id)`` for a group messaging call.
+
+        The same member tiers as group search: a HomeHub-issued
+        ``X-Group-Context`` projection, else body/query ``member_id``,
+        loopback ``X-Agent-Member`` (the voice tier), then the caller's
+        own principal.  Messaging additionally requires the group to
+        exist LOCALLY - the message log and the town run mapping both
+        live in the registry record - so an unknown group is an honest
+        404 even when a context is presented.  Membership (owner or
+        listed member) is enforced here explicitly: unlike search, which
+        answers a non-member with the silent miss sentence, a message
+        endpoint must refuse with 403 so no send is ever attempted -
+        and never faked - for a non-member.  Returns ``(None, None)``
+        after answering with the error itself.
+        """
+        registry = group_registry()
+        record = registry.get(group_id)
+        if record is None:
+            self.json_response({"ok": False, "error": "group_not_found", "message": "This group is not registered locally or has been dissolved."}, 404, audit)
+            return None, None
+        projection = self.headers.get("X-Group-Context")
+        if projection is not None:
+            try:
+                context = validate_group_context(json.loads(projection))
+            except (json.JSONDecodeError, GroupsError):
+                self.json_response({"ok": False, "error": "group_context_invalid", "message": "The presented group context is malformed, expired, or revoked."}, 403, audit)
+                return None, None
+            if context["group_id"] != group_id:
+                self.json_response({"ok": False, "error": "group_context_mismatch", "message": "The presented group context speaks for a different group."}, 400, audit)
+                return None, None
+            member_id = context["member_id"]
+        else:
+            member_id = str(member_hint or "").strip()
+            if not member_id:
+                # The voice chain asserts the speaking member on loopback the
+                # same way group search does; registry membership is then
+                # checked below, so a non-member voice member cannot send.
+                voice_member = str(self.headers.get("X-Agent-Member") or "").strip()
+                if voice_member and getattr(self.server, "loopback_voice", False):
+                    member_id = voice_member
+            if not member_id:
+                context = caller_context(self.headers)
+                if context is not None:
+                    member_id = str(context.get("principalId") or "").strip()
+            if not member_id:
+                self.json_response({"ok": False, "error": "member_required", "message": "A requesting member is required to message a group."}, 400, audit)
+                return None, None
+        if not group_allows_member(record, member_id):
+            self.json_response({"ok": False, "error": "not_a_member", "message": "Only the group's owner or its listed members can message this group."}, 403, audit)
+            return None, None
+        return record, member_id
+
+    def _post_group_message(self, group_id: str, payload: dict, audit: str) -> None:
+        """POST /api/groups/{id}/messages - a member speaks to the group.
+
+        Fan-out is per-recipient (the town has no broadcast): the client
+        resolves the run's directory, drops this box's own participant,
+        and posts one message per peer with its own message_id.  The
+        declared ``sender`` in each envelope is the resolved member; the
+        town attributes delivery to this box's joined session.  Honest
+        failure only: a refused join, unreachable town, or a directory
+        that cannot be read answers 503 with the client's error_code and
+        persists NOTHING - a message that did not leave the box must not
+        appear in history as if it had.
+        """
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            self.json_response({"ok": False, "error": "message_text_required", "message": "A non-empty text is required."}, 400, audit)
+            return
+        if len(text) > MAX_MESSAGE_TEXT:
+            self.json_response({"ok": False, "error": "message_too_long", "message": f"Message text is bounded to {MAX_MESSAGE_TEXT} characters."}, 400, audit)
+            return
+        record, member_id = self._resolve_group_member(group_id, payload.get("member_id"), audit)
+        if record is None:
+            return
+        run_id = group_town_run(record)
+        if run_id is None:
+            self.json_response({"ok": False, "error": "nandatown_run_unconfigured",
+                                "message": "This group carries no town_run_id and no default UYP_NANDATOWN_RUN_ID is configured; refusing to guess a town run."}, 503, audit)
+            return
+        client = NandaTownClient(run_id=run_id)
+        results = client.send_group_message(group_id, member_id, text)
+        if not results and client.error_code is not None:
+            self.json_response({"ok": False, "error": client.error_code,
+                                "message": f"NandaTown refused this send: {client.last_error or client.error_code}"}, 503, audit)
+            return
+        delivered = [row for row in results if row.get("ok")]
+        if results and not delivered:
+            # Every per-recipient POST failed: report the honest per-recipient
+            # error; no echo, exactly like a join/directory failure above.
+            errors = sorted({str(row.get("error") or "nandatown_delivery_failed") for row in results})
+            self.json_response({"ok": False, "error": errors[0],
+                                "message": "The town accepted no copy of this message for any recipient.",
+                                "delivery": results}, 503, audit)
+            return
+        sent_at = now_iso()
+        row = {
+            "message_id": (results[0].get("message_id") if results else None)
+                          or f"local-{uuid.uuid4().hex}",
+            "group_id": group_id,
+            "sender": member_id,
+            "sent_at": sent_at,
+            "text": text,
+            "direction": "out",
+            "delivery": results,
+        }
+        append_group_message(group_id, row)
+        self.json_response({
+            "ok": True,
+            "groupId": group_id,
+            "memberId": member_id,
+            "sent": {"message_id": row["message_id"], "group_id": group_id,
+                     "sender": member_id, "sent_at": sent_at, "text": text,
+                     "direction": "out"},
+            "delivery": results,
+            "deliveredTo": [entry.get("to") for entry in delivered],
+        }, 201, audit)
+
+    def _get_group_messages(self, group_id: str, query: dict, audit: str) -> None:
+        """GET /api/groups/{id}/messages?limit= - the member-scoped local log.
+
+        This is what a chat UI polls: the append-only record of this
+        group's sends (local echo) and receives (the poll loop), oldest
+        first, newest ``limit`` rows.  Membership uses the same tiers as
+        the send path; a non-member learns nothing - not even that
+        history exists (403), and an unknown group is a 404.
+        """
+        try:
+            limit = int((query.get("limit") or ["200"])[0])
+        except ValueError:
+            limit = 200
+        limit = max(1, min(limit, MAX_MESSAGE_LOG_ROWS))
+        record, member_id = self._resolve_group_member(
+            group_id, (query.get("member_id") or [""])[0], audit)
+        if record is None:
+            return
+        rows = load_group_messages(group_id)
+        self.json_response({"ok": True, "groupId": group_id, "memberId": member_id,
+                            "total": len(rows), "messages": rows[-limit:]}, audit=audit)
+
     def do_DELETE(self) -> None:
         audit = str(uuid.uuid4())
         parsed = urlparse(self.path)
@@ -972,7 +1390,12 @@ def main() -> None:
     # loopback-bound - a --lan deployment must never admit header-asserted
     # voice identity without the approved transport in front of it.
     server.loopback_voice = host in {"127.0.0.1", "localhost", "::1"}
-    print(f"uyp-query-api v{VERSION} on {host}:{args.port} output={output_root()}", flush=True)
+    # Inbound group messaging: one background receive loop per process,
+    # quiet when the town transport env is absent (fail-closed; see
+    # start_nandatown_poller).
+    polling = start_nandatown_poller()
+    print(f"uyp-query-api v{VERSION} on {host}:{args.port} output={output_root()} "
+          f"nandatown-poll={'on' if polling else 'off'}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
