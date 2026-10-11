@@ -178,24 +178,30 @@ The first hardware deployment is one Jetson Agent Box serving multiple authorize
 
 ## Current implementation boundary
 
-The repository contains working code slices for the single-node path:
+The repository contains working code slices for the single-node path, plus the first verified cross-box steps:
 
 - a Connector contract with manifest and controlled-read operations;
 - HomeHub `AccessContext` validation and fail-closed project queries;
 - a durable `IndexJob` state machine with separate HomeHub and Connector capabilities;
 - a vendored Understand Anything bridge that keeps analysis state outside source projects;
-- Jetson Query API projections for Studio, sources, jobs, evidence, and project search;
-- Studio views for project structure, freshness, privacy, and Jarvis groups.
+- Jetson Query API projections for Studio, sources, jobs, evidence, project search, and the groups HTTP endpoints;
+- Studio views for project structure, freshness, privacy, and Jarvis groups, plus a live group chat UI;
+- a groups engine with scoped group search and NandaTown messaging — send/receive/poll loop with cross-box delivery verified between the clinic and home boxes;
+- a read-only MCP stdio surface with six tools: `project.search`, `project.get`, `project.related`, `source.locate`, `source.read_evidence`, `index.status`;
+- a provisioned gBrain project brain on `:3142` — provisioning runbook executed end to end, revoke rehearsal passed, and scoped retrieval reserving the project slot;
+- preemptive yield across voice, query, and indexing workloads (voice > query > index), including satellite turns;
+- incremental indexing driven by a one-minute reconcile timer, crash-resilient `systemd-run` indexing, and grant auto-renewal (24-hour TTL design, three-hour renewal cadence).
 
 The following are still integration work and must not be inferred from the UI alone:
 
 - a stable production Laya service and a newly published end-to-end Jetson IndexJob;
-- durable UYP-to-GBrain publishing and invalidation after revocation;
-- persistent multi-Connector registration;
+- the G6 sandbox demo of the MCP surface against a live coding agent;
+- tombstones for source deletes in the incremental indexing path;
+- a second Connector and persistent multi-Connector registration;
 - LAN/mDNS or Cloudflare pairing and automatic discovery;
-- NandaTown invite/group APIs and multi-Jetson federation.
+- P9 multi-box federation — NandaTown invites and federation beyond the verified clinic–home messaging pair.
 
-In the current development topology, HomeHub is local to Jetson on `:5120`, UYP Query API is on `:8787`, the existing GBrain service is on `:8790`, and the Mac Connector may be reached through an SSH reverse tunnel on Jetson `127.0.0.1:7121`. The reverse tunnel is a development transport, not the final pairing design.
+In the current development topology, HomeHub is local to Jetson on `:5120`, the UYP `query_api` is on `:8787`, Jarvis Studio is served on `:4173`, the gBrain project brain is on `:3142`, the existing GBrain service is on `:8790`, and satellite boxes connect on `:8765` through the voice-p1 speech backend. The Mac Connector may be reached through an SSH reverse tunnel on Jetson `127.0.0.1:7121`; the reverse tunnel is a development transport, not the final pairing design.
 
 ## Collaboration
 
