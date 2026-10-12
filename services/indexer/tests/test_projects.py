@@ -491,6 +491,45 @@ class AskTests(FixtureMixin, unittest.TestCase):
         self.assertIsNone(project_digest.ask(context_for("other"), "commontasks", "sqlite", llm=self.llm("x")))
         self.assertEqual(self.prompts, [])
 
+    # ── ranking vs embedded third-party folders (2026-10-11) ───────────────
+    def _bundled_upstream(self):
+        """Embedded files that match a question much better than the owner's code."""
+        self.item("commontasks", "vendor/ua/scheduler.ts",
+                  "Scheduler scheduler scheduler: upstream job scheduler with retry scheduler queue.", "B", 42,
+                  embedded="vendor/ua")
+        self.item("commontasks", "vendor/ua/sched2.ts", "Second upstream scheduler helper.", "B", 43, embedded="vendor/ua")
+        self.item("commontasks", "vendor/ua/sched3.ts", "Third upstream scheduler module.", "B", 44, embedded="vendor/ua")
+        projects.sync_registry(grants=[])
+
+    def test_owner_code_outranks_embedded_upstream(self):
+        self._bundled_upstream()
+        result = project_digest.ask(self.ctx, "commontasks", "How does the scheduler work?",
+                                    member="robin", role="owner", llm=self.llm("ok"), gbrain=lambda q, m, r: [])
+        files = [s["file"] for s in result["sources"]]
+        self.assertEqual(files[0], "src/app.py")  # "wiring routes and the scheduler", tier A
+        self.assertLessEqual(sum(f.startswith("vendor/ua/") for f in files), project_digest.EMBEDDED_MAX_HITS)
+        self.assertIn("bundled third-party folder vendor/ua/", self.prompts[0])
+
+    def test_naming_the_embedded_folder_lifts_the_penalty(self):
+        self._bundled_upstream()
+        result = project_digest.ask(self.ctx, "commontasks", "How does the ua scheduler work?",
+                                    member="robin", role="owner", llm=self.llm("ok"), gbrain=lambda q, m, r: [])
+        files = [s["file"] for s in result["sources"]]
+        self.assertEqual(files[0], "vendor/ua/scheduler.ts")
+        self.assertGreater(sum(f.startswith("vendor/ua/") for f in files), project_digest.EMBEDDED_MAX_HITS)
+
+    def test_project_name_is_not_evidence_and_overview_cites_own_key_files(self):
+        self.item("commontasks", "vendor/ua/UPSTREAM.md",
+                  "How commontasks vendors this upstream copy of commontasks tooling.", "B", 45, embedded="vendor/ua")
+        projects.sync_registry(grants=[])
+        result = project_digest.ask(self.ctx, "commontasks", "What is commontasks about and what are its key files?",
+                                    member="robin", role="owner", llm=self.llm("A clinic task tracker."),
+                                    gbrain=lambda q, m, r: [])
+        files = [s["file"] for s in result["sources"]]
+        self.assertEqual(files[:3], ["src/app.py", "web/main.ts", "README.md"])  # own tier-A key files first
+        self.assertNotIn("vendor/ua/UPSTREAM.md", files)
+        self.assertIn("KEY FILE (A): src/app.py", self.prompts[0])
+
 
 class AnalyzeJobTests(FixtureMixin, ConnectorMixin, unittest.TestCase):
     def setUp(self):
