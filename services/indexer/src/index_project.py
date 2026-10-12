@@ -12,7 +12,7 @@ Usage: index_project.py --host http://127.0.0.1:7121 --grant g_xxx [--limit 20]
 Requires: Laya llama-server on :8901 (start_laya.sh), ollama qwen3.5:4b.
 """
 from __future__ import annotations
-import argparse, http.client, json, os, re, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
+import argparse, http.client, json, os, posixpath, re, subprocess, sys, time, urllib.error, urllib.parse, urllib.request
 import threading
 
 import key_file_classifier as kfc
@@ -296,6 +296,58 @@ def select_files(all_files, *, limit, done_before, only=None, force=False):
     selected = pending if limit <= 0 else pending[:limit]
     return selected, len(pool) - len(pending), missing
 
+def _safe_relative_path(value: str) -> str:
+    """Mirror of ua_bridge.safe_relative_path (copied rather than imported so
+    the indexer CLI stays loadable while the bridge is refactored).  Connector
+    relpaths are metadata, never filesystem paths - normalizing and rejecting
+    escapes keeps a malformed manifest entry from writing outside the
+    directory a caller anchored it to."""
+    candidate = posixpath.normpath(value.replace("\\", "/"))
+    if candidate in {"", ".", ".."} or candidate.startswith("../") or candidate.startswith("/"):
+        raise ValueError(f"unsafe connector path: {value!r}")
+    return candidate
+
+def _ua_cache_write(state_root, root, relpath, data, size, mtime) -> None:
+    """Best-effort mirror of one full-content connector read into the shared
+    UA byte cache (ua_bridge.py reuses these bytes to skip re-transferring
+    files the indexer already fetched):
+
+      <state_root>/<root>/ua-cache/files/<relpath>       complete file bytes
+      <state_root>/<root>/ua-cache/meta/<relpath>.json   {"size", "mtime"}
+
+    meta is the reader's validity record, so an entry may only ever hold the
+    COMPLETE file: partial payloads (e.g. the 256 KiB-capped fetch of a
+    larger file) write nothing and the bridge re-fetches as before.  A no-op
+    when state_root is unset (standalone CLI run) and silent on any disk or
+    path failure - the cache must never be able to fail an analysis run."""
+    if not state_root or mtime is None or size <= 0 or len(data) != size:
+        return
+    tmp = None
+    try:
+        rel = _safe_relative_path(relpath)
+        base = os.path.join(os.path.expanduser(state_root), root, "ua-cache")
+        # Bytes first, meta last: an interrupted write then leaves at most an
+        # unreferenced files/ blob, never a meta vouching for truncated bytes.
+        # tmp+rename keeps a concurrent reader from seeing a half-written body.
+        for target, payload in (
+            (os.path.join(base, "files", rel), data),
+            (os.path.join(base, "meta", rel + ".json"),
+             json.dumps({"size": int(size), "mtime": float(mtime)}).encode()),
+        ):
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            tmp = f"{target}.tmp.{os.getpid()}.{threading.get_ident()}"
+            with open(tmp, "wb") as fh:
+                fh.write(payload)
+            os.replace(tmp, target)
+            tmp = None
+    except Exception:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        return
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="http://127.0.0.1:7121")
@@ -395,13 +447,22 @@ def main():
               f"(A -> Laya+qwen, B -> Laya then qwen only if deep, C/gate -> structure-only)",
               flush=True)
 
-    def safe_read(rel, size, maxb):
+    # UA byte cache (see _ua_cache_write): active only when a worker pointed
+    # UYP_STATE_ROOT at its staging root, so the standalone CLI keeps its old
+    # behavior and never sprays cache dirs nobody reads.
+    ua_state_root = os.environ.get("UYP_STATE_ROOT") or None
+
+    def safe_read(rel, size, maxb, mtime=None):
         if size > READ_CAP:
             return None
         try:
-            return api(a.host, token,
+            data = api(a.host, token,
                        f"/read?grant={a.grant}&relpath={rel}&length={maxb}",
-                       binary=True).decode("utf-8", "replace")
+                       binary=True)
+            # Cache the raw bytes BEFORE the lossy replace-decode: the bridge
+            # needs byte-identical content, not the indexer's text view.
+            _ua_cache_write(ua_state_root, root, rel, data, size, mtime)
+            return data.decode("utf-8", "replace")
         except urllib.error.HTTPError as e:
             if e.code == 413:
                 return None
@@ -473,13 +534,13 @@ def main():
         if verdict == "skip":
             bump("rule_skip" if rule_verdict is not None else "laya_skip")
         elif verdict == "structure-only":
-            full = safe_read(rel, size, min(size, 262144))
+            full = safe_read(rel, size, min(size, 262144), f["mtime"])
             item["derived"] = structure_only_summary(full or "")
             if full is None:
                 item["derived"]["too_large"] = True
             bump("rule_structure" if rule_verdict is not None else "laya_structure")
         else:
-            full = safe_read(rel, size, min(size, 262144))
+            full = safe_read(rel, size, min(size, 262144), f["mtime"])
             if full is None:
                 item["derived"] = {"too_large": True, "size": size}
                 item["verdict"] = "structure-only"
