@@ -40,6 +40,16 @@ ASK_HITS = 6
 NOT_ENOUGH = "NOT_ENOUGH_INFO"
 OVERVIEW_WORDS = ("overview", "about", "purpose", "summary", "summarize", "summarise", "describe",
                   "introduction", "goal", "简介", "概述", "介绍", "总结", "用途", "做什么", "是什么")
+KEY_FILE_WORDS = ("key file", "main file", "important file", "core file", "entry point",
+                  "关键文件", "主要文件", "核心文件", "入口")
+# Ranking (2026-10-11): a bundled third-party project (e.g. an upstream repo
+# copied into the owner's folder) used to win lexical matches, so "what is
+# commontasks about" cited gbrain/UPSTREAM.md instead of the owner's code.
+EMBEDDED_WEIGHT = 0.35       # score multiplier for files in an embedded root ...
+EMBEDDED_MAX_HITS = 2        # ... and at most this many of them as sources,
+                             # unless the question names that embedded folder
+TIER_WEIGHT = {"A": 1.25, "B": 1.1}   # prefer the classifier's key files on near-ties
+OVERVIEW_KEY_FILES = 5
 STOPWORDS = frozenset((
     "the", "is", "are", "was", "be", "a", "an", "of", "to", "in", "on", "at", "and", "or", "for", "with",
     "what", "where", "which", "who", "how", "why", "when", "does", "do", "did", "this", "that", "these",
@@ -339,6 +349,53 @@ def _release(mine: str) -> None:
         pass
 
 
+def rank_hits(items: list[dict], question: str, names: set[str]) -> list[tuple[float, dict]]:
+    """Top lexical matches as (raw_score, item), owner's own files first.
+
+    * the project's own name is not evidence (every file "belongs" to it);
+    * the classifier's tier A/B files win near-ties;
+    * any match in the owner's own files outranks every match inside an
+      embedded third-party root; embedded matches only fill remaining slots
+      (down-weighted among themselves) and at most EMBEDDED_MAX_HITS of them -
+      unless the question names that folder, in which case they compete
+      normally ("how does gbrain search work").
+    """
+    lowered = question.lower()
+    name_tokens: set[str] = set()
+    for n in names:
+        name_tokens.update(tokenize(n))
+    tokens = [t for t in _question_tokens(question) if t not in name_tokens]
+    if not tokens:
+        return []
+    mentioned = {root for root in {i.get("embedded") for i in items if i.get("embedded")}
+                 if posixpath.basename(root.rstrip("/")).lower() in lowered}
+    scored = []
+    for item in items:
+        raw = lexical_score({"file": item["file"], "derived": {
+            "purpose": item["purpose"], "key_points": item.get("key_points") or [],
+            "components": item.get("components") or []}}, tokens)
+        if raw <= 0:
+            continue
+        weight = TIER_WEIGHT.get(item.get("tier") or "", 1.0)
+        demoted = bool(item.get("embedded")) and item["embedded"] not in mentioned
+        if demoted:
+            weight *= EMBEDDED_WEIGHT
+        scored.append((raw * weight, raw, 0 if item["purpose"] else 1, demoted, item))
+    # Own files first (demoted=False sorts before True), then weighted score.
+    scored.sort(key=lambda t: (t[3], -t[0], t[2], _sort_key(t[4])))
+    hits: list[tuple[float, dict]] = []
+    embedded_taken = 0
+    for _, raw, _, demoted, item in scored:
+        if demoted:
+            if embedded_taken >= EMBEDDED_MAX_HITS:
+                continue
+            embedded_taken += 1
+        hits.append((raw, item))
+        if len(hits) == ASK_HITS:
+            break
+    return hits
+
+
 def _miss(name: str) -> dict:
     return {"answer": f"I don't have enough information about that in the analyzed knowledge of {name}.",
             "sources": [], "confidence": "none"}
@@ -352,19 +409,13 @@ def ask(context: dict, project_id: str, question: str, *, member: str | None = N
     _, record, jobs, _ = resolved
     _, items = P.project_items(record, active=(jobs.get(project_id) or {}).get("status") in {"queued", "running"})
     name = record.get("root_name") or project_id
-    tokens = _question_tokens(question)
-    scored = []
-    for item in items:
-        value = lexical_score({"file": item["file"], "derived": {
-            "purpose": item["purpose"], "key_points": item.get("key_points") or [],
-            "components": item.get("components") or []}}, tokens)
-        if value > 0:
-            scored.append((value, 0 if item["purpose"] else 1, item))
-    scored.sort(key=lambda t: (-t[0], t[1], _sort_key(t[2])))
-    hits = [(value, item) for value, _, item in scored[:ASK_HITS]]
     lowered = question.lower()
     names = {name.lower(), project_id.lower()}
-    overview_question = any(word in lowered for word in OVERVIEW_WORDS) or any(n and n in lowered for n in names)
+    tokens = _question_tokens(question)  # also used below to filter gbrain blocks
+    hits = rank_hits(items, question, names)
+    key_question = any(word in lowered for word in KEY_FILE_WORDS)
+    overview_question = (key_question or any(word in lowered for word in OVERVIEW_WORDS)
+                         or any(n and n in lowered for n in names))
     blocks = []
     if member and role and gbrain is not False:
         wanted = [t for t in tokens if len(t) >= 3]
@@ -378,12 +429,17 @@ def ask(context: dict, project_id: str, question: str, *, member: str | None = N
         return _miss(name)
     overview = overview_from(record, items)
     context_blocks = [f"PROJECT: {name}\nOVERVIEW: {overview}"]
-    if not hits and overview_question:
-        for entry in key_files_from(items)[:4]:
-            context_blocks.append(f"FILE: {entry['file']}\nPURPOSE: {entry['purpose']}")
+    # Overview / key-file questions always see the owner's own key files first.
+    key_entries = key_files_from(items)[:OVERVIEW_KEY_FILES] if overview_question else []
+    for entry in key_entries:
+        context_blocks.append(f"KEY FILE ({entry['tier'] or 'ranked'}): {entry['file']}\nPURPOSE: {entry['purpose']}")
+    shown = {entry["file"] for entry in key_entries}
     for _, item in hits:
+        if item["file"] in shown:
+            continue
+        label = f"FILE (inside bundled third-party folder {item['embedded']}/)" if item.get("embedded") else "FILE"
         context_blocks.append(
-            f"FILE: {item['file']}\nPURPOSE: {item['purpose'] or '(structure only, no summary)'}\n"
+            f"{label}: {item['file']}\nPURPOSE: {item['purpose'] or '(structure only, no summary)'}\n"
             f"KEY_POINTS: {'; '.join(item.get('key_points') or [])}")
     for block in blocks:
         context_blocks.append(f"MEMORY ({block.get('brain') or 'brain'}): {' '.join(block['text'].split())[:600]}")
@@ -393,9 +449,8 @@ def ask(context: dict, project_id: str, question: str, *, member: str | None = N
         "directly and name file paths where relevant. At most 4 sentences, no preamble. "
         f"If the knowledge below does not answer the question, reply with exactly {NOT_ENOUGH} and nothing else. "
         "Answer in the question's language.\n\nQUESTION: " + question + "\n\n" + "\n---\n".join(context_blocks))
-    sources = [{"file": item["file"]} for _, item in hits]
-    if not sources and overview_question:
-        sources = [{"file": entry["file"]} for entry in key_files_from(items)[:4]]
+    ordered = [entry["file"] for entry in key_entries] + [item["file"] for _, item in hits]
+    sources = [{"file": f} for f in dict.fromkeys(ordered)]
     mine = _yield_then_mark()
     try:
         reply = (llm or ollama_chat)(prompt)
