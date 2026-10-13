@@ -4,6 +4,12 @@
 Jetson knowledge store and Studio. It wraps the existing `knowledge_search.py`
 proof of concept; the browser never calls Ollama or a Connector directly.
 
+The cross-service tool and event boundary for project automation is defined in
+[`UYP_TOOL_CATALOG_AND_AUTOMATION_CONTRACT_V1.md`](UYP_TOOL_CATALOG_AND_AUTOMATION_CONTRACT_V1.md).
+That contract is intentionally separate from this read-only HTTP surface:
+HomeHub owns tool admission, device capabilities, automation schedules, and
+audit; UYP owns the project tools and durable IndexJob events.
+
 ## Run
 
 ```bash

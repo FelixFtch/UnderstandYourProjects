@@ -4,15 +4,16 @@ import { useDashboardStore } from "../store";
 import type { GraphNode, KnowledgeGraph } from "@understand-anything/core/types";
 import { createStudioSnapshotFromGraph } from "../studio-contracts";
 import type { EvidenceRef, IndexJob, StudioSnapshot } from "../studio-contracts";
+import type { HomeAssistantProjection, HomeAutomationProjection, HomeDeviceCapability, ToolCatalogProjection } from "../studio-contracts";
 import PrivacyWorkspace, { SharingScopePanel } from "./PrivacyWorkspace";
 import GroupWorkspace from "./GroupWorkspace";
 import SourcesWorkspace from "./SourcesWorkspace";
 import CitationChip from "./CitationChip";
 import { parseTrailingCitation, splitInlineCitations } from "../utils/citations";
 import { PrivacyWorkspaceProvider } from "./privacy-model";
-import { searchProjectKnowledge, studioApiConfigured } from "../studio-api";
+import { fetchAutomationProjection, fetchHomeAssistantProjection, fetchToolCatalog, searchProjectKnowledge, studioApiConfigured } from "../studio-api";
 
-type StudioSection = "overview" | "projects" | "conversation" | "evidence" | "activity" | "collaborate" | "sources" | "privacy";
+type StudioSection = "overview" | "projects" | "conversation" | "evidence" | "activity" | "collaborate" | "sources" | "automations" | "privacy";
 
 interface ProjectStudioProps {
   onOpenGraph: () => void;
@@ -28,6 +29,7 @@ const sectionLabels: Record<StudioSection, { label: string; detail: string }> = 
   activity: { label: "Activity", detail: "Freshness and changes" },
   collaborate: { label: "Groups", detail: "Shared project context" },
   sources: { label: "Sources", detail: "Devices and connectors" },
+  automations: { label: "Automations", detail: "Schedules and device actions" },
   privacy: { label: "Privacy & audit", detail: "Trust and audit" },
 };
 
@@ -387,6 +389,71 @@ function SourcesSection({ snapshot }: { snapshot: StudioSnapshot }) {
   return <SectionFrame kicker="Sources & devices" title="Know which Jarvis can see which sources." description="Agent Boxes are the compute and identity boundary. Connectors are the individually scoped Mac, NAS, GitHub, or workstation sources that a Jetson may analyze. Server projections are displayed with their freshness and HomeHub boundary; local actions remain drafts until the authority returns a grant."><SourcesWorkspace sources={snapshot.sources} agentNodes={snapshot.agentNodes} connectors={snapshot.connectors} knowledgeItemsBySource={knowledgeItemsBySource} live={live} /><div className="studio-source-callout"><Icon name="shield" size={18} /><div><strong>HomeHub supplies the authority.</strong><p>UnderstandYourProjects displays discovery, pairing, grants, manifests, and health. It does not create a second ownership database or turn a local pair code into authorization.</p></div></div></SectionFrame>;
 }
 
+function providerLabel(state: HomeAssistantProjection["state"] | HomeAutomationProjection["state"]): string {
+  switch (state) {
+    case "current": return "Current";
+    case "stale": return "Stale projection";
+    case "partial": return "Partial projection";
+    case "offline": return "Offline";
+    case "revoked": return "Revoked";
+    case "contract_pending": return "Contract pending";
+    case "failed": return "Provider failed";
+    default: return "Unavailable";
+  }
+}
+
+function homeDeviceStateLabel(device: HomeDeviceCapability): string {
+  if (device.availability === "offline") return "Offline";
+  if (device.availability === "unknown") return "Unknown";
+  return device.state || "No state";
+}
+
+function actionLabel(action: string): string {
+  return action
+    .replace(/^home\./, "")
+    .replace(/\./g, " · ")
+    .replace(/_/g, " ")
+    .replace(/^./, (value: string) => value.toUpperCase());
+}
+
+function HomeDeviceCard({ device }: { device: HomeDeviceCapability }) {
+  const curatedActionIds = new Set(["home.light.turn_on", "home.light.turn_off", "home.light.set_brightness", "home.switch.turn_on", "home.switch.turn_off"]);
+  const actions = (device.actions ?? device.capabilities.filter((capability) => curatedActionIds.has(capability))) as string[];
+  return (
+    <article className="studio-home-device-card">
+      <div className="studio-home-device-icon"><Icon name={device.domain === "light" || device.domain === "switch" ? "spark" : "pulse"} size={16} /></div>
+      <div className="studio-home-device-copy">
+        <div className="studio-home-device-heading"><strong>{device.displayName}</strong><span className={`studio-status-pill ${device.freshness === "current" ? "studio-status-pill-success" : "studio-status-pill-neutral"}`}>{homeDeviceStateLabel(device)}</span></div>
+        <p>{device.roomId || "Unassigned room"} · {device.domain} · {device.freshness === "current" ? "fresh projection" : stateLabel(device.freshness)} · <code>{device.homeDeviceId}</code></p>
+        {actions && actions.length > 0 ? <div className="studio-home-device-actions" aria-label={`Allowed actions for ${device.displayName}`}>{actions.map((action) => <span key={action}>{actionLabel(action)}</span>)}</div> : <span className="studio-home-device-no-actions">No curated action published</span>}
+      </div>
+    </article>
+  );
+}
+
+function AutomationSection({ homeAssistant, automations, toolCatalog, loading }: { homeAssistant: HomeAssistantProjection | null; automations: HomeAutomationProjection | null; toolCatalog: ToolCatalogProjection | null; loading: boolean }) {
+  const providerReady = homeAssistant?.state === "current";
+  return (
+    <SectionFrame
+      kicker="HomeHub automations"
+      title="Schedules that know what they are allowed to touch."
+      description="HomeHub owns identity, policy, revocation, scheduling, and audit. Studio only displays the curated Home Assistant capabilities and automation summaries returned for this session."
+      action={<span className={`studio-chip ${providerReady ? "studio-chip-positive" : ""}`}><span className="studio-chip-dot" />{homeAssistant ? providerLabel(homeAssistant.state) : "Provider not published"}</span>}
+    >
+      <div className="studio-automation-boundary studio-panel">
+        <div className="studio-automation-boundary-icon"><Icon name="shield" size={18} /></div>
+        <div><span className="studio-section-kicker">Home Assistant capability boundary</span><h2>{homeAssistant ? `${homeAssistant.readOnly ? "Read-only" : "Curated"} device projection` : "No device projection yet"}</h2><p>{homeAssistant?.reason || "The HomeHub BFF has not published a Home Assistant projection. Studio will not invent entity names or show controls until that route returns an authorized capability list."}</p></div>
+        <dl className="studio-automation-provider-meta"><div><dt>Provider</dt><dd>{homeAssistant?.provider || "home_assistant"}</dd></div><div><dt>Control</dt><dd>{homeAssistant?.controlEnabled ? "Enabled by HomeHub" : "Read-only"}</dd></div><div><dt>Freshness</dt><dd>{homeAssistant ? providerLabel(homeAssistant.state) : "Unknown"}</dd></div></dl>
+      </div>
+      <div className="studio-automation-grid">
+        <section className="studio-panel studio-home-devices-panel"><div className="studio-panel-heading"><div><span className="studio-section-kicker">Curated capabilities</span><h2>Home devices</h2></div><span className="studio-panel-caption">{homeAssistant?.devices.length ?? 0} published</span></div>{loading && !homeAssistant ? <div className="studio-empty"><Icon name="pulse" size={18} /><p>Checking HomeHub device projection…</p></div> : homeAssistant?.devices.length ? <div className="studio-home-device-list">{homeAssistant.devices.map((device) => <HomeDeviceCard key={device.homeDeviceId} device={device} />)}</div> : <div className="studio-empty"><Icon name="folder" size={18} /><p>No Home Assistant devices are exposed to this Studio session yet.</p></div>}</section>
+        <section className="studio-panel studio-automation-list-panel"><div className="studio-panel-heading"><div><span className="studio-section-kicker">Durable scheduler</span><h2>Automation rules</h2></div><span className="studio-panel-caption">{automations?.automations.length ?? 0} visible</span></div>{automations?.automations.length ? <div className="studio-automation-list">{automations.automations.map((automation) => <article className="studio-automation-row" key={automation.automationId}><div className="studio-automation-row-top"><strong>{automation.name}</strong><span className={`studio-status-pill ${automation.state === "enabled" ? "studio-status-pill-success" : "studio-status-pill-neutral"}`}>{automation.state}</span></div><p>{automation.description || automation.actionLabels.join(" · ") || "No action summary published"}</p><div className="studio-automation-row-meta"><span>{automation.trigger.label}</span>{automation.trigger.nextRunAt && <time>Next {formatDateTime(automation.trigger.nextRunAt)}</time>}</div></article>)}</div> : <div className="studio-empty"><Icon name="pulse" size={18} /><p>{automations?.reason || "No HomeHub automation summaries are published for this session."}</p></div>}<div className="studio-automation-note"><Icon name="shield" size={14} /><span>Editing, enabling, and running automations will require a HomeHub grant and audit record. This view is read-only.</span></div></section>
+      </div>
+      <section className="studio-panel studio-tool-catalog-panel"><div className="studio-panel-heading"><div><span className="studio-section-kicker">Shared Agent Box contract</span><h2>Tools this session can discover</h2></div><span className="studio-panel-caption">{toolCatalog?.tools.length ?? 0} published</span></div>{toolCatalog?.tools.length ? <div className="studio-tool-catalog-list">{toolCatalog.tools.map((tool) => <article className="studio-tool-row" key={`${tool.toolId}@${tool.version}`}><div><strong>{tool.displayName}</strong><p>{tool.toolId} · {tool.owner} · {tool.operation}</p></div><div className="studio-tool-meta"><span>{tool.availability.state}</span><span>{tool.confirmation === "none" ? "No confirmation" : "HomeHub confirmation"}</span></div></article>)}</div> : <div className="studio-empty"><Icon name="spark" size={18} /><p>{toolCatalog?.reason || "Tool catalog is contract-pending. Jetson and phone clients will receive the same filtered descriptors after HomeHub publishes this session."}</p></div>}</section>
+    </SectionFrame>
+  );
+}
+
 function PrivacySection({ snapshot, onOpenConversations }: { snapshot: StudioSnapshot; onOpenConversations: () => void }) {
   const access = snapshot.access;
   return <SectionFrame kicker="Privacy & audit" title="Make the audience visible before the answer." description="Your data map sets the default layers. Each direct chat or group can add or remove specific items in a local draft; HomeHub remains the authority for identity, policy, revocation, and audit."><PrivacyWorkspace onOpenConversations={onOpenConversations} /><div className="studio-panel studio-trace-panel studio-privacy-trace"><div className="studio-trace-chain">{["Identity context", "HomeHub policy", "Project scope", "Retrieval", "Evidence answer"].map((step, index) => <div key={step} className="studio-trace-step"><span>{String(index + 1).padStart(2, "0")}</span><strong>{step}</strong>{index < 4 && <b>→</b>}</div>)}</div><div className="studio-trace-fields"><span><small>HomeHub status</small><strong>{access ? accessState(access) : "Awaiting AccessContext"}</strong></span><span><small>Audience</small><strong>{audienceLabel(access?.audience)}</strong></span><span><small>Grant epoch</small><strong>{access?.grantEpoch || "Not exposed"}</strong></span><span><small>Expires</small><strong>{access ? formatDateTime(access.expiresAt) : "Not exposed"}</strong></span><span><small>Audit trace</small><strong>{access?.auditId || "Not exposed"}</strong></span></div></div><div className="studio-source-callout"><Icon name="shield" size={18} /><div><strong>Visual trust is a projection, not a permission engine.</strong><p>{access ? `HomeHub supplied this context at audit ${access.auditId}; Studio does not infer authorization from its presence.` : "Raw source, revocation, and audit decisions remain server-side until HomeHub provides an AccessContext projection."}</p></div></div></SectionFrame>;
@@ -542,6 +609,26 @@ function ProjectStudioSurface({ onOpenGraph, snapshot: suppliedSnapshot }: Proje
   const graph = useDashboardStore((s) => s.graph);
   const [activeSection, setActiveSection] = useState<StudioSection>("overview");
   const [commandOpen, setCommandOpen] = useState(false);
+  const [homeAssistant, setHomeAssistant] = useState<HomeAssistantProjection | null>(null);
+  const [automations, setAutomations] = useState<HomeAutomationProjection | null>(null);
+  const [toolCatalog, setToolCatalog] = useState<ToolCatalogProjection | null>(null);
+  const [homeResourcesLoading, setHomeResourcesLoading] = useState(false);
+
+  useEffect(() => {
+    if (!studioApiConfigured()) return;
+    const controller = new AbortController();
+    setHomeResourcesLoading(true);
+    Promise.allSettled([
+      fetchHomeAssistantProjection(controller.signal),
+      fetchAutomationProjection(controller.signal),
+      fetchToolCatalog(controller.signal),
+    ]).then(([homeResult, automationResult, toolResult]) => {
+      if (homeResult.status === "fulfilled" && homeResult.value) setHomeAssistant(homeResult.value);
+      if (automationResult.status === "fulfilled" && automationResult.value) setAutomations(automationResult.value);
+      if (toolResult?.status === "fulfilled" && toolResult.value) setToolCatalog(toolResult.value);
+    }).finally(() => setHomeResourcesLoading(false));
+    return () => controller.abort();
+  }, []);
 
   if (!graph) {
     return <div className="studio-loading"><span className="studio-live-dot" />Loading project intelligence…</div>;
@@ -557,7 +644,7 @@ function ProjectStudioSurface({ onOpenGraph, snapshot: suppliedSnapshot }: Proje
         <button className="studio-workspace-switcher" type="button" onClick={() => setActiveSection("sources")}><span className="studio-workspace-avatar">J</span><span><strong>Current Jarvis box</strong><small>Jetson target · pairing draft</small></span><Icon name="chevron" size={14} /></button>
         <nav className="studio-nav" aria-label="Project studio navigation">
           {(Object.keys(sectionLabels) as StudioSection[]).map((section) => (
-            <button key={section} type="button" className={`studio-nav-item ${activeSection === section ? "is-active" : ""} ${section === "conversation" || section === "collaborate" || section === "privacy" ? "studio-nav-priority" : ""}`} onClick={() => setActiveSection(section)}><Icon name={section === "overview" ? "grid" : section === "projects" || section === "sources" ? "folder" : section === "evidence" ? "search" : section === "activity" ? "pulse" : section === "privacy" ? "shield" : section === "conversation" ? "message" : "users"} size={17} /><span>{sectionLabels[section].label}</span>{section === "overview" && <span className="studio-nav-badge">Now</span>}{section === "collaborate" && <span className="studio-nav-badge studio-nav-badge-warn">New</span>}</button>
+            <button key={section} type="button" className={`studio-nav-item ${activeSection === section ? "is-active" : ""} ${section === "conversation" || section === "collaborate" || section === "automations" || section === "privacy" ? "studio-nav-priority" : ""}`} onClick={() => setActiveSection(section)}><Icon name={section === "overview" ? "grid" : section === "projects" || section === "sources" ? "folder" : section === "evidence" ? "search" : section === "activity" || section === "automations" ? "pulse" : section === "privacy" ? "shield" : section === "conversation" ? "message" : "users"} size={17} /><span>{sectionLabels[section].label}</span>{section === "overview" && <span className="studio-nav-badge">Now</span>}{section === "collaborate" && <span className="studio-nav-badge studio-nav-badge-warn">New</span>}{section === "automations" && <span className="studio-nav-badge">Read-only</span>}</button>
           ))}
         </nav>
         <div className="studio-sidebar-bottom"><div className="studio-privacy-card"><span className="studio-privacy-icon"><Icon name="shield" size={15} /></span><div><strong>HomeHub boundary</strong><p>Identity and access are supplied by HomeHub.</p></div></div><button type="button" className="studio-help-link">Keyboard shortcuts <span>?</span></button></div>
@@ -565,7 +652,7 @@ function ProjectStudioSurface({ onOpenGraph, snapshot: suppliedSnapshot }: Proje
       <main className="studio-main">
         <header className="studio-topbar"><div className="studio-breadcrumb"><span>Workspace</span><b>/</b><strong>{sectionLabels[activeSection].label}</strong></div><button className="studio-global-search" type="button" onClick={() => setCommandOpen(true)}><Icon name="search" size={17} /><span>Ask about this project…</span><span className="studio-key">⌘ K</span></button><div className="studio-topbar-actions"><span className="studio-sync-status"><span className="studio-live-dot" />{stateLabel(snapshot.health.state)} knowledge</span><button className="studio-avatar" type="button" title="HomeHub access context" aria-label="HomeHub access context" onClick={() => setActiveSection("privacy")}>F</button></div></header>
         <StudioContextBar snapshot={snapshot} onOpenPrivacy={() => setActiveSection("privacy")} onOpenGroups={() => setActiveSection("collaborate")} />
-        {activeSection === "overview" ? <Overview graph={graph} snapshot={snapshot} onOpenGraph={onOpenGraph} onAsk={() => setActiveSection("conversation")} /> : activeSection === "projects" ? <ProjectsSection snapshot={snapshot} onOpenGraph={onOpenGraph} /> : activeSection === "conversation" ? <ConversationSection snapshot={snapshot} onOpenGraph={onOpenGraph} onOpenEvidence={() => setActiveSection("evidence")} onOpenPrivacy={() => setActiveSection("privacy")} /> : activeSection === "evidence" ? <EvidenceSection graph={graph} snapshot={snapshot} onOpenGraph={onOpenGraph} /> : activeSection === "activity" ? <ActivitySection snapshot={snapshot} /> : activeSection === "collaborate" ? <GroupsSection snapshot={snapshot} onOpenPrivacy={() => setActiveSection("privacy")} /> : activeSection === "sources" ? <SourcesSection snapshot={snapshot} /> : <PrivacySection snapshot={snapshot} onOpenConversations={() => setActiveSection("conversation")} />}
+        {activeSection === "overview" ? <Overview graph={graph} snapshot={snapshot} onOpenGraph={onOpenGraph} onAsk={() => setActiveSection("conversation")} /> : activeSection === "projects" ? <ProjectsSection snapshot={snapshot} onOpenGraph={onOpenGraph} /> : activeSection === "conversation" ? <ConversationSection snapshot={snapshot} onOpenGraph={onOpenGraph} onOpenEvidence={() => setActiveSection("evidence")} onOpenPrivacy={() => setActiveSection("privacy")} /> : activeSection === "evidence" ? <EvidenceSection graph={graph} snapshot={snapshot} onOpenGraph={onOpenGraph} /> : activeSection === "activity" ? <ActivitySection snapshot={snapshot} /> : activeSection === "collaborate" ? <GroupsSection snapshot={snapshot} onOpenPrivacy={() => setActiveSection("privacy")} /> : activeSection === "sources" ? <SourcesSection snapshot={snapshot} /> : activeSection === "automations" ? <AutomationSection homeAssistant={homeAssistant} automations={automations} toolCatalog={toolCatalog} loading={homeResourcesLoading} /> : <PrivacySection snapshot={snapshot} onOpenConversations={() => setActiveSection("conversation")} />}
       </main>
       {commandOpen && <CommandPalette graph={graph} onClose={() => setCommandOpen(false)} onOpenGraph={() => { setCommandOpen(false); onOpenGraph(); }} onOpenEvidence={() => { setCommandOpen(false); setActiveSection("evidence"); }} />}
     </div>
