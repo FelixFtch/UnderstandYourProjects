@@ -177,6 +177,117 @@ export interface ConnectorSummary {
   auditId?: string;
 }
 
+/**
+ * A deliberately small Home Assistant projection.  The Studio never receives
+ * an HA token, raw service name, or an arbitrary entity id.  HomeHub maps the
+ * stable `homeDeviceId` to the current HA entity and decides which actions
+ * may be exposed to this audience.
+ */
+export type HomeAssistantProviderState = "current" | "stale" | "partial" | "offline" | "revoked" | "unsupported" | "contract_pending" | "failed";
+
+export type HomeEntityDomain = "light" | "switch" | "sensor" | "binary_sensor" | "climate" | "media_player" | "other";
+
+export type CuratedHomeAction =
+  | "home.light.turn_on"
+  | "home.light.turn_off"
+  | "home.light.set_brightness"
+  | "home.switch.turn_on"
+  | "home.switch.turn_off";
+
+export interface HomeDeviceCapability {
+  homeDeviceId: string;
+  uniqueId?: string;
+  /** HomeHub-owned display label; it is never an authorization key. */
+  displayName: string;
+  roomId?: string;
+  domain: HomeEntityDomain;
+  state: string;
+  availability: "online" | "offline" | "unknown";
+  freshness: ConnectionState;
+  lastSeenAt?: string;
+  capabilities: string[];
+  /** Actions are an allowlisted projection, never raw HA service calls. */
+  actions?: CuratedHomeAction[];
+  source: { kind: "home_assistant"; uniqueId?: string };
+  projectionEpoch?: string;
+  auditId?: string;
+}
+
+export interface HomeAssistantProjection {
+  provider: "home_assistant";
+  state: HomeAssistantProviderState;
+  readOnly: boolean;
+  controlEnabled: boolean;
+  version?: string;
+  lastSyncedAt?: string;
+  reason?: string;
+  devices: HomeDeviceCapability[];
+  auditId?: string;
+}
+
+export type AutomationState = "enabled" | "disabled" | "paused" | "failed" | "unsupported";
+
+export type AutomationTriggerKind = "schedule" | "event" | "project_sync" | "manual";
+
+export interface AutomationTriggerSummary {
+  kind: AutomationTriggerKind;
+  label: string;
+  nextRunAt?: string;
+  recurrence?: string;
+}
+
+export interface HomeAutomationSummary {
+  automationId: string;
+  name: string;
+  description?: string;
+  state: AutomationState;
+  trigger: AutomationTriggerSummary;
+  actionLabels: string[];
+  lastRunAt?: string;
+  lastRunState?: "succeeded" | "failed" | "skipped" | "not_run";
+  source: "homehub";
+  readOnly: boolean;
+  auditId?: string;
+}
+
+export interface HomeAutomationProjection {
+  provider: "homehub";
+  state: HomeAssistantProviderState;
+  readOnly: boolean;
+  reason?: string;
+  updatedAt?: string;
+  automations: HomeAutomationSummary[];
+}
+
+export type ToolOwner = "homehub" | "uyp" | "approved_adapter";
+export type ToolKind = "knowledge" | "home" | "communication" | "system";
+export type ToolOperation = "query" | "command";
+export type ToolConfirmation = "none" | "owner_or_policy" | "explicit_owner";
+
+/** Normalized capability descriptor shared by Studio, phone, and Jetson. */
+export interface ToolDescriptor {
+  toolId: string;
+  version: string;
+  displayName: string;
+  description: string;
+  owner: ToolOwner;
+  kind: ToolKind;
+  operation: ToolOperation;
+  requiredScopes: string[];
+  confirmation: ToolConfirmation;
+  idempotency: "none" | "optional" | "required";
+  freshness?: { maxAgeSeconds: number };
+  availability: { state: HomeAssistantProviderState; checkedAt?: string; reason?: string };
+}
+
+export interface ToolCatalogProjection {
+  catalogEpoch?: string;
+  state: HomeAssistantProviderState;
+  tools: ToolDescriptor[];
+  updatedAt?: string;
+  reason?: string;
+}
+
 /** Public NandaTown metadata; it is not a HomeHub grant or a source listing. */
 export interface PeerJarvisSummary {
   peerId: string;
@@ -214,6 +325,10 @@ export interface StudioSnapshot {
   connectors?: ConnectorSummary[];
   peers?: PeerJarvisSummary[];
   access?: AccessContextProjection;
+  /** Optional Home Assistant capability projection supplied by HomeHub. */
+  homeAssistant?: HomeAssistantProjection;
+  /** Optional HomeHub-owned automation projection. */
+  automations?: HomeAutomationProjection;
   /** Identifies whether evidence came from the service or the graph-only fallback. */
   evidenceOrigin: "service" | "graph-fallback";
 }

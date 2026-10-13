@@ -928,6 +928,56 @@ body {
 .studio-message-user .studio-message-meta { color: #80651d; }
 .studio-message-user .studio-message-meta strong { color: #4e3d12; }
 .studio-message-avatar { color: #fff9e8; background: #7d6426; }
+
+/* HomeHub / Home Assistant capability projection. Controls stay absent until
+   HomeHub publishes an audited action grant; the cards are intentionally
+   useful as a read-only device registry in the meantime. */
+.studio-automation-boundary { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 14px; margin-bottom: 14px; background: #fff7d9; border-color: #ecd98b; }
+.studio-automation-boundary-icon { display: grid; place-items: center; width: 36px; height: 36px; color: #80651d; background: #fff0ad; border-radius: 10px; }
+.studio-automation-boundary h2 { margin: 6px 0 4px; font-size: 16px; }
+.studio-automation-boundary p { max-width: 620px; margin: 0; color: #756b55; font-size: 10px; line-height: 1.55; }
+.studio-automation-provider-meta { display: grid; grid-template-columns: repeat(3, minmax(80px, auto)); gap: 12px; margin: 2px 0 0; }
+.studio-automation-provider-meta div { display: grid; gap: 4px; }
+.studio-automation-provider-meta dt { color: #9a8b70; font-size: 8px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+.studio-automation-provider-meta dd { margin: 0; color: #6e591e; font-size: 10px; font-weight: 700; white-space: nowrap; }
+.studio-automation-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; }
+.studio-home-device-list, .studio-automation-list { display: grid; gap: 8px; margin-top: 14px; }
+.studio-home-device-card { display: grid; grid-template-columns: 32px minmax(0, 1fr); gap: 10px; padding: 11px; border: 1px solid #e5d9aa; border-radius: 11px; background: #fffdf7; }
+.studio-home-device-icon { display: grid; place-items: center; width: 32px; height: 32px; color: #80651d; background: #fff0ad; border-radius: 9px; }
+.studio-home-device-copy { min-width: 0; }
+.studio-home-device-heading, .studio-automation-row-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.studio-home-device-heading strong, .studio-automation-row-top strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.studio-home-device-copy p, .studio-automation-row p { margin: 4px 0 0; color: #756b55; font-size: 9px; line-height: 1.4; }
+.studio-home-device-copy code { color: #9a8b70; font-family: var(--font-mono); font-size: 8px; }
+.studio-home-device-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.studio-home-device-actions span { padding: 4px 6px; color: #80651d; background: #fff4bf; border: 1px solid #e5ca65; border-radius: 5px; font-size: 8px; }
+.studio-home-device-no-actions { display: inline-block; margin-top: 7px; color: #a08d63; font-size: 8px; }
+.studio-automation-row { padding: 11px; border: 1px solid #e5d9aa; border-radius: 11px; background: #fffdf7; }
+.studio-automation-row-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 9px; color: #80651d; font-size: 8px; }
+.studio-automation-row-meta time { color: #9a8b70; }
+.studio-automation-note { display: flex; align-items: flex-start; gap: 7px; margin-top: 14px; padding-top: 12px; border-top: 1px solid #eee2b7; color: #80651d; font-size: 9px; line-height: 1.45; }
+.studio-automation-note svg { flex: 0 0 auto; color: #c49a2e; }
+.studio-tool-catalog-panel { margin-top: 14px; }
+.studio-tool-catalog-list { display: grid; gap: 7px; margin-top: 14px; }
+.studio-tool-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 11px; border: 1px solid #e5d9aa; border-radius: 10px; background: #fffdf7; }
+.studio-tool-row strong { color: #4e3d12; font-size: 10px; }
+.studio-tool-row p { margin: 4px 0 0; color: #756b55; font-family: var(--font-mono); font-size: 8px; }
+.studio-tool-meta { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+.studio-tool-meta span { padding: 4px 6px; color: #80651d; background: #fff4bf; border: 1px solid #e5ca65; border-radius: 5px; font-size: 8px; white-space: nowrap; }
+
+@media (max-width: 950px) {
+  .studio-automation-boundary { grid-template-columns: auto minmax(0, 1fr); }
+  .studio-automation-provider-meta { grid-column: 2; grid-template-columns: repeat(3, minmax(70px, auto)); }
+  .studio-automation-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 600px) {
+  .studio-automation-boundary { grid-template-columns: auto minmax(0, 1fr); }
+  .studio-automation-provider-meta { grid-column: 1 / -1; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .studio-automation-provider-meta dd { white-space: normal; }
+  .studio-tool-row { align-items: flex-start; flex-direction: column; }
+  .studio-tool-meta { justify-content: flex-start; }
+}
 .studio-message-avatar-user { color: #4e3d12; background: #f2d24b; }
 .studio-answer-citations button,
 .studio-evidence-visibility { color: #80651d; background: #fff8db; border-color: #e5ca65; }

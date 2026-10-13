@@ -1,4 +1,12 @@
-import type { IndexJob, PeerJarvisSummary, SourceSummary, StudioSnapshot } from "./studio-contracts";
+import type {
+  HomeAssistantProjection,
+  HomeAutomationProjection,
+  ToolCatalogProjection,
+  IndexJob,
+  PeerJarvisSummary,
+  SourceSummary,
+  StudioSnapshot,
+} from "./studio-contracts";
 
 export interface KnowledgeSearchResult {
   ok?: boolean;
@@ -80,6 +88,14 @@ export interface SendGroupMessageResult {
   message?: string;
 }
 
+/** Read-only Home Assistant capability projection from the HomeHub BFF. */
+export type HomeAssistantProjectionResponse = HomeAssistantProjection | { homeAssistant: HomeAssistantProjection };
+
+/** HomeHub-owned automation projection; mutation endpoints are intentionally not exposed here yet. */
+export type HomeAutomationProjectionResponse = HomeAutomationProjection | { automations: HomeAutomationProjection };
+
+export type ToolCatalogProjectionResponse = ToolCatalogProjection | { catalog: ToolCatalogProjection };
+
 /**
  * The web client only talks to this adapter. It never calls Ollama, a
  * Connector, or HomeHub directly. In the static demo the adapter is absent and
@@ -125,6 +141,45 @@ export async function fetchNandatownPeers(signal?: AbortSignal): Promise<PeerJar
   if (apiBase() === null) return null;
   const projection = await request<NandatownPeersProjection>("/api/nandatown/peers", undefined, signal);
   return Array.isArray(projection?.peers) ? projection.peers : [];
+}
+
+function unwrapHomeAssistantProjection(body: HomeAssistantProjectionResponse): HomeAssistantProjection {
+  return "homeAssistant" in body ? body.homeAssistant : body;
+}
+
+function unwrapAutomationProjection(body: HomeAutomationProjectionResponse): HomeAutomationProjection {
+  return "automations" in body && !Array.isArray(body.automations)
+    ? body.automations
+    : body as HomeAutomationProjection;
+}
+
+function unwrapToolCatalog(body: ToolCatalogProjectionResponse): ToolCatalogProjection {
+  return "catalog" in body ? body.catalog : body;
+}
+
+/**
+ * GET /api/studio/home-devices — curated Home Assistant entities. The route
+ * belongs to HomeHub; a missing route is rendered as an unavailable provider,
+ * never as a fake device list.
+ */
+export async function fetchHomeAssistantProjection(signal?: AbortSignal): Promise<HomeAssistantProjection | null> {
+  if (apiBase() === null) return null;
+  const projection = await request<HomeAssistantProjectionResponse>("/api/studio/home-devices", undefined, signal);
+  return unwrapHomeAssistantProjection(projection);
+}
+
+/** GET /api/studio/automations — HomeHub scheduler summaries, read-only for now. */
+export async function fetchAutomationProjection(signal?: AbortSignal): Promise<HomeAutomationProjection | null> {
+  if (apiBase() === null) return null;
+  const projection = await request<HomeAutomationProjectionResponse>("/api/studio/automations", undefined, signal);
+  return unwrapAutomationProjection(projection);
+}
+
+/** GET /api/studio/tool-catalog — HomeHub-filtered descriptors for Studio/phone/Jetson. */
+export async function fetchToolCatalog(signal?: AbortSignal): Promise<ToolCatalogProjection | null> {
+  if (apiBase() === null) return null;
+  const projection = await request<ToolCatalogProjectionResponse>("/api/studio/tool-catalog", undefined, signal);
+  return unwrapToolCatalog(projection);
 }
 
 export async function fetchGroups(signal?: AbortSignal): Promise<GroupRecordProjection[] | null> {
