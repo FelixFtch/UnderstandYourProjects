@@ -166,7 +166,7 @@ export default function DevicesPage({ param, navigate }: FeaturePageProps) {
                     <EmptyState
                       icon="devices"
                       title="No sensors yet"
-                      body="Any device that speaks the Home Assistant MQTT discovery convention appears here automatically — power it on and it shows up."
+                      body="Approved device providers publish their discovery and availability here — ESP-NOW, MQTT, Matter, or another HomeHub adapter can appear after pairing."
                     />
                   </Card>
                 ) : null}
