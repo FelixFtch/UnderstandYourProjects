@@ -142,7 +142,7 @@ export function usePolling(fn, ms) {
         return () => window.clearInterval(id);
     }, [ms]);
 }
-export const SENSORS_POLL_MS = 20_000; // device cards + states
+export const SENSORS_POLL_MS = 10_000; // device cards + states
 export const HISTORY_POLL_MS = 60_000; // 24h charts inside a detail view
 /**
  * useResource + in-place polling. The interval fires reload() (which keeps the
@@ -153,4 +153,22 @@ export function usePolledResource(load, deps, ms) {
     const res = useResource(load, deps);
     usePolling(res.reload, ms);
     return res;
+}
+/** "5m ago" / "2h ago" for the newest reading of a device; "" when unknown.
+ * Shown on offline cards so a retained MQTT last-words value reads as history,
+ * not as a live reading. */
+export function lastSeenText(dev, states) {
+    let newest = 0;
+    for (const r of dev.readings ?? []) {
+        const lc = r.entity_id ? states.get(r.entity_id)?.last_changed : undefined;
+        if (!lc)
+            continue;
+        const t = Date.parse(lc.includes("T") ? lc : lc.replace(" ", "T") + "Z");
+        if (Number.isFinite(t) && t > newest)
+            newest = t;
+    }
+    if (!newest)
+        return "";
+    const min = Math.max(1, Math.round((Date.now() - newest) / 60_000));
+    return min >= 60 ? `${Math.floor(min / 60)}h ago` : `${min}m ago`;
 }
