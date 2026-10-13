@@ -282,3 +282,73 @@ export interface AnalyzeJob {
   progress: { done: number; total: number };
   log_tail: string[];
 }
+
+// ─§6b Sensors (sensor-hub via companion-api /api/sensors/*) ──────────────────
+// Shapes mirror the hub on the Jetson (MQTT discovery tree → HTTP :8895);
+// companion-api proxies them 1:1 behind member auth.
+export type SensorCategory = "air_quality" | "presence" | "checkin" | "meeting_audio" | "lighting" | "other";
+
+export interface SensorReading {
+  entity_id?: string;
+  label: string;
+  value: string;
+  unit?: string;
+  category?: SensorCategory;
+}
+
+export interface SensorDevice {
+  device_id: string;
+  name: string;
+  manufacturer?: string;
+  model?: string;
+  category: SensorCategory;
+  entities: string[];
+  entity_count: number;
+  online: boolean;
+  unavailable?: number;
+  stale?: number;
+  last_changed?: string | null;
+  readings: SensorReading[];
+  /** Virtual devices (e.g. the XVF3800 poller) instead of MQTT discovery. */
+  source?: string;
+  status_url?: string;
+  detail_note?: string;
+}
+
+export interface SensorPlaceholder {
+  category: SensorCategory;
+  note: string;
+}
+
+export interface SensorDeviceList {
+  devices: SensorDevice[];
+  count?: number;
+  placeholders?: SensorPlaceholder[];
+}
+
+/** HA-isomorphic state row. `state` is always a string; "unavailable" means offline. */
+export interface SensorStateRow {
+  entity_id: string;
+  state: string;
+  attributes: {
+    friendly_name?: string;
+    category?: SensorCategory;
+    device_id?: string;
+    unit_of_measurement?: string;
+    device_class?: string;
+    stale?: boolean;
+  };
+  last_changed?: string;
+}
+
+export interface SensorHistoryPoint {
+  ts: string;
+  state: string;
+}
+
+export interface SensorHistory {
+  entity_id: string;
+  hours: number;
+  count: number;
+  points: SensorHistoryPoint[];
+}

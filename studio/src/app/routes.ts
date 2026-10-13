@@ -17,7 +17,7 @@ export interface RouteDef {
 export const ROUTES: RouteDef[] = [
   { section: "jarvis", label: "Jarvis", hint: "Your 1:1 chat with Jarvis", page: lazy(() => import("../features/jarvis/JarvisPage")) },
   { section: "agents", label: "Agents", hint: "Contacts, direct and group chats", page: lazy(() => import("../features/agents/AgentsPage")) },
-  { section: "devices", label: "Devices", hint: "Computers, folders and project knowledge", page: lazy(() => import("../features/devices/DevicesPage")) },
+  { section: "devices", label: "Devices", hint: "Computers, sensors, folders and project knowledge", page: lazy(() => import("../features/devices/DevicesPage")) },
   { section: "data", label: "Data", hint: "Privacy rings, Home Assistant, scheduling", page: lazy(() => import("../features/data/DataPage")) },
   { section: "flow", label: "Flow", hint: "How Jarvis thinks: the agent flow", page: lazy(() => import("../features/flow/FlowPage")) },
 ];

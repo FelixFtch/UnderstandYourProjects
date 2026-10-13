@@ -1,4 +1,6 @@
 // Devices — device cards → folder hierarchy (tree + treemap) → project digest.
+// Sensors from the household sensor-hub live here too: their cards sit under
+// the computer cards, and a sensor opens its detail at #/devices/sensors/<id>.
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { FeaturePageProps } from "../../app/routes";
 import { useMe } from "../../app/session";
@@ -12,6 +14,9 @@ import { devicesData } from "./data";
 import { DeviceCards, DeviceCardsSkeleton } from "./DeviceCards";
 import { FolderTree, TreeLegend } from "./FolderTree";
 import { ProjectDigestView } from "./ProjectDigestView";
+import { SensorCards, SensorCardsSkeleton } from "./SensorCards";
+import { SensorDetailView } from "./SensorDetail";
+import { SENSORS_POLL_MS, sensorsData, sortSensorDevices, usePolling } from "./sensors";
 import { ancestors, buildForest, treemapCells, visibleRows } from "./tree";
 import { Treemap } from "./Treemap";
 
@@ -20,13 +25,29 @@ export default function DevicesPage({ param, navigate }: FeaturePageProps) {
   const owner = me?.role === "owner";
   const devices = useResource((s) => devicesData.devices(s), []);
   const projects = useResource((s) => devicesData.projects(s), []);
+  const sensors = useResource((s) => sensorsData.devices(s), []);
+  const sensorStates = useResource((s) => sensorsData.states(s), []);
   const forest = useMemo(() => buildForest(projects.data), [projects.data]);
   const [deviceFilter, setDeviceFilter] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<string> | null>(null);
   const [dialog, setDialog] = useState<{ open: boolean; path?: string }>({ open: false });
 
-  const selected = param ?? null;
+  // #/devices/<project_id> opens a digest; #/devices/sensors/<device_id> a sensor.
+  const sensorId = param?.startsWith("sensors/") ? param.slice("sensors/".length) || null : null;
+  const selected = sensorId ? null : param ?? null;
   const open = useCallback((id: string | null) => navigate(id ? `#/devices/${encodeURIComponent(id)}` : "#/devices"), [navigate]);
+  const openSensor = useCallback((id: string | null) => navigate(id ? `#/devices/sensors/${encodeURIComponent(id)}` : "#/devices"), [navigate]);
+
+  // Poll live sensors in place while this section is visible: reload() keeps the
+  // previous data mounted, so nothing remounts and no open state is lost.
+  usePolling(() => {
+    if (selected) return; // a project digest is open; the sensor column isn't visible
+    sensors.reload();
+    sensorStates.reload();
+  }, SENSORS_POLL_MS);
+
+  const sensorList = useMemo(() => sortSensorDevices(sensors.data?.devices ?? []), [sensors.data]);
+  const statesMap = useMemo(() => new Map((sensorStates.data ?? []).map((r) => [r.entity_id, r])), [sensorStates.data]);
 
   const { state: job, start, clear } = useAnalyzeJob(() => projects.reload());
 
@@ -90,7 +111,14 @@ export default function DevicesPage({ param, navigate }: FeaturePageProps) {
         <section className="@container min-h-0 min-w-0 overflow-y-auto">
           {job && !dialog.open ? <JobBanner job={job} onOpen={() => setDialog({ open: true })} onDismiss={clear} onOpenProject={open} /> : null}
 
-          {selected ? (
+          {sensorId ? (
+            <SensorDetailView
+              id={sensorId}
+              sensors={sensors}
+              states={sensorStates}
+              onBack={() => openSensor(null)}
+            />
+          ) : selected ? (
             <ProjectDigestView
               key={selected}
               id={selected}
@@ -121,6 +149,36 @@ export default function DevicesPage({ param, navigate }: FeaturePageProps) {
                   <Card><EmptyState icon="devices" title="No devices yet" body="Pair a computer's connector (UYP connector on the Mac) and it appears here." /></Card>
                 ) : null}
                 {devices.data?.devices.length ? <DeviceCards devices={devices.data.devices} selected={deviceFilter} onSelect={setDeviceFilter} /> : null}
+              </section>
+
+              <section aria-labelledby="sensors-h" className="space-y-3">
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <div>
+                    <h2 id="sensors-h" className="text-[13px] font-semibold text-ink">Sensors</h2>
+                    <p className="text-[12.5px] text-muted">Live household readings from the sensor hub — air quality, presence, meeting audio. Updates every 20 s.</p>
+                  </div>
+                  {sensors.data ? <span className="text-[12px] text-muted">{plural(sensorList.length, "device")}</span> : null}
+                </div>
+                {sensors.loading && !sensors.data ? <SensorCardsSkeleton /> : null}
+                {sensors.error && !sensors.data ? <ErrorState compact error={sensors.error} service="Sensor hub" title="Couldn't load sensors" onRetry={sensors.reload} /> : null}
+                {sensors.data && sensors.data.devices.length === 0 && !(sensors.data.placeholders ?? []).length ? (
+                  <Card>
+                    <EmptyState
+                      icon="devices"
+                      title="No sensors yet"
+                      body="Any device that speaks the Home Assistant MQTT discovery convention appears here automatically — power it on and it shows up."
+                    />
+                  </Card>
+                ) : null}
+                {sensorList.length || (sensors.data?.placeholders ?? []).length ? (
+                  <SensorCards
+                    devices={sensorList}
+                    placeholders={sensors.data?.placeholders ?? []}
+                    states={statesMap}
+                    openId={null}
+                    onOpen={openSensor}
+                  />
+                ) : null}
               </section>
 
               <section aria-labelledby="hier-h" className="space-y-3">

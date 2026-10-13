@@ -1,6 +1,9 @@
 // Offline fixtures for Devices (VITE_STUDIO_FIXTURES=true only).
 import { ApiError } from "../../api/client";
-import type { AnalyzeJob, AnalyzeResult, Device, ProjectAnswer, ProjectDigest, ProjectList, ProjectSummary, ProjectTreeNode } from "../../api/contracts";
+import type {
+  AnalyzeJob, AnalyzeResult, Device, ProjectAnswer, ProjectDigest, ProjectList, ProjectSummary, ProjectTreeNode,
+  SensorDeviceList, SensorHistoryPoint, SensorStateRow,
+} from "../../api/contracts";
 import { basename } from "../../design/format";
 import { buildForest, predictRelation } from "./tree";
 
@@ -191,4 +194,117 @@ export async function job(jobId: string): Promise<AnalyzeJob> {
       : p));
   }
   return j.job;
+}
+
+// ── sensors (sensor-hub on the Jetson, via companion-api /api/sensors/*) ─────
+const AIR_ENTITIES = [
+  ["sensor.air_station_co2", "CO2", "ppm", 497, 120],
+  ["sensor.air_station_tvoc", "TVOC", "ppm", 0.351, 0.25],
+  ["sensor.air_station_temperature", "Indoor Temperature", "°C", 25.1, 3],
+  ["sensor.air_station_humidity", "Indoor Humidity", "%", 36.9, 8],
+] as const;
+
+const SENSOR_DEVICES: SensorDeviceList = {
+  count: 4,
+  devices: [
+    {
+      device_id: "air_station", name: "Air Station", manufacturer: "Seeed", model: "XIAO ESP32C3 + DHT20 + SCD41",
+      category: "air_quality", entities: AIR_ENTITIES.map(([id]) => id), entity_count: 4, online: true,
+      unavailable: 0, stale: 0, last_changed: ago(0.02),
+      readings: AIR_ENTITIES.map(([entity_id, label, unit, base]) => ({
+        entity_id, label, value: String(base), unit, category: "air_quality" as const,
+      })),
+    },
+    {
+      device_id: "room_radar", name: "ESP32-S3 WiFi CSI Room Radar", manufacturer: "Felix Lab",
+      model: "ESP32-S3 CSI presence", category: "presence",
+      entities: ["binary_sensor.room_radar_person", "sensor.room_radar_score"],
+      entity_count: 2, online: true, unavailable: 0, stale: 1, last_changed: ago(0.05),
+      readings: [{ entity_id: "binary_sensor.room_radar_person", label: "Person State", value: "on", category: "presence" }],
+    },
+    {
+      device_id: "xvf3800_satellites", name: "XVF3800 语音卫星", manufacturer: "XMOS", model: "XVF3800",
+      category: "meeting_audio", entities: [], entity_count: 0, online: true, source: "http-status-poll",
+      status_url: "http://127.0.0.1:8766/phase-b/status", last_changed: ago(0.01),
+      readings: [
+        { label: "链路状态", value: "listening" },
+        { label: "在线卫星", value: "2", unit: "台" },
+        { label: "覆盖房间", value: "room_kitchen、room_living_room" },
+      ],
+      detail_note: "XVF3800 在线状态来自 127.0.0.1:8766/phase-b/status；最近语音活动时间该端点暂不提供，数据源待接。",
+    },
+    {
+      device_id: "door_bridge_000000", name: "Door Bridge", category: "other",
+      entities: ["binary_sensor.door_bridge_locked", "sensor.door_bridge_rssi"], entity_count: 2,
+      online: false, unavailable: 2, stale: 0, last_changed: ago(26),
+      readings: [{ entity_id: "binary_sensor.door_bridge_locked", label: "Door Locked", value: "unavailable" }],
+    },
+  ],
+  placeholders: [
+    { category: "checkin", note: "Check-in devices will arrive through Home Assistant; this category is reserved for them." },
+    { category: "lighting", note: "Waiting for the StampPLC firmware to dual-publish MQTT (~10 lines of ESPHome YAML); lights still speak native API today." },
+  ],
+};
+
+const SENSOR_STATES: SensorStateRow[] = [
+  ...AIR_ENTITIES.map(([entity_id, label, unit, base]): SensorStateRow => ({
+    entity_id,
+    state: String(base),
+    attributes: { friendly_name: label, category: "air_quality", device_id: "air_station", unit_of_measurement: unit },
+    last_changed: ago(0.02),
+  })),
+  {
+    entity_id: "binary_sensor.room_radar_person", state: "on",
+    attributes: { friendly_name: "Person State", category: "presence", device_id: "room_radar" },
+    last_changed: ago(0.05),
+  },
+  {
+    entity_id: "sensor.room_radar_score", state: "0.83",
+    attributes: { friendly_name: "Presence Score", category: "presence", device_id: "room_radar", stale: true },
+    last_changed: ago(1.4),
+  },
+  {
+    entity_id: "binary_sensor.door_bridge_locked", state: "unavailable",
+    attributes: { friendly_name: "Door Locked", category: "other", device_id: "door_bridge_000000", device_class: "lock" },
+    last_changed: ago(26),
+  },
+];
+
+export async function sensorDevices(): Promise<SensorDeviceList> {
+  await wait(380);
+  return SENSOR_DEVICES;
+}
+
+export async function sensorStates(): Promise<SensorStateRow[]> {
+  await wait(380);
+  return SENSOR_STATES;
+}
+
+/** Deterministic 24h series: numeric sensors get a slow wave, presence gets occupied spans. */
+export async function sensorHistory(entityId: string): Promise<{ points: SensorHistoryPoint[]; count: number }> {
+  await wait(300);
+  const now = Date.now();
+  const point = (minutesAgo: number, state: string): SensorHistoryPoint => ({
+    ts: new Date(now - minutesAgo * 60_000).toISOString(), state,
+  });
+  if (entityId.startsWith("binary_sensor.")) {
+    const points: SensorHistoryPoint[] = [];
+    let state = "off";
+    for (let m = 24 * 60; m >= 0; m -= 5) {
+      // occupied 09:00-10:30-ish and 15:00-16:00-ish windows, open tail
+      const hour = (new Date(now - m * 60_000).getHours());
+      state = (hour >= 9 && hour < 11) || hour === 15 ? "on" : "off";
+      points.push(point(m, state));
+    }
+    points.push(point(0, "on"));
+    return { points, count: points.length };
+  }
+  const base = parseFloat(SENSOR_STATES.find((r) => r.entity_id === entityId)?.state ?? "1") || 1;
+  const wave = Number.isInteger(base) ? 0.08 : 0.15; // ppm drifts less than small values
+  const points: SensorHistoryPoint[] = [];
+  for (let m = 24 * 60; m >= 0; m -= 15) {
+    const v = base * (1 + wave * Math.sin((m / 180) * Math.PI));
+    points.push(point(m, v.toFixed(Number.isInteger(base) ? 1 : 3)));
+  }
+  return { points, count: points.length };
 }
