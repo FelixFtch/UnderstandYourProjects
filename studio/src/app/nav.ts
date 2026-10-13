@@ -4,6 +4,7 @@ const ICONS: Record<string, IconName> = {
   jarvis: "chat",
   agents: "agents",
   devices: "devices",
+  understanding: "brain",
   data: "data",
   flow: "flow",
 };

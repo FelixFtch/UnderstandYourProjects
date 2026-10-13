@@ -74,7 +74,8 @@ class GroupChangesTests(unittest.TestCase):
             {"id": "e_5", "ts": 5, "grant": "g1", "relpath": "a.py", "kind": "modified"},
         ]
         buckets = incremental.group_changes(events, {})
-        self.assertEqual(buckets, {"g1": {"lastEventId": 5, "changed": ["a.py"], "deleted": 0}})
+        self.assertEqual(buckets, {"g1": {"lastEventId": 5, "changed": ["a.py"],
+                                            "deleted_files": [], "deleted": 0}})
 
     def test_parse_event_id_is_fail_closed(self):
         self.assertEqual(incremental.parse_event_id("e_42"), 42)
@@ -128,6 +129,8 @@ class ReconcileTestCase(unittest.TestCase):
         self.assertEqual(job["metadata"]["changed_files"], ["src/a.py", "src/new.py"])
         self.assertEqual(job["metadata"]["changedCount"], 2)
         self.assertEqual(job["metadata"]["deletedCount"], 2)
+        self.assertEqual(job["metadata"]["deleted_files"], ["src/b.py", "src/gone.py"])
+        self.assertTrue(job["metadata"]["full_reconcile"])
         self.assertEqual(job["metadata"]["limit"], 0)
         self.assertTrue(job["metadata"]["incremental"])
         # cursor advanced past the consumed wave
@@ -223,15 +226,20 @@ class ReconcileTestCase(unittest.TestCase):
                                          "g_never_indexed": "e_6",
                                          "g_revoked": "e_7"})
 
-    def test_deletes_only_advance_cursor_without_a_job(self):
+    def test_deletes_only_enqueue_full_reconcile_job(self):
         deletes = [
             {"id": "e_1", "ts": 1, "grant": "g1", "relpath": "src/gone.py", "kind": "deleted"},
         ]
         summary = self.reconcile(deletes)
-        self.assertEqual(summary["enqueued"], [])
-        self.assertEqual(summary["dropped"], [{"grant": "g1", "reason": "deletes_only"}])
+        self.assertEqual(len(summary["enqueued"]), 1)
+        self.assertEqual(summary["enqueued"][0]["changed"], 0)
+        self.assertEqual(summary["enqueued"][0]["deleted"], 1)
+        job = self.store.get(summary["enqueued"][0]["jobId"])
+        self.assertTrue(job["metadata"]["full_reconcile"])
+        self.assertEqual(job["metadata"]["changed_files"], [])
+        self.assertEqual(job["metadata"]["deleted_files"], ["src/gone.py"])
         self.assertEqual(self.cursor(), {"g1": "e_1"})
-        self.assertEqual(len(self.store.list()), 1)
+        self.assertEqual(len(self.store.list()), 2)
 
     def test_fetch_failure_is_fail_closed(self):
         def broken_fetch(since):
@@ -343,11 +351,9 @@ class ReconcileEndToEndTests(unittest.TestCase):
         self.assertEqual(self.store.get(job_id)["phase"], "published")
 
         command = captured[0]
-        self.assertIn("--changes-file", command)
-        changes_path = Path(command[command.index("--changes-file") + 1])
-        # the deleted and unknown-grant paths never reach the worker
-        self.assertEqual(json.loads(changes_path.read_text(encoding="utf-8")),
-                         ["src/a.py", "src/new.py"])
+        # The wave contains a deletion, so IndexJob performs a full manifest
+        # reconciliation. A changed-file-only pass would retain gone.py.
+        self.assertNotIn("--changes-file", command)
         # the full-scan prior job is terminal: it must not have been re-run
         self.assertEqual(len(captured), 1)
 

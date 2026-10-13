@@ -181,6 +181,41 @@ class ProjectsApiTests(FixtureMixin, ConnectorMixin, unittest.TestCase):
         status, body = self.request("GET", "/api/projects/ghost")
         self.assertEqual(status, 404)
 
+    def test_graph_is_caller_scoped_bounded_and_source_redacted(self):
+        graph_path = self.root / "state" / "commontasks" / "ua" / "knowledge-graph.json"
+        graph = json.loads(graph_path.read_text(encoding="utf-8"))
+        graph["nodes"].append({
+            "id": "article:notes", "type": "article", "name": "notes",
+            "filePath": "docs/notes.md", "knowledgeMeta": {"content": "private source bytes"},
+            "summary": "A generated note", "tags": [], "complexity": "simple",
+        })
+        graph["nodes"].extend({
+            "id": f"file:generated/{index}.py", "type": "file", "name": f"generated-{index}",
+            "filePath": f"generated/{index}.py",
+        } for index in range(505))
+        graph["edges"].extend({
+            "source": "file:src/app.py", "target": f"file:generated/{index}.py", "type": "imports",
+        } for index in range(1005))
+        graph_path.write_text(json.dumps(graph), encoding="utf-8")
+
+        status, body = self.request("GET", "/api/projects/commontasks/graph")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["projectId"], "commontasks")
+        self.assertEqual(body["counts"]["nodes"], 510)
+        self.assertEqual(body["counts"]["edges"], 1008)
+        self.assertEqual(len(body["nodes"]), query_api.MAX_GRAPH_NODES)
+        self.assertEqual(len(body["edges"]), query_api.MAX_GRAPH_EDGES)
+        self.assertTrue(body["truncated"]["nodes"] and body["truncated"]["edges"])
+        article = next(node for node in body["nodes"] if node["id"] == "article:notes")
+        self.assertNotIn("content", article.get("knowledgeMeta", {}))
+        self.assertEqual(set(body), {"projectId", "version", "kind", "project", "nodes", "edges",
+                                     "layers", "tour", "counts", "truncated"})
+
+        # HomeHub's per-member context is the authorization boundary; a member
+        # without this project sees an opaque 404, just like the digest route.
+        status, body = self.request("GET", "/api/projects/commontasks/graph", token="tok-ly")
+        self.assertEqual((status, body["error"]), (404, "project_not_found"))
+
     def test_ask_endpoint(self):
         calls = []
 

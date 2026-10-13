@@ -613,6 +613,26 @@ class IndexJobTests(unittest.TestCase):
         self.assertEqual(result["phase"], "published")
         self.assertNotIn("--changes-file", captured[0])
 
+    def test_delete_wave_forces_full_reconcile_even_with_changed_paths(self):
+        # A delete cannot be represented in --changes-file: the missing path
+        # would never be visited and its old KnowledgeItem would survive the
+        # candidate publish.  The reconcile metadata therefore wins over the
+        # changed subset and asks the worker to rebuild the current manifest.
+        job = self.store.create(
+            project_id="demo", source_id="connector:demo", grant_id="grant-1", grant_epoch="g1",
+            metadata={"limit": 0, "incremental": True,
+                      "changed_files": ["src/new.py"],
+                      "deleted_files": ["src/gone.py"],
+                      "full_reconcile": True})
+        captured = []
+        with patch.object(index_job, "connector_call",
+                          return_value={"root_name": "demo", "total": 5, "source_epoch": "e1"}):
+            result = index_job.run_job(
+                self.store, job["jobId"],
+                **self.worker_kwargs(runner=self.publishing_runner(captured), ua_runner=self.fake_ua))
+        self.assertEqual(result["phase"], "published")
+        self.assertNotIn("--changes-file", captured[0])
+
     def test_run_pending_cli_reconciles_events_before_scheduling(self):
         import incremental
 

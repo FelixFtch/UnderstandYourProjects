@@ -681,7 +681,12 @@ def run_job(
     # worker, while the standalone CLI retains its 20-file default.
     command.extend(["--limit", str(limit)])
     changed_files = metadata.get("changed_files")
-    if isinstance(changed_files, list) and changed_files:
+    # A deletion cannot be represented by --changes-file: index_project would
+    # never visit the missing relpath and the stale KnowledgeItem would be
+    # copied into the next published version.  Incremental reconciliation
+    # marks such waves as full_reconcile, so the candidate is rebuilt from the
+    # current Connector manifest and the atomic publish drops absent files.
+    if (not metadata.get("full_reconcile")) and isinstance(changed_files, list) and changed_files:
         # P8 incremental reconcile pinned the exact relpaths that changed.
         # The list travels as a file inside the job's staging root rather
         # than argv: hundreds of relpaths do not belong on a command line,

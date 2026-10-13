@@ -261,6 +261,20 @@ export interface ProjectDigest {
   generated_at: string;
 }
 
+/** Bounded UA structure projection returned through the authenticated Studio BFF. */
+export interface ProjectGraph {
+  projectId: string;
+  version?: string;
+  kind?: "codebase" | "knowledge" | "design" | string;
+  project: Record<string, unknown>;
+  nodes: Array<Record<string, unknown>>;
+  edges: Array<Record<string, unknown>>;
+  layers: Array<Record<string, unknown>>;
+  tour: Array<Record<string, unknown>>;
+  counts: { nodes: number; edges: number; layers: number; tour: number };
+  truncated: { nodes: boolean; edges: boolean; layers: boolean; tour: boolean };
+}
+
 export interface ProjectAnswer {
   answer: string;
   sources: Array<{ file: string }>;

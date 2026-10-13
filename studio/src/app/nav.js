@@ -2,6 +2,7 @@ const ICONS = {
     jarvis: "chat",
     agents: "agents",
     devices: "devices",
+    understanding: "brain",
     data: "data",
     flow: "flow",
 };

@@ -137,6 +137,16 @@ export async function project(id: string): Promise<ProjectDigest> {
   };
 }
 
+/** Bounded graph-shaped fixture used only when VITE_STUDIO_FIXTURES=true. */
+export async function projectGraph(id: string) {
+  const d = await project(id);
+  const node = (name: string, type: string, file: string) => ({ id: `${id}:${name}`, name, type, filePath: file, summary: `${name} in ${file}` });
+  const nodes = d.graph.top_nodes.map((n) => node(n.name, n.type, n.file));
+  const layers = d.graph.layers.map((layer, i) => ({ id: `${id}:layer:${i}`, name: layer.name, description: `${layer.files} files grouped by the project digest`, nodeIds: nodes.slice(0, Math.max(1, Math.ceil(nodes.length / d.graph.layers.length))).map((n) => n.id) }));
+  const edges = nodes.slice(1).map((n, i) => ({ source: nodes[i].id, target: n.id, type: "relates_to", description: "Extracted relation" }));
+  return { projectId: id, version: "fixture", kind: "codebase", project: { name: d.project.root_name, languages: d.project.stats.languages }, nodes, edges, layers, tour: layers.slice(0, 4).map((layer, i) => ({ order: i + 1, title: `Start with ${layer.name}`, description: layer.description, nodeIds: layer.nodeIds })), counts: { nodes: nodes.length, edges: edges.length, layers: layers.length, tour: Math.min(4, layers.length) }, truncated: { nodes: false, edges: false, layers: false, tour: false } };
+}
+
 export async function ask(id: string, question: string): Promise<ProjectAnswer> {
   await wait(1100);
   if (/fail|error/i.test(question)) throw new ApiError(503, "knowledge-service (gbrain) unreachable");
