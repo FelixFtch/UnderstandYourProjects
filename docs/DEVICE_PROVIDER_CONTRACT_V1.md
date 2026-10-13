@@ -51,6 +51,14 @@ The first adapters stay intentionally narrow:
 - `espnow_presence`: read-only online, area, and presence state. It cannot
   expose light-control operations.
 
+The existing kitchen and living-room lights are a separate first-version
+compatibility slice. They are exposed as HomeHub-owned light records with
+`read_state`, `turn_on`, and `turn_off`; the adapter may call the currently
+validated HomeHub light executor while the physical downstream ESP32/ESP-NOW
+transport is being identified. This keeps the public interface stable without
+claiming that Jetson already sends raw ESP-NOW frames. See
+[ESP_NOW_LIGHTS_FIRST_SLICE.md](./ESP_NOW_LIGHTS_FIRST_SLICE.md).
+
 The existing HomeHub action IDs remain the public vocabulary:
 `home.device.list`, `home.device.read_state`, `home.light.turn_on`,
 `home.light.turn_off`, and `home.sensor.read`. HomeHub decides whether a
