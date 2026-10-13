@@ -7,7 +7,7 @@ import type { SensorCategory, SensorDevice, SensorPlaceholder, SensorStateRow } 
 import { relativeTime } from "../../design/format";
 import { Icon, type IconName } from "../../design/icons";
 import { Chip, cx, Skeleton, StatusDot, type Tone } from "../../design/primitives";
-import { isPositive, pickPresenceHero, readingStatus, SENSOR_CATEGORY_LABEL } from "./sensors";
+import { isPositive, lastSeenText, pickPresenceHero, readingStatus, SENSOR_CATEGORY_LABEL } from "./sensors";
 
 const CATEGORY_ICON: Record<SensorCategory, IconName> = {
   air_quality: "activity",
@@ -91,7 +91,11 @@ export function SensorCards({ devices, placeholders, states, openId, onOpen }: {
                 ) : (
                   <span className="flex items-center gap-1.5">
                     <StatusDot tone={dev.online ? "ok" : "err"} pulse={dev.online} />
-                    <span>{dev.online ? "Online" : "Offline"}</span>
+                    <span>{(() => {
+                      if (dev.online) return "Online";
+                      const ago = lastSeenText(dev, states);
+                      return ago ? `Offline · last data ${ago}` : "Offline";
+                    })()}</span>
                   </span>
                 )}
                 <span className="ml-auto flex items-center gap-1.5">
