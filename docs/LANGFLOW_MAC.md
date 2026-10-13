@@ -15,6 +15,10 @@ still the only flow executor. Langflow does not become an identity, policy,
 grant, revocation, audit, or project-file authority; those boundaries remain
 with HomeHub and UnderstandYourProjects respectively.
 
+For the block-by-block explanation of the Studio and Voice canvases, including
+the Turn bundle, node slicing, execution order, and authority boundaries, see
+the canonical [HomeHub LangFlow flow guide](https://github.com/FelixFtch/jarvis-homehub/blob/main/docs/architecture/LANGFLOW_FLOW_GUIDE.md).
+
 ## Start it
 
 Docker Desktop must be running. The launcher creates an SSH tunnel using the
