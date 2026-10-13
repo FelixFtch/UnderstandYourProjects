@@ -155,7 +155,7 @@ export default function DevicesPage({ param, navigate }: FeaturePageProps) {
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
                   <div>
                     <h2 id="sensors-h" className="text-[13px] font-semibold text-ink">Sensors</h2>
-                    <p className="text-[12.5px] text-muted">Live household readings from the sensor hub — air quality, presence, meeting audio. Updates every 20 s.</p>
+                    <p className="text-[12.5px] text-muted">Live household readings from the sensor hub — air quality, presence, meeting audio. Updates every 10 s.</p>
                   </div>
                   {sensors.data ? <span className="text-[12px] text-muted">{plural(sensorList.length, "device")}</span> : null}
                 </div>

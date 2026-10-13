@@ -795,6 +795,45 @@ def scoped_items(context: dict | None) -> list[dict]:
     return [item for values in grouped_items().values() for item in values if scope_allows(context, item)]
 
 
+def search_citations(result_sources: list | None, scoped: list[dict], context: dict) -> list[dict]:
+    """Project search sources into the stable AGENTFLOW section-5 shape.
+
+    The HTTP Query API is the authority for browser and HTTP-MCP callers, so
+    citation projection belongs here rather than only in the direct MCP
+    adapter.  ``scoped`` has already passed the HomeHub project/source filter;
+    this function only joins returned source paths back to those authorized
+    items and never widens the result set.
+    """
+    by_file: dict[str, dict] = {}
+    for item in scoped:
+        by_file.setdefault(str(item.get("file") or ""), item)
+    citations = []
+    for source in result_sources or []:
+        if not isinstance(source, dict):
+            continue
+        path = str(source.get("file") or "")
+        item = by_file.get(path)
+        if item is None:
+            continue
+        root = item_root(str(item.get("_out_path", "")))
+        derived = item.get("derived") or {}
+        citations.append({
+            "projectId": f"project:{root}",
+            "sourceId": f"connector:{root}",
+            "file": path,
+            "match": source.get("match"),
+            "knowledgeVersion": str((item.get("version") or {}).get("mtime", "")),
+            "sourceEpoch": str((item.get("version") or {}).get("mtime", "")),
+            "evidenceLevel": "inference" if derived.get("purpose") else "structure",
+            "lineRange": None if not item.get("anchor_top") else item["anchor_top"],
+            "freshness": "current",
+            "producingJarvis": context.get("jarvisNodeId"),
+            # Reading access does not imply permission to reshare evidence.
+            "allowedToShare": False,
+        })
+    return citations
+
+
 def health_payload() -> dict:
     """Health card whose knowledge count is scope-filtered like search.
 
@@ -1218,7 +1257,13 @@ class QueryHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.flush()
         result = search_answer(question, allowed_items)
-        result.update({"ok": True, "auditId": audit, "projectId": payload.get("projectId"), "access": {"grantEpoch": context.get("grantEpoch"), "expiresAt": context.get("expiresAt")}})
+        result.update({
+            "ok": True,
+            "auditId": audit,
+            "projectId": payload.get("projectId"),
+            "access": {"grantEpoch": context.get("grantEpoch"), "expiresAt": context.get("expiresAt")},
+            "citations": search_citations(result.get("sources"), allowed_items, context),
+        })
         if slow:
             self.wfile.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
             self.wfile.flush()

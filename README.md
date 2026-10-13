@@ -6,7 +6,7 @@ It connects user-authorized computers, NAS storage, GitHub repositories, and dev
 
 It also lets independent Jarvis boxes join groups and communicate. Each Jarvis searches its own local project knowledge and shares only the information permitted by its owner and the group. This creates a privacy-aware project knowledge network without requiring participants to merge their complete databases or expose their original files.
 
-> **Project status:** This is an active engineering prototype. The single-Jetson UYP/Understand Anything path and the read-only Query API are being integrated, while production GBrain publishing, automatic pairing/discovery, and multi-Jarvis federation are still in progress.
+> **Project status:** This is an active engineering prototype. The single-node P7 slice has passed a bounded Jetson acceptance (IndexJob publish, Understand Anything graph, cited query, and revocation lockdown). Full-project coverage, durable GBrain integration, automatic pairing/discovery, and multi-Jarvis federation are still in progress.
 
 ## The problem
 
@@ -58,6 +58,18 @@ UnderstandYourProjects is organized around five actions:
 
 The same knowledge can be exposed to a coding agent through a controlled MCP or API surface. The coding agent can discover relevant projects and files outside its current sandbox without receiving unrestricted access to the user's devices.
 
+## Jarvis Studio v2
+
+The current web console is the main operator surface for the Agent Box. It includes:
+
+- streaming Jarvis conversations with an inspectable identity, policy, retrieval, tool, and evidence trace;
+- Agents with directory discovery, invitations, direct chats, group chats, and per-chat share cards;
+- Devices with connector-backed folder hierarchy, project digests, treemaps, sensor cards, and offline/last-seen states;
+- Data views for privacy layers, schedules, and HomeHub-backed household context;
+- Flow views for inspecting the configured Jarvis agent graph.
+
+Studio v2 is a client of the companion/query APIs. It does not make HomeHub decisions in the browser and it must show pending, offline, revoked, or partial states instead of turning them into success claims. See [Studio v2 contract](docs/STUDIO_V2.md) for the API and state model.
+
 ## Understand Anything and GBrain
 
 Understand Anything is the project's **structural understanding engine**. It scans authorized source bytes in a Jetson staging area, extracts files, symbols, imports, calls, layers, and guided tours, and produces a source-linked project graph. It is deliberately not the chat model and it never writes analysis artifacts into a source repository.
@@ -72,7 +84,7 @@ GBrain              = long-term semantic retrieval, timelines, and cross-project
 HomeHub             = identity, ownership, policy, revocation, and audit
 ```
 
-The Jetson UYP path currently publishes to its own state and output stores and exposes the Query API. A durable UYP-to-GBrain adapter is planned; the repository does not claim that the GBrain production publish path is complete.
+The Jetson UYP path publishes to its own state and output stores and exposes the Query API. A bounded project-brain publish and revoke rehearsal has been verified, but the repository-level durable UYP-to-GBrain adapter, full-project coverage, and long-term invalidation path are still in progress.
 
 ## Jarvis Agent Groups
 
@@ -192,11 +204,12 @@ The repository contains working code slices for the single-node path, plus the f
 - preemptive yield across voice, query, and indexing workloads (voice > query > index), including satellite turns;
 - incremental indexing driven by a one-minute reconcile timer, crash-resilient `systemd-run` indexing, and grant auto-renewal (24-hour TTL design, three-hour renewal cadence).
 
-The following are still integration work and must not be inferred from the UI alone:
+The single-node P7 acceptance is recorded in [P7 Acceptance](docs/P7_ACCEPTANCE_2026-10-10.md): one project published 118/120 bounded items with a 766-node/963-edge UA graph, cited query results, and revoke/re-grant lockdown. A bounded 150-item second-project run and the read-only G6 MCP surface have also been exercised. The following are still integration work and must not be inferred from the UI alone:
 
-- a stable production Laya service and a newly published end-to-end Jetson IndexJob;
-- the G6 sandbox demo of the MCP surface against a live coding agent;
+- full-project indexing and durable resume after transport/model failures;
+- production coding-agent onboarding and a full-project MCP acceptance beyond the bounded G6 rehearsal;
 - tombstones for source deletes in the incremental indexing path;
+- source-epoch lineage and final UA-first enrichment ordering;
 - a second Connector and persistent multi-Connector registration;
 - LAN/mDNS or Cloudflare pairing and automatic discovery;
 - P9 multi-box federation — NandaTown invites and federation beyond the verified clinic–home messaging pair.

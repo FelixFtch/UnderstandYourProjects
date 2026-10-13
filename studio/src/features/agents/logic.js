@@ -46,13 +46,44 @@ export function upsertThread(threads, next) {
     return copy;
 }
 // ── Messages ───────────────────────────────────────────────────────────────
-/** Merge pages / poll results by message_id (incoming wins), ordered oldest → newest. */
+const LOCAL_ECHO_PREFIX = "local:";
+const LOCAL_ECHO_WINDOW_MS = 2 * 60_000;
+function isPendingLocalEcho(message) {
+    return message.message_id.startsWith(LOCAL_ECHO_PREFIX) && message.status === "pending";
+}
+function sameAuthor(a, b) {
+    return a.author.kind === b.author.kind && a.author.id === b.author.id;
+}
+/**
+ * A send is rendered immediately with a local id. The server response can arrive through the
+ * polling path before the original POST resolves, so reconcile that echo before merging by id.
+ * Keep the match deliberately narrow: same thread, author, text, and a small time window.
+ */
+function isServerEcho(local, incoming) {
+    if (!isPendingLocalEcho(local))
+        return false;
+    if (local.thread_id !== incoming.thread_id || local.text !== incoming.text || !sameAuthor(local, incoming))
+        return false;
+    const localTime = Date.parse(local.created_at);
+    const incomingTime = Date.parse(incoming.created_at);
+    return Number.isFinite(localTime) && Number.isFinite(incomingTime)
+        && Math.abs(localTime - incomingTime) <= LOCAL_ECHO_WINDOW_MS;
+}
+/** Merge pages / poll results by message_id (incoming wins), ordered oldest → newest.
+ * Pending local echoes are replaced by a matching server message so polling cannot render both. */
 export function mergeMessages(existing, incoming) {
     const byId = new Map();
     for (const m of existing)
         byId.set(m.message_id, m);
-    for (const m of incoming)
+    for (const m of incoming) {
+        for (const [id, previous] of byId) {
+            if (isServerEcho(previous, m)) {
+                byId.delete(id);
+                break;
+            }
+        }
         byId.set(m.message_id, m);
+    }
     return [...byId.values()].sort((a, b) => {
         const d = ts(a.created_at) - ts(b.created_at);
         if (d !== 0 && !Number.isNaN(d))

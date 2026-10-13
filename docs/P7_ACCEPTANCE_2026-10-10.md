@@ -2,6 +2,14 @@
 
 Executor: ground-truth session; Laya service + job run + six-step acceptance.
 
+> **Historical findings note (updated 2026-10-13).** This document records the
+> acceptance-time observations below. Follow-up commits subsequently fixed the
+> unscoped health count (`9780c44`), added source-epoch projection in the
+> service contract (`ca673cc`), and moved the deployed enrichment path toward
+> the anchored/UA-first order (`984859f`). The bounded result remains valid;
+> the current README and execution plan describe the still-open full-project
+> resume, durable GBrain, pairing, and federation work separately.
+
 | Step | Result | Evidence |
 |---|---|---|
 | 1. Laya triage service | ✅ | uyp-laya.service (systemd user, Restart=always, enabled); /v1/systemone live |
