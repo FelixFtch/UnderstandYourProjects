@@ -42,6 +42,7 @@ development session. The Studio build variable is `VITE_STUDIO_API_URL`.
 | `GET /api/sources` | source projection for the Agent Box surface | source grant is not created here |
 | `GET /api/connectors` | durable multi-connector health and manifest projection | metadata-only without HomeHub; never mints pairing or grants |
 | `GET /api/index/jobs` | persisted IndexJob phase/progress projection | requires HomeHub scopes; grant IDs and filesystem paths are omitted |
+| `GET /api/projects/{id}/graph` | caller-scoped bounded Understand Anything graph | requires the caller's HomeHub bearer/context; structural metadata only, source-bearing content removed |
 | `POST /api/knowledge/search` | bounded lexical retrieval plus Qwen synthesis | requires a HomeHub AccessContext and filters before synthesis |
 | `POST /api/groups` | create a group record (owner-authored) | caller principal must be the record's `owner_member`; registry-validated |
 | `GET /api/groups` | list groups | `UYP_OWNER_MEMBER` pin sees all; others see only groups they own or belong to |

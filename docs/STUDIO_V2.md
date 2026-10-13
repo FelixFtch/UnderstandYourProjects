@@ -267,6 +267,19 @@ loopback `X-Agent-Member` path (b)); companion proxies `/api/studio/projects*` �
    "graph":{"layers":[{"name","files"}],"top_nodes":[{"name","type","file"}]},
    "related":{"parent":…|null,"children":[…],"siblings":[…]},"generated_at":"ISO"}
   ```
+- `GET /api/projects/{id}/graph` → caller-scoped Understand Anything graph:
+  ```json
+  {"projectId":"commontasks","version":"1.0.0","kind":"codebase",
+   "project":{…},"nodes":[…],"edges":[…],"layers":[…],"tour":[…],
+   "counts":{"nodes":int,"edges":int,"layers":int,"tour":int},
+   "truncated":{"nodes":bool,"edges":bool,"layers":bool,"tour":bool}}
+  ```
+  This is a bounded structural projection (500 nodes, 1000 edges, 200 layers,
+  100 tour steps). The UYP handler resolves the caller's HomeHub
+  `AccessContext` and removes source-bearing metadata such as
+  `knowledgeMeta.content`; it never returns source bytes. The companion route
+  `/api/studio/projects/{id}/graph` forwards the caller's bearer to this
+  endpoint.
 - `GET /api/projects/{id}/activity?since=ISO&until=ISO` → `{"changed":[{"file","mtime","purpose"}]}`
 - `POST /api/projects/{id}/ask {question}` → `{"answer","sources":[{"file"}],"confidence"}`
   (UA knowledge items + gbrain synthesis; same model env as knowledge_search).

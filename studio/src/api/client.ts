@@ -3,7 +3,7 @@
 // cleared only when HomeHub's own /api/studio/me rejects it — see handleUnauthorized.
 import type {
   AnalyzeJob, AnalyzeResult, Contact, Device, DirectoryEntry, FlowEvent, FlowSpec, Me, Message,
-  PairResponse, PolicyDoc, PolicyDomain, PolicyTree, ProjectAnswer, ProjectDigest, ProjectList,
+  PairResponse, PolicyDoc, PolicyDomain, PolicyTree, ProjectAnswer, ProjectDigest, ProjectGraph, ProjectList,
   SendResult, SensorDeviceList, SensorHistory, SensorStateRow, ShareCard, ShareCardUpdate, Thread,
 } from "./contracts";
 
@@ -184,6 +184,7 @@ export const api = {
   renameDevice: (id: string, label: string) => send<Device>("PATCH", `/api/studio/devices/${encodeURIComponent(id)}`, { label }),
   projects: (s?: AbortSignal) => get<ProjectList>("/api/studio/projects", s),
   project: (id: string, s?: AbortSignal) => get<ProjectDigest>(`/api/studio/projects/${encodeURIComponent(id)}`, s),
+  projectGraph: (id: string, s?: AbortSignal) => get<ProjectGraph>(`/api/studio/projects/${encodeURIComponent(id)}/graph`, s),
   askProject: (id: string, question: string) =>
     send<ProjectAnswer>("POST", `/api/studio/projects/${encodeURIComponent(id)}/ask`, { question }),
   analyzeFolder: (path: string, device_id?: string) =>

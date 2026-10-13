@@ -180,6 +180,7 @@ export const api = {
     renameDevice: (id, label) => send("PATCH", `/api/studio/devices/${encodeURIComponent(id)}`, { label }),
     projects: (s) => get("/api/studio/projects", s),
     project: (id, s) => get(`/api/studio/projects/${encodeURIComponent(id)}`, s),
+    projectGraph: (id, s) => get(`/api/studio/projects/${encodeURIComponent(id)}/graph`, s),
     askProject: (id, question) => send("POST", `/api/studio/projects/${encodeURIComponent(id)}/ask`, { question }),
     analyzeFolder: (path, device_id) => send("POST", "/api/studio/projects/analyze", { path, device_id }),
     analyzeJob: (job_id) => get(`/api/studio/projects/jobs/${encodeURIComponent(job_id)}`),

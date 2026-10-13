@@ -962,6 +962,97 @@ def local_group_context(record: dict, member_id: str, jarvis_node_id=None) -> di
 _ROLE_CACHE: dict = {}
 _ROLE_CACHE_LOCK = threading.Lock()
 MAX_QUESTION = 2000
+# The Studio graph view is a navigational projection, not a source export.
+# Keep the payload bounded even when a project has a very large UA graph.
+MAX_GRAPH_NODES = 500
+MAX_GRAPH_EDGES = 1000
+MAX_GRAPH_LAYERS = 200
+MAX_GRAPH_TOUR = 100
+
+
+def _graph_public_value(value, *, content_allowed: bool = False):
+    """Strip source-bearing fields from nested UA metadata.
+
+    Understand Anything's knowledge nodes may carry ``knowledgeMeta.content``
+    for article/document nodes.  That is source material, so the Studio graph
+    endpoint only exposes the structural/semantic fields needed to draw and
+    explain the graph.  This helper intentionally copies allow-listed fields
+    instead of returning the graph object from disk verbatim.
+    """
+    if not isinstance(value, dict):
+        return value
+    result = {}
+    for key, item in value.items():
+        if key == "content" and not content_allowed:
+            continue
+        if isinstance(item, dict):
+            result[key] = _graph_public_value(item, content_allowed=content_allowed)
+        elif isinstance(item, list):
+            result[key] = [
+                _graph_public_value(entry, content_allowed=content_allowed)
+                if isinstance(entry, dict) else entry
+                for entry in item
+            ]
+        else:
+            result[key] = item
+    return result
+
+
+def public_project_graph(context: dict, project_id: str) -> dict | None:
+    """Return a caller-scoped, bounded UA graph projection.
+
+    The registry is derived metadata; authorization still comes from the
+    caller's HomeHub AccessContext via ``project_digest._resolve``.  No source
+    bytes are read here and the graph file is never returned verbatim.
+    """
+    resolved = project_digest._resolve(context, project_id)
+    if resolved is None:
+        return None
+    _, record, _, _ = resolved
+    output_dir = str(record.get("output_dir") or record.get("project_id") or "")
+    graph = project_registry.load_graph(output_dir)
+    if not isinstance(graph, dict):
+        return None
+
+    raw_nodes = [node for node in graph.get("nodes", []) if isinstance(node, dict)]
+    raw_edges = [edge for edge in graph.get("edges", []) if isinstance(edge, dict)]
+    raw_layers = [layer for layer in graph.get("layers", []) if isinstance(layer, dict)]
+    raw_tour = [step for step in graph.get("tour", []) if isinstance(step, dict)]
+
+    node_keys = {
+        "id", "type", "name", "filePath", "lineRange", "summary", "tags",
+        "complexity", "languageNotes", "domainMeta", "knowledgeMeta", "figmaMeta",
+    }
+    edge_keys = {"source", "target", "type", "direction", "description", "weight"}
+    layer_keys = {"id", "name", "description", "nodeIds"}
+    tour_keys = {"order", "title", "description", "nodeIds", "languageLesson"}
+
+    def project_meta(value):
+        if not isinstance(value, dict):
+            return {}
+        return _graph_public_value({key: value[key] for key in (
+            "name", "languages", "frameworks", "description", "analyzedAt", "gitCommitHash"
+        ) if key in value})
+
+    def pick(value, keys):
+        return _graph_public_value({key: value[key] for key in keys if key in value})
+
+    return {
+        "projectId": project_id,
+        "version": graph.get("version"),
+        "kind": graph.get("kind"),
+        "project": project_meta(graph.get("project")),
+        "nodes": [pick(node, node_keys) for node in raw_nodes[:MAX_GRAPH_NODES]],
+        "edges": [pick(edge, edge_keys) for edge in raw_edges[:MAX_GRAPH_EDGES]],
+        "layers": [pick(layer, layer_keys) for layer in raw_layers[:MAX_GRAPH_LAYERS]],
+        "tour": [pick(step, tour_keys) for step in raw_tour[:MAX_GRAPH_TOUR]],
+        "counts": {"nodes": len(raw_nodes), "edges": len(raw_edges),
+                   "layers": len(raw_layers), "tour": len(raw_tour)},
+        "truncated": {"nodes": len(raw_nodes) > MAX_GRAPH_NODES,
+                      "edges": len(raw_edges) > MAX_GRAPH_EDGES,
+                      "layers": len(raw_layers) > MAX_GRAPH_LAYERS,
+                      "tour": len(raw_tour) > MAX_GRAPH_TOUR},
+    }
 
 
 def resolve_project_caller(headers, *, loopback_voice: bool = False):
@@ -1313,6 +1404,16 @@ class QueryHandler(BaseHTTPRequestHandler):
             return
         if len(parts) == 1:
             result = project_digest.digest(context, parts[0])
+            if result is None:
+                self._project_not_found(audit)
+                return
+            self.json_response(result, audit=audit)
+            return
+        if len(parts) == 2 and parts[1] == "graph":
+            # Full UA graph projection is caller-scoped.  Do not reuse the
+            # service-level /api/knowledge-graph route here: browser callers
+            # must be resolved through their own HomeHub bearer/context.
+            result = public_project_graph(context, parts[0])
             if result is None:
                 self._project_not_found(audit)
                 return

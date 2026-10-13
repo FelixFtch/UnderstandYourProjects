@@ -20,10 +20,11 @@ Fail-closed properties:
   between job creation and the cursor save replays into the SAME job instead
   of duplicating it.
 
-Deletes are counted and reported (``deletedCount``) but deliberately produce
-no tombstones in this milestone: a deleted file is simply absent from the
-next manifest, so it never enters the worker's changed pool. Stale
-KnowledgeItems for deleted files survive until the next full re-index.
+Deletes trigger a durable full-reconcile job. A deleted file is absent from
+the next manifest, so a targeted changed-file pass cannot remove its prior
+KnowledgeItem safely. The full-reconcile candidate is published atomically
+only after the current manifest has been indexed; stale KnowledgeItems are
+therefore removed without writing tombstones into a source project.
 """
 from __future__ import annotations
 
@@ -90,7 +91,8 @@ def group_changes(events: list, cursors: dict[str, str]) -> dict[str, dict]:
 
     Per relpath the LAST event in the batch wins: a file modified then deleted
     is a delete, not a change to re-analyze. Returns
-    ``{grant: {lastEventId, changed (sorted), deleted (count)}}``.
+    ``{grant: {lastEventId, changed (sorted), deleted_files (sorted),
+    deleted (count)}}``.
     """
     last_kind: dict[str, dict[str, str]] = {}
     buckets: dict[str, dict] = {}
@@ -105,14 +107,21 @@ def group_changes(events: list, cursors: dict[str, str]) -> dict[str, dict]:
         event_id = parse_event_id(event.get("id"))
         if event_id <= parse_event_id(cursors.get(grant)):
             continue
-        bucket = buckets.setdefault(grant, {"lastEventId": 0, "changed": [], "deleted": 0})
+        bucket = buckets.setdefault(grant, {
+            "lastEventId": 0,
+            "changed": [],
+            "deleted_files": [],
+            "deleted": 0,
+        })
         bucket["lastEventId"] = max(bucket["lastEventId"], event_id)
         last_kind.setdefault(grant, {})[relpath] = kind
     for grant, kinds in last_kind.items():
         bucket = buckets[grant]
         bucket["changed"] = sorted(rel for rel, kind in kinds.items()
                                    if kind in {"created", "modified"})
-        bucket["deleted"] = sum(1 for kind in kinds.values() if kind == "deleted")
+        bucket["deleted_files"] = sorted(rel for rel, kind in kinds.items()
+                                          if kind == "deleted")
+        bucket["deleted"] = len(bucket["deleted_files"])
     return buckets
 
 
@@ -202,10 +211,12 @@ def reconcile_and_enqueue(
         if pending_job_for_grant(store, grant_id) is not None:
             summary["deferred"].append({"grant": grant_id})
             continue  # cursor stays: retried once the pending job resolves
-        if not bucket["changed"]:
-            # deletes only: nothing to re-analyze (no tombstones in P8)
+        if not bucket["changed"] and not bucket["deleted_files"]:
+            # Events with an unknown kind cannot be represented by the
+            # targeted worker. Consume them once the Connector has confirmed
+            # the grant is active; no source bytes or permissions are guessed.
             cursors[grant_id] = last_id
-            summary["dropped"].append({"grant": grant_id, "reason": "deletes_only"})
+            summary["dropped"].append({"grant": grant_id, "reason": "no_supported_changes"})
             continue
         job_id = incremental_job_id(grant_id, bucket["lastEventId"])
         try:
@@ -219,6 +230,13 @@ def reconcile_and_enqueue(
                     "incremental": True,
                     "changed_files": bucket["changed"],
                     "changedCount": len(bucket["changed"]),
+                    # A delete cannot be handled by a changed-file-only
+                    # candidate: the old item would otherwise survive the
+                    # atomic publish. IndexJob treats this as a full
+                    # manifest reconciliation, while retaining the paths for
+                    # audit/debugging in the durable record.
+                    "full_reconcile": bool(bucket["deleted_files"]),
+                    "deleted_files": bucket["deleted_files"],
                     "deletedCount": bucket["deleted"],
                     "lastEventId": last_id,
                 },
