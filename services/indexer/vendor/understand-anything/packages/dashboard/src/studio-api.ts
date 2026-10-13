@@ -88,7 +88,7 @@ export interface SendGroupMessageResult {
   message?: string;
 }
 
-/** Read-only Home Assistant capability projection from the HomeHub BFF. */
+/** Read-only Home device capability projection from the HomeHub BFF. */
 export type HomeAssistantProjectionResponse = HomeAssistantProjection | { homeAssistant: HomeAssistantProjection };
 
 /** HomeHub-owned automation projection; mutation endpoints are intentionally not exposed here yet. */

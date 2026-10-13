@@ -178,14 +178,18 @@ export interface ConnectorSummary {
 }
 
 /**
- * A deliberately small Home Assistant projection.  The Studio never receives
- * an HA token, raw service name, or an arbitrary entity id.  HomeHub maps the
- * stable `homeDeviceId` to the current HA entity and decides which actions
- * may be exposed to this audience.
+ * A deliberately small HomeHub device projection. The Studio never receives
+ * a token, raw service name, transport handle, or arbitrary entity id. HomeHub
+ * maps the stable `homeDeviceId` to the selected provider and decides which
+ * actions may be exposed to this audience.
  */
 export type HomeAssistantProviderState = "current" | "stale" | "partial" | "offline" | "revoked" | "unsupported" | "contract_pending" | "failed";
 
 export type HomeEntityDomain = "light" | "switch" | "sensor" | "binary_sensor" | "climate" | "media_player" | "other";
+
+export type HomeDeviceProvider = "home_assistant" | "espnow" | "govee_lan" | "matter" | "esphome_native" | "mqtt" | "local_http" | "homehub";
+
+export type HomeDeviceSourceKind = "home_assistant" | "adapter" | "homehub";
 
 export type CuratedHomeAction =
   | "home.light.turn_on"
@@ -208,9 +212,19 @@ export interface HomeDeviceCapability {
   capabilities: string[];
   /** Actions are an allowlisted projection, never raw HA service calls. */
   actions?: CuratedHomeAction[];
-  source: { kind: "home_assistant"; uniqueId?: string };
+  source: { kind: HomeDeviceSourceKind; provider?: HomeDeviceProvider; uniqueId?: string };
   projectionEpoch?: string;
   auditId?: string;
+}
+
+export interface HomeDeviceProviderSummary {
+  providerId: HomeDeviceProvider;
+  displayName: string;
+  transport: string;
+  state: HomeAssistantProviderState;
+  pairing: "manual" | "discovered" | "paired" | "unsupported";
+  capabilities: string[];
+  reason?: string;
 }
 
 export interface HomeAssistantProjection {
@@ -222,6 +236,8 @@ export interface HomeAssistantProjection {
   lastSyncedAt?: string;
   reason?: string;
   devices: HomeDeviceCapability[];
+  /** HomeHub-owned adapter choices; no provider credential or endpoint leaks. */
+  providers?: HomeDeviceProviderSummary[];
   auditId?: string;
 }
 

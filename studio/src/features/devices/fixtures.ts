@@ -251,7 +251,7 @@ const SENSOR_DEVICES: SensorDeviceList = {
     },
   ],
   placeholders: [
-    { category: "checkin", note: "Check-in devices will arrive through Home Assistant; this category is reserved for them." },
+    { category: "checkin", note: "Check-in devices arrive through an approved HomeHub provider; this category is reserved for them." },
     { category: "lighting", note: "Waiting for the StampPLC firmware to dual-publish MQTT (~10 lines of ESPHome YAML); lights still speak native API today." },
   ],
 };
