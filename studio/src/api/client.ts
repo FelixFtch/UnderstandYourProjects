@@ -4,7 +4,7 @@
 import type {
   AnalyzeJob, AnalyzeResult, Contact, Device, DirectoryEntry, FlowEvent, FlowSpec, Me, Message,
   PairResponse, PolicyDoc, PolicyDomain, PolicyTree, ProjectAnswer, ProjectDigest, ProjectList,
-  SendResult, ShareCard, ShareCardUpdate, Thread,
+  SendResult, SensorDeviceList, SensorHistory, SensorStateRow, ShareCard, ShareCardUpdate, Thread,
 } from "./contracts";
 
 const TOKEN_KEY = "jarvis.studio.token";
@@ -189,4 +189,10 @@ export const api = {
   analyzeFolder: (path: string, device_id?: string) =>
     send<AnalyzeResult>("POST", "/api/studio/projects/analyze", { path, device_id }),
   analyzeJob: (job_id: string) => get<AnalyzeJob>(`/api/studio/projects/jobs/${encodeURIComponent(job_id)}`),
+
+  // §6b sensors (sensor-hub behind companion-api; entity ids are hub ids)
+  sensorDevices: (s?: AbortSignal) => get<SensorDeviceList>("/api/sensors/devices", s),
+  sensorStates: (s?: AbortSignal) => get<SensorStateRow[]>("/api/sensors/states", s),
+  sensorHistory: (entityId: string, hours = 24, s?: AbortSignal) =>
+    get<SensorHistory>(`/api/sensors/entities/${encodeURIComponent(entityId)}/history?hours=${hours}`, s),
 };
