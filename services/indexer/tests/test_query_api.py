@@ -146,6 +146,24 @@ class QueryApiProjectionTests(unittest.TestCase):
         self.assertEqual(len(snapshot["evidence"]), 1)
         self.assertNotIn("anchorTop", snapshot["evidence"][0])
 
+    def test_search_citations_project_sources_into_contract(self):
+        context = query_api.load_access_context()
+        scoped = query_api.scoped_items(context)
+        citations = query_api.search_citations(
+            [{"file": "src/main.py", "match": 4.0}, {"file": "other.py", "match": 9.0}],
+            scoped,
+            context,
+        )
+        self.assertEqual(len(citations), 1)
+        self.assertEqual(citations[0]["projectId"], "project:demo-project")
+        self.assertEqual(citations[0]["sourceId"], "connector:demo-project")
+        self.assertEqual(citations[0]["file"], "src/main.py")
+        self.assertEqual(citations[0]["knowledgeVersion"], "2026-10-09T12:00:00Z")
+        self.assertEqual(citations[0]["sourceEpoch"], "2026-10-09T12:00:00Z")
+        self.assertEqual(citations[0]["evidenceLevel"], "inference")
+        self.assertEqual(citations[0]["producingJarvis"], "jetson-test")
+        self.assertFalse(citations[0]["allowedToShare"])
+
 
 if __name__ == "__main__":
     unittest.main()

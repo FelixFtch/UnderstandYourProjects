@@ -324,33 +324,7 @@ def _require_query(arguments: dict) -> str:
 
 def _citations(result_sources: list, scoped: list[dict], context: dict) -> list[dict]:
     """Project search citations into the AGENTFLOW section-5 contract fields."""
-    by_file: dict[str, dict] = {}
-    for item in scoped:
-        by_file.setdefault(str(item.get("file") or ""), item)
-    citations = []
-    for source in result_sources or []:
-        path = str(source.get("file") or "")
-        item = by_file.get(path)
-        if item is None:
-            continue
-        root = query_api.item_root(str(item.get("_out_path", "")))
-        derived = item.get("derived") or {}
-        citations.append({
-            "projectId": f"project:{root}",
-            "sourceId": f"connector:{root}",
-            "file": path,
-            "match": source.get("match"),
-            "knowledgeVersion": str((item.get("version") or {}).get("mtime", "")),
-            "sourceEpoch": str((item.get("version") or {}).get("mtime", "")),
-            "evidenceLevel": "inference" if derived.get("purpose") else "structure",
-            "lineRange": None if not item.get("anchor_top") else item["anchor_top"],
-            "freshness": "current",
-            "producingJarvis": context.get("jarvisNodeId"),
-            # Conservative default: the member may read, reshare is a
-            # group/HomeHub share-policy decision, never implied here.
-            "allowedToShare": False,
-        })
-    return citations
+    return query_api.search_citations(result_sources, scoped, context)
 
 
 def _evidence_rows(root: str, items: list[dict], context: dict) -> list[dict]:

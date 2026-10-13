@@ -119,6 +119,32 @@ describe("messages", () => {
     expect(out[2].status).toBe("delivered");
   });
 
+  it("replaces a matching pending local echo when polling sees the server message", () => {
+    const local = message("local:abc", "2026-10-11T10:00:00Z", {
+      thread_id: "t", author: { kind: "member", id: "robin", display: "Robin" }, text: "hello", status: "pending",
+    });
+    const server = message("m1", "2026-10-11T10:00:05Z", {
+      thread_id: "t", author: { kind: "member", id: "robin", display: "Robin" }, text: "hello", status: "delivered",
+    });
+    const out = mergeMessages([local], [server]);
+    expect(out.map((m) => m.message_id)).toEqual(["m1"]);
+    expect(out[0].status).toBe("delivered");
+  });
+
+  it("does not reconcile unrelated messages with the same text", () => {
+    const local = message("local:abc", "2026-10-11T10:00:00Z", {
+      thread_id: "t", author: { kind: "member", id: "robin", display: "Robin" }, text: "hello", status: "pending",
+    });
+    const differentAuthor = message("m1", "2026-10-11T10:00:05Z", {
+      thread_id: "t", author: { kind: "agent", id: "c_x", display: "X" }, text: "hello",
+    });
+    const old = message("m2", "2026-11-11T10:00:05Z", {
+      thread_id: "t", author: { kind: "member", id: "robin", display: "Robin" }, text: "hello",
+    });
+    const out = mergeMessages([local], [differentAuthor, old]);
+    expect(out.map((m) => m.message_id)).toEqual(["local:abc", "m1", "m2"]);
+  });
+
   it("classifies authors from the viewer's perspective", () => {
     expect(authorRole({ kind: "member", id: "robin", display: "Robin" }, "robin")).toBe("me");
     expect(authorRole({ kind: "member", id: "dr_lee", display: "Dr Lee" }, "robin")).toBe("member");
