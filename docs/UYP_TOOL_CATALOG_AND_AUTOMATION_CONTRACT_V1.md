@@ -5,9 +5,11 @@
 
 This contract makes the Jetson Agent Box discoverable without turning UYP into a
 second HomeHub. It defines the boundary between project knowledge tools,
-Home Assistant capability projections, and scheduled automations. It is a
-contract for the next implementation slice; it does not claim that any of the
-routes below are deployed.
+HomeHub-owned device projections, and scheduled automations. Home Assistant is
+only a reference implementation for device semantics; the runtime adapter and
+registry are ours. See [DEVICE_PROVIDER_CONTRACT_V1.md](./DEVICE_PROVIDER_CONTRACT_V1.md).
+It is a contract for the next implementation slice; it does not claim that any
+of the routes below are deployed.
 
 ## 1. Authority and data flow
 
@@ -21,7 +23,7 @@ phone, or Jetson must not call Home Assistant directly.
 iPhone / Studio
     -> HomeHub BFF (identity, policy, tool admission, automation)
         -> HomeHub tool dispatcher
-            -> curated Home Assistant adapter (device actions)
+            -> curated device adapter (for example Govee LAN or ESP-NOW)
             -> UYP tool adapter (project knowledge / IndexJob)
         <- HomeHub audit and state confirmation
 
