@@ -12,7 +12,7 @@ import { AnalyzeDialog } from "./AnalyzeDialog";
 import { isFinished, useAnalyzeJob, type JobState } from "./analyzeJob";
 import { devicesData } from "./data";
 import { DeviceCards, DeviceCardsSkeleton } from "./DeviceCards";
-import { HomeDeviceCards, HomeDeviceCardsSkeleton } from "./HomeDeviceCards";
+import { HOME_DEVICE_CONTRACT_PENDING, HomeDeviceCards, HomeDeviceCardsSkeleton } from "./HomeDeviceCards";
 import { FolderTree, TreeLegend } from "./FolderTree";
 import { ProjectDigestView } from "./ProjectDigestView";
 import { SensorCards, SensorCardsSkeleton } from "./SensorCards";
@@ -163,9 +163,11 @@ export default function DevicesPage({ param, navigate }: FeaturePageProps) {
                   </div>
                   {homeDevices.loading && !homeDevices.data ? <HomeDeviceCardsSkeleton /> : null}
                   {homeDevices.error && !homeDevices.data ? (
-                    <Card>
-                      <EmptyState icon="bulb" title="HomeHub device cards are waiting for an authorized projection" body="The existing pairing is unchanged. Once HomeHub returns its device projection, Kitchen light and Living room light will appear here with governed controls." action={<Button size="sm" variant="secondary" icon="refresh" onClick={homeDevices.reload}>Retry</Button>} />
-                    </Card>
+                    <div className="space-y-3">
+                      <div className="rounded-control border border-warn/25 bg-warn-soft px-3 py-2 text-[12.5px] text-warn">Catalog placeholders only · HomeHub has not issued a device projection. Controls stay disabled until the authorized GET response is available.</div>
+                      <HomeDeviceCards projection={HOME_DEVICE_CONTRACT_PENDING} onRefresh={homeDevices.reload} />
+                      <div><Button size="sm" variant="secondary" icon="refresh" onClick={homeDevices.reload}>Retry HomeHub projection</Button></div>
+                    </div>
                   ) : null}
                   {homeDevices.data ? <HomeDeviceCards projection={homeDevices.data} onRefresh={homeDevices.reload} /> : null}
                 </section>
