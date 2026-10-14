@@ -216,6 +216,49 @@ export interface Device {
   project_count: number;
 }
 
+// HomeHub-owned devices are intentionally separate from Connector devices.
+// HomeHub remains the authority for ownership, policy, revocation, and audit;
+// Studio only renders this projection and sends governed action requests.
+export type HomeDeviceCapability = "read_state" | "turn_on" | "turn_off" | string;
+
+export interface HomeDevice {
+  homeDeviceId: string;
+  providerId: string;
+  displayName: string;
+  roomId?: string;
+  kind?: string;
+  capabilities: HomeDeviceCapability[];
+  availability: "online" | "offline" | "unknown" | "stale" | "revoked" | string;
+  projectionState?: string;
+  observedAt?: string | null;
+  state?: { power?: string; [key: string]: unknown } | null;
+}
+
+export interface HomeDeviceProjection {
+  status: string;
+  schema_version: string;
+  provider?: string;
+  providerDetail?: Record<string, unknown>;
+  state: string;
+  readOnly: boolean;
+  controlEnabled: boolean;
+  reason?: string;
+  lastSyncedAt?: string | null;
+  catalogEpoch?: string;
+  devices: HomeDevice[];
+}
+
+export interface HomeDeviceActionResult {
+  status: string;
+  schema_version?: string;
+  homeDeviceId?: string;
+  allowed?: boolean;
+  executed?: boolean;
+  state?: Record<string, unknown> | null;
+  reasonCode?: string;
+  auditRef?: string | Record<string, unknown> | null;
+}
+
 export type ProjectStatus = "analyzed" | "analyzing" | "queued" | "stale" | "failed" | "not_analyzed";
 
 export interface ProjectSummary {

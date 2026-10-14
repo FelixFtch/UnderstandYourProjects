@@ -12,6 +12,7 @@ import { AnalyzeDialog } from "./AnalyzeDialog";
 import { isFinished, useAnalyzeJob, type JobState } from "./analyzeJob";
 import { devicesData } from "./data";
 import { DeviceCards, DeviceCardsSkeleton } from "./DeviceCards";
+import { HomeDeviceCards, HomeDeviceCardsSkeleton } from "./HomeDeviceCards";
 import { FolderTree, TreeLegend } from "./FolderTree";
 import { ProjectDigestView } from "./ProjectDigestView";
 import { SensorCards, SensorCardsSkeleton } from "./SensorCards";
@@ -25,6 +26,7 @@ export default function DevicesPage({ param, navigate }: FeaturePageProps) {
   const owner = me?.role === "owner";
   const devices = useResource((s) => devicesData.devices(s), []);
   const projects = useResource((s) => devicesData.projects(s), []);
+  const homeDevices = useResource((s) => devicesData.homeDevices(s), []);
   const sensors = useResource((s) => sensorsData.devices(s), []);
   const sensorStates = useResource((s) => sensorsData.states(s), []);
   const forest = useMemo(() => buildForest(projects.data), [projects.data]);
@@ -150,6 +152,23 @@ export default function DevicesPage({ param, navigate }: FeaturePageProps) {
                 ) : null}
                 {devices.data?.devices.length ? <DeviceCards devices={devices.data.devices} selected={deviceFilter} onSelect={setDeviceFilter} /> : null}
               </section>
+
+                <section aria-labelledby="home-devices-h" className="space-y-3">
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <div>
+                      <h2 id="home-devices-h" className="text-[13px] font-semibold text-ink">Home devices</h2>
+                      <p className="text-[12.5px] text-muted">HomeHub-owned lights. Card actions use the same governed Jarvis/HomeHub route as voice and chat.</p>
+                    </div>
+                    {homeDevices.data ? <span className="text-[12px] text-muted">{homeDevices.data.provider ?? "HomeHub"}</span> : null}
+                  </div>
+                  {homeDevices.loading && !homeDevices.data ? <HomeDeviceCardsSkeleton /> : null}
+                  {homeDevices.error && !homeDevices.data ? (
+                    <Card>
+                      <EmptyState icon="bulb" title="HomeHub device cards are waiting for an authorized projection" body="The existing pairing is unchanged. Once HomeHub returns its device projection, Kitchen light and Living room light will appear here with governed controls." action={<Button size="sm" variant="secondary" icon="refresh" onClick={homeDevices.reload}>Retry</Button>} />
+                    </Card>
+                  ) : null}
+                  {homeDevices.data ? <HomeDeviceCards projection={homeDevices.data} onRefresh={homeDevices.reload} /> : null}
+                </section>
 
               <section aria-labelledby="sensors-h" className="space-y-3">
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
