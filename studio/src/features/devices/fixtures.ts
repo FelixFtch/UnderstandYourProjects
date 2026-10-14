@@ -2,7 +2,7 @@
 import { ApiError } from "../../api/client";
 import type {
   AnalyzeJob, AnalyzeResult, Device, ProjectAnswer, ProjectDigest, ProjectList, ProjectSummary, ProjectTreeNode,
-  SensorDeviceList, SensorHistoryPoint, SensorStateRow,
+  HomeDeviceActionResult, HomeDeviceProjection, SensorDeviceList, SensorHistoryPoint, SensorStateRow,
 } from "../../api/contracts";
 import { basename } from "../../design/format";
 import { buildForest, predictRelation } from "./tree";
@@ -57,6 +57,25 @@ function list(): ProjectList {
 }
 
 export async function devices() { await wait(420); return { devices: DEVICES }; }
+export async function homeDevices(): Promise<HomeDeviceProjection> {
+  await wait(300);
+  return {
+    status: "fixture",
+    schema_version: "homehub-home-devices-v1",
+    provider: "homehub",
+    state: "fixture",
+    readOnly: true,
+    controlEnabled: false,
+    reason: "Fixture mode: no HomeHub grant is issued",
+    devices: [
+      { homeDeviceId: "home-device-kitchen-light", providerId: "espnow-lights-v1", displayName: "Kitchen light", roomId: "kitchen", kind: "switch", capabilities: ["read_state", "turn_on", "turn_off"], availability: "unknown", state: { power: "unknown" } },
+      { homeDeviceId: "home-device-living-room-light", providerId: "espnow-lights-v1", displayName: "Living room light", roomId: "living_room", kind: "switch", capabilities: ["read_state", "turn_on", "turn_off"], availability: "unknown", state: { power: "unknown" } },
+    ],
+  };
+}
+export async function homeDeviceAction(_id: string, _action: "home.light.turn_on" | "home.light.turn_off", _mode: "live" | "dry_run"): Promise<HomeDeviceActionResult> {
+  throw new ApiError(403, "Fixture mode does not execute HomeHub actions");
+}
 export async function projects(): Promise<ProjectList> { await wait(520); return list(); }
 
 const day = (n: number) => { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().slice(0, 10); };

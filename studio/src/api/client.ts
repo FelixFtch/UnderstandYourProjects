@@ -3,8 +3,9 @@
 // cleared only when HomeHub's own /api/studio/me rejects it — see handleUnauthorized.
 import type {
   AnalyzeJob, AnalyzeResult, Contact, Device, DirectoryEntry, FlowEvent, FlowSpec, Me, Message,
-  PairResponse, PolicyDoc, PolicyDomain, PolicyTree, ProjectAnswer, ProjectDigest, ProjectGraph, ProjectList,
-  SendResult, SensorDeviceList, SensorHistory, SensorStateRow, ShareCard, ShareCardUpdate, Thread,
+  HomeDeviceActionResult, HomeDeviceProjection, PairResponse, PolicyDoc, PolicyDomain, PolicyTree,
+  ProjectAnswer, ProjectDigest, ProjectGraph, ProjectList, SendResult, SensorDeviceList, SensorHistory,
+  SensorStateRow, ShareCard, ShareCardUpdate, Thread,
 } from "./contracts";
 
 const TOKEN_KEY = "jarvis.studio.token";
@@ -182,6 +183,15 @@ export const api = {
   // §6 devices / projects
   devices: (s?: AbortSignal) => get<{ devices: Device[] }>("/api/studio/devices", s),
   renameDevice: (id: string, label: string) => send<Device>("PATCH", `/api/studio/devices/${encodeURIComponent(id)}`, { label }),
+  homeDevices: (s?: AbortSignal) => get<HomeDeviceProjection>("/api/studio/home-devices", s),
+  homeDeviceAction: (homeDeviceId: string, actionId: "home.light.turn_on" | "home.light.turn_off", executionMode: "live" | "dry_run" = "live", requestId?: string) =>
+    send<HomeDeviceActionResult>("POST", `/api/studio/home-devices/${encodeURIComponent(homeDeviceId)}/actions`, {
+      schema_version: "homehub-device-action-request-v1",
+      action_id: actionId,
+      parameters: {},
+      ...(requestId ? { request_id: requestId } : {}),
+      execution_mode: executionMode,
+    }),
   projects: (s?: AbortSignal) => get<ProjectList>("/api/studio/projects", s),
   project: (id: string, s?: AbortSignal) => get<ProjectDigest>(`/api/studio/projects/${encodeURIComponent(id)}`, s),
   projectGraph: (id: string, s?: AbortSignal) => get<ProjectGraph>(`/api/studio/projects/${encodeURIComponent(id)}/graph`, s),
