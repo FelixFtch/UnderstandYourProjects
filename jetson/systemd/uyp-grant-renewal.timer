@@ -1,0 +1,15 @@
+[Unit]
+Description=Renew UYP grants and refresh the short-lived access context (TTL 300s)
+
+[Timer]
+# The HomeHub access context TTL is 300 s by design (fail-closed revocation
+# propagation); the per-minute indexjob passes silently skip with an expired
+# context, so renewal must outpace the TTL. 4 min self-paced: one pass of
+# slack, never a gap. (Was OnCalendar every 3 h before 2026-10-14 - the
+# 5-minutes-per-3-hours mismatch that starved incremental indexing.)
+OnBootSec=2min
+OnUnitActiveSec=4min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

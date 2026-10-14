@@ -1,0 +1,6 @@
+[Unit]
+Description=UYP HomeHub grant auto-renewal (TTL max 24h, refresh before expiry)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/dev/uyp/indexer/uyp_grant_renewal.py
