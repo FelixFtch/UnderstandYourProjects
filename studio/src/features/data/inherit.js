@@ -1,5 +1,6 @@
 export const DOMAINS = ["privacy", "ha", "schedule"];
 export const DOMAIN_LABEL = { privacy: "Privacy rings", ha: "Home Assistant", schedule: "Scheduling" };
+export const TAB_LABEL = { ...DOMAIN_LABEL, model: "Model" };
 export const CATEGORIES = [
     "profile", "calendar", "reminders", "shopping", "family_messages", "projects", "location", "health", "contacts",
 ];
@@ -214,7 +215,7 @@ export function parseDataRoute(raw) {
     catch {
         scope = s;
     }
-    const domain = DOMAINS.includes(d) ? d : undefined;
+    const domain = DOMAINS.includes(d) ? d : d === "model" ? "model" : undefined;
     return { scope, domain };
 }
 export function dataHash(scope, domain) {

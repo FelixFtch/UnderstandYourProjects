@@ -1,13 +1,18 @@
 // Feature-local data adapter: the shared client normally, in-memory fixtures when
 // VITE_STUDIO_FIXTURES === "true" (offline dev). The fixture chunk is never loaded otherwise.
 import { api } from "../../api/client";
-import type { Me, PolicyDoc, PolicyDomain, PolicyTree } from "../../api/contracts";
+import type {
+  Me, ModelModeResult, ModelModeSettings, ModelModeUpdate, PolicyDoc, PolicyDomain, PolicyTree,
+} from "../../api/contracts";
 
 export interface DataApi {
   me(): Promise<Me>;
   policyTree(): Promise<PolicyTree>;
   policy<T>(scope: string, domain: PolicyDomain): Promise<PolicyDoc<T>>;
   putPolicy<T>(scope: string, domain: PolicyDomain, values: Partial<T>): Promise<PolicyDoc<T>>;
+  // 2026-10-14: household-wide local/cloud model switch (Model tab).
+  modelMode(): Promise<ModelModeSettings>;
+  putModelMode(update: ModelModeUpdate): Promise<ModelModeResult>;
 }
 
 export const FIXTURES = import.meta.env.VITE_STUDIO_FIXTURES === "true";
@@ -17,6 +22,8 @@ const live: DataApi = {
   policyTree: () => api.policyTree(),
   policy: <T,>(scope: string, domain: PolicyDomain) => api.policy<T>(scope, domain),
   putPolicy: <T,>(scope: string, domain: PolicyDomain, values: Partial<T>) => api.putPolicy<T>(scope, domain, values),
+  modelMode: () => api.modelMode(),
+  putModelMode: (update) => api.putModelMode(update),
 };
 
 let fixtureImpl: Promise<DataApi> | null = null;
@@ -31,4 +38,6 @@ export const dataApi: DataApi = {
   policyTree: async () => (await impl()).policyTree(),
   policy: async <T,>(scope: string, domain: PolicyDomain) => (await impl()).policy<T>(scope, domain),
   putPolicy: async <T,>(scope: string, domain: PolicyDomain, values: Partial<T>) => (await impl()).putPolicy<T>(scope, domain, values),
+  modelMode: async () => (await impl()).modelMode(),
+  putModelMode: async (update) => (await impl()).putModelMode(update),
 };

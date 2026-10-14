@@ -10,6 +10,7 @@ import { Icon } from "../../design/icons";
 import { Button, Card, cx, EmptyState, ErrorState, ProgressBar, SectionHeader, Skeleton } from "../../design/primitives";
 import { AnalyzeDialog } from "./AnalyzeDialog";
 import { isFinished, useAnalyzeJob, type JobState } from "./analyzeJob";
+import { CloudUsageCard, CloudUsageCardSkeleton } from "./CloudUsageCard";
 import { devicesData } from "./data";
 import { DeviceCards, DeviceCardsSkeleton } from "./DeviceCards";
 import { HOME_DEVICE_CONTRACT_PENDING, HomeDeviceCards, HomeDeviceCardsSkeleton } from "./HomeDeviceCards";
@@ -27,6 +28,7 @@ export default function DevicesPage({ param, navigate }: FeaturePageProps) {
   const devices = useResource((s) => devicesData.devices(s), []);
   const projects = useResource((s) => devicesData.projects(s), []);
   const homeDevices = useResource((s) => devicesData.homeDevices(s), []);
+  const cloudUsage = useResource((s) => devicesData.cloudUsage(s), []);
   const sensors = useResource((s) => sensorsData.devices(s), []);
   const sensorStates = useResource((s) => sensorsData.states(s), []);
   const forest = useMemo(() => buildForest(projects.data), [projects.data]);
@@ -171,6 +173,20 @@ export default function DevicesPage({ param, navigate }: FeaturePageProps) {
                   ) : null}
                   {homeDevices.data ? <HomeDeviceCards projection={homeDevices.data} onRefresh={homeDevices.reload} /> : null}
                 </section>
+
+              {/* 2026-10-14: qwen cloud spend, next to the household hardware it runs beside */}
+              <section aria-labelledby="cloud-usage-h" className="space-y-3">
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <div>
+                    <h2 id="cloud-usage-h" className="text-[13px] font-semibold text-ink">Cloud usage</h2>
+                    <p className="text-[12.5px] text-muted">What the qwen cloud model cost — text turns only; raw voice audio never leaves the house.</p>
+                  </div>
+                  {cloudUsage.data ? <span className="text-[12px] text-muted">{cloudUsage.data.mode === "cloud" ? "Cloud mode" : "Local mode"}</span> : null}
+                </div>
+                {cloudUsage.loading && !cloudUsage.data ? <CloudUsageCardSkeleton /> : null}
+                {cloudUsage.error && !cloudUsage.data ? <ErrorState compact error={cloudUsage.error} service="Cloud usage meter" title="Couldn't load cloud usage" onRetry={cloudUsage.reload} /> : null}
+                {cloudUsage.data ? <CloudUsageCard usage={cloudUsage.data} onRefresh={cloudUsage.reload} /> : null}
+              </section>
 
               <section aria-labelledby="sensors-h" className="space-y-3">
                 <div className="flex flex-wrap items-baseline justify-between gap-2">

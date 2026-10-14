@@ -47,6 +47,25 @@ function list() {
     return { projects: PROJECTS.map((p) => ({ ...p, children: forest.children.get(p.project_id) ?? [] })), tree: forest.roots.map(toNode) };
 }
 export async function devices() { await wait(420); return { devices: DEVICES }; }
+export async function homeDevices() {
+    await wait(300);
+    return {
+        status: "fixture",
+        schema_version: "homehub-home-devices-v1",
+        provider: "homehub",
+        state: "fixture",
+        readOnly: true,
+        controlEnabled: false,
+        reason: "Fixture mode: no HomeHub grant is issued",
+        devices: [
+            { homeDeviceId: "home-device-kitchen-light", providerId: "espnow-lights-v1", displayName: "Kitchen light", roomId: "kitchen", kind: "switch", capabilities: ["read_state", "turn_on", "turn_off"], availability: "unknown", state: { power: "unknown" } },
+            { homeDeviceId: "home-device-living-room-light", providerId: "espnow-lights-v1", displayName: "Living room light", roomId: "living_room", kind: "switch", capabilities: ["read_state", "turn_on", "turn_off"], availability: "unknown", state: { power: "unknown" } },
+        ],
+    };
+}
+export async function homeDeviceAction(_id, _action, _mode) {
+    throw new ApiError(403, "Fixture mode does not execute HomeHub actions");
+}
 export async function projects() { await wait(520); return list(); }
 const day = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().slice(0, 10); };
 export async function project(id) {
@@ -126,6 +145,7 @@ export async function project(id) {
         generated_at: ago(1),
     };
 }
+/** Bounded graph-shaped fixture used only when VITE_STUDIO_FIXTURES=true. */
 export async function projectGraph(id) {
     const d = await project(id);
     const node = (name, type, file) => ({ id: `${id}:${name}`, name, type, filePath: file, summary: `${name} in ${file}` });
@@ -299,4 +319,21 @@ export async function sensorHistory(entityId) {
         points.push(point(m, v.toFixed(Number.isInteger(base) ? 1 : 3)));
     }
     return { points, count: points.length };
+}
+// ── qwen cloud usage (2026-10-14): mirror of GET /api/studio/cloud-usage ──────
+export async function cloudUsage() {
+    await wait(320);
+    return {
+        mode: "cloud",
+        currency: "CNY",
+        today: { prompt_tokens: 48_210, completion_tokens: 12_980, cost_yuan: 0.42 },
+        month: { prompt_tokens: 913_400, completion_tokens: 246_010, cost_yuan: 7.83 },
+        total: { prompt_tokens: 2_411_500, completion_tokens: 688_420, cost_yuan: 21.06 },
+        by_surface: [
+            { surface: "route", prompt_tokens: 1_502_300, completion_tokens: 402_100, cost_yuan: 12.41 },
+            { surface: "persona", prompt_tokens: 812_400, completion_tokens: 256_320, cost_yuan: 7.69 },
+            { surface: "split", prompt_tokens: 96_800, completion_tokens: 30_000, cost_yuan: 0.96 },
+        ],
+        updated_at: new Date().toISOString(),
+    };
 }

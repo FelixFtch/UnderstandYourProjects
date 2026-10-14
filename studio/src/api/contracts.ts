@@ -409,3 +409,50 @@ export interface SensorHistory {
   count: number;
   points: SensorHistoryPoint[];
 }
+
+// ── §6c Model mode & qwen cloud usage (companion-api, added 2026-10-14) ──────
+// Local-first LLM routing. In cloud mode, turns touching personal or
+// household-private data still run on the local model (privacy floor), and raw
+// voice audio never leaves the house; only the two text surfaces below go to qwen.
+export type ModelMode = "local" | "cloud";
+
+/** GET /api/settings/model-mode */
+export interface ModelModeSettings {
+  mode: ModelMode;
+  cloud_model_route: string;
+  cloud_model_persona: string;
+  updated_at: string; // ISO
+}
+
+/** PUT /api/settings/model-mode response: the new settings plus whether the
+ * change was pushed to the voice runtime (`pushed: false` = applies on next turn). */
+export interface ModelModeResult extends ModelModeSettings {
+  pushed: boolean;
+}
+
+/** PUT /api/settings/model-mode body: mode plus optional model-name overrides. */
+export interface ModelModeUpdate {
+  mode: ModelMode;
+  cloud_model_route?: string;
+  cloud_model_persona?: string;
+}
+
+export interface CloudUsageBucket {
+  prompt_tokens: number;
+  completion_tokens: number;
+  cost_yuan: number;
+}
+
+/** Which text surface the tokens were spent on: routing, persona replies, or splitting. */
+export type CloudUsageSurface = "route" | "persona" | "split";
+
+/** GET /api/studio/cloud-usage */
+export interface CloudUsage {
+  mode: ModelMode;
+  currency: string; // "CNY"
+  today: CloudUsageBucket;
+  month: CloudUsageBucket;
+  total: CloudUsageBucket;
+  by_surface: Array<CloudUsageBucket & { surface: CloudUsageSurface }>;
+  updated_at: string; // ISO
+}

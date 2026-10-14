@@ -1,6 +1,6 @@
 // Data source for Devices: companion-api, or offline fixtures (VITE_STUDIO_FIXTURES=true).
 import { api } from "../../api/client";
-import type { AnalyzeJob, AnalyzeResult, Device, HomeDeviceActionResult, HomeDeviceProjection, ProjectAnswer, ProjectDigest, ProjectGraph, ProjectList } from "../../api/contracts";
+import type { AnalyzeJob, AnalyzeResult, CloudUsage, Device, HomeDeviceActionResult, HomeDeviceProjection, ProjectAnswer, ProjectDigest, ProjectGraph, ProjectList } from "../../api/contracts";
 
 const FIXTURES = import.meta.env.VITE_STUDIO_FIXTURES === "true";
 const fx = () => import("./fixtures");
@@ -17,4 +17,6 @@ export const devicesData = {
   analyze: (path: string, deviceId?: string): Promise<AnalyzeResult> =>
     FIXTURES ? fx().then((f) => f.analyze(path, deviceId)) : api.analyzeFolder(path, deviceId),
   job: (jobId: string): Promise<AnalyzeJob> => (FIXTURES ? fx().then((f) => f.job(jobId)) : api.analyzeJob(jobId)),
+  // 2026-10-14: qwen cloud spend meter (GET /api/studio/cloud-usage).
+  cloudUsage: (s?: AbortSignal): Promise<CloudUsage> => (FIXTURES ? fx().then((f) => f.cloudUsage()) : api.cloudUsage(s)),
 };

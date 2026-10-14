@@ -100,6 +100,13 @@ function validate(scope, domain, values) {
         throw new ApiError(422, errs.join("; "));
 }
 export function createFixtureApi() {
+    // 2026-10-14: in-memory model-mode store for the Model tab; starts local, owner-only to change.
+    let mode = {
+        mode: "local",
+        cloud_model_route: "qwen3.8-flash",
+        cloud_model_persona: "qwen3.8-flash",
+        updated_at: new Date(Date.now() - 26 * 3600_000).toISOString(),
+    };
     return {
         async me() {
             await wait(60);
@@ -120,6 +127,19 @@ export function createFixtureApi() {
             (store[scope] ??= {})[domain] = clone(values);
             meta[`${scope}/${domain}`] = { at: new Date().toISOString(), by: "robin" };
             return doc(scope, domain);
+        },
+        async modelMode() { await wait(); return clone(mode); },
+        async putModelMode(update) {
+            await wait(380);
+            if (role() !== "owner")
+                throw new ApiError(403, "only the household owner can switch the model mode");
+            mode = {
+                mode: update.mode,
+                cloud_model_route: update.cloud_model_route ?? mode.cloud_model_route,
+                cloud_model_persona: update.cloud_model_persona ?? mode.cloud_model_persona,
+                updated_at: new Date().toISOString(),
+            };
+            return { ...clone(mode), pushed: true };
         },
     };
 }

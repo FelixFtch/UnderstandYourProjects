@@ -7,6 +7,8 @@ const live = {
     policyTree: () => api.policyTree(),
     policy: (scope, domain) => api.policy(scope, domain),
     putPolicy: (scope, domain, values) => api.putPolicy(scope, domain, values),
+    modelMode: () => api.modelMode(),
+    putModelMode: (update) => api.putModelMode(update),
 };
 let fixtureImpl = null;
 function impl() {
@@ -20,4 +22,6 @@ export const dataApi = {
     policyTree: async () => (await impl()).policyTree(),
     policy: async (scope, domain) => (await impl()).policy(scope, domain),
     putPolicy: async (scope, domain, values) => (await impl()).putPolicy(scope, domain, values),
+    modelMode: async () => (await impl()).modelMode(),
+    putModelMode: async (update) => (await impl()).putModelMode(update),
 };
