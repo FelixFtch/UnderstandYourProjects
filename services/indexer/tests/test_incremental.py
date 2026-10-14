@@ -222,8 +222,11 @@ class ReconcileTestCase(unittest.TestCase):
         self.assertEqual(reasons, {"g_never_indexed": "unknown_project",
                                    "g_revoked": "grant_not_active"})
         self.assertEqual(len(summary["enqueued"]), 1)
-        self.assertEqual(self.cursor(), {"g1": "e_5",
-                                         "g_never_indexed": "e_6",
+        # Page-end advance (2026-10-14): every non-deferred cursor lands on
+        # the page's last event - the dropped grants' events are consumed
+        # by the drop itself, and g1 has no events beyond its bucket here.
+        self.assertEqual(self.cursor(), {"g1": "e_7",
+                                         "g_never_indexed": "e_7",
                                          "g_revoked": "e_7"})
 
     def test_deletes_only_enqueue_full_reconcile_job(self):
@@ -240,6 +243,64 @@ class ReconcileTestCase(unittest.TestCase):
         self.assertEqual(job["metadata"]["deleted_files"], ["src/gone.py"])
         self.assertEqual(self.cursor(), {"g1": "e_1"})
         self.assertEqual(len(self.store.list()), 2)
+
+    def test_crowded_page_advances_quiet_grant_cursors(self):
+        """2026-10-14 livelock: a page dense with one grant's events must not
+        pin the fetch anchor - a quiet grant's cursor advances to the page
+        end, or the same page is re-read forever and later events of other
+        grants are never reached."""
+        g2_prior = self.store.create(
+            project_id="other", source_id="connector:other", grant_id="g2",
+            grant_epoch="g1")
+        for phase in ("authorized", "queued", "running", "staged", "published"):
+            self.store.event(g2_prior["jobId"], phase, {})
+        # pass 1: a small g1 wave lands; g2 is quiet
+        page1 = [dict(e, id=f"e_{i}") for i, e in enumerate(G1_EVENTS, start=1)]
+        self.reconcile(page1, grants=(("g1", "/Users/x/demo"), ("g2", "/Users/x/other")))
+        self.assertEqual(self.cursor().get("g1"), "e_5")
+        # the page-end advance sets g2 to the page end even with zero g2 events
+        self.assertEqual(self.cursor().get("g2"), "e_5")
+        # pass 2: a dense 500-event g1 run (a full connector page) with one
+        # g2 change far beyond it - the page never reaches the g2 event
+        dense = [{"id": f"e_{i}", "ts": i, "grant": "g1",
+                  "relpath": f"brain/{i}.json", "kind": "modified"}
+                 for i in range(6, 506)]
+        g2_event = {"id": "e_507", "ts": 507, "grant": "g2",
+                    "relpath": "src/late.py", "kind": "created"}
+        summary = self.reconcile(dense, grants=(("g1", "/Users/x/demo"), ("g2", "/Users/x/other")))
+        self.assertTrue(summary["ok"])
+        # without the page-end advance, g2 would sit at e_5 and re-anchor
+        # every later pass at the same stale position
+        self.assertEqual(self.cursor().get("g2"), "e_505")
+        # pass 3: the anchor has moved past the dense run, so the g2 change
+        # is finally visible and enqueues
+        summary = self.reconcile([g2_event], grants=(("g1", "/Users/x/demo"), ("g2", "/Users/x/other")))
+        self.assertEqual(len(summary["enqueued"]), 1)
+        self.assertEqual(summary["enqueued"][0]["grant"], "g2")
+        job = self.store.get(summary["enqueued"][0]["jobId"])
+        self.assertEqual(job["metadata"]["changed_files"], ["src/late.py"])
+
+    def test_deferred_grant_keeps_its_cursor(self):
+        """The page-end advance must never skip a deferred grant: its events
+        are retried once the pending job resolves."""
+        # pass 1: a g1 change enqueues a job (left pending)
+        summary = self.reconcile(G1_EVENTS)
+        pending_id = summary["enqueued"][0]["jobId"]
+        self.assertEqual(self.cursor(), {"g1": "e_5"})
+        # pass 2: more g1 events arrive while the job is still pending -
+        # deferred, and the page-end advance must NOT consume them
+        more = [{"id": "e_6", "ts": 6, "grant": "g1", "relpath": "src/c.py",
+                 "kind": "created"}]
+        summary = self.reconcile(more)
+        self.assertEqual(summary["deferred"], [{"grant": "g1"}])
+        self.assertEqual(self.cursor(), {"g1": "e_5"})  # unchanged: retried later
+        # the pending job resolves -> next pass consumes the wave
+        for phase in ("authorized", "queued", "running", "staged", "published"):
+            self.store.event(pending_id, phase, {})
+        summary = self.reconcile(more)
+        self.assertEqual(len(summary["enqueued"]), 1)
+        job = self.store.get(summary["enqueued"][0]["jobId"])
+        self.assertEqual(job["metadata"]["changed_files"], ["src/c.py"])
 
     def test_fetch_failure_is_fail_closed(self):
         def broken_fetch(since):

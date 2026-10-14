@@ -259,5 +259,32 @@ def reconcile_and_enqueue(
                                     "changed": len(bucket["changed"]),
                                     "deleted": bucket["deleted"]})
 
+    # Page-end advance (2026-10-14 livelock fix): the events page is a
+    # complete prefix scan of the log newer than min(cursors), so a grant
+    # with no bucket in this page provably has no events inside it. Leaving
+    # such a cursor behind re-anchors the next fetch at the same position
+    # and re-reads the same page forever - field evidence: a dense
+    # one-grant event run pinned the shared anchor for three days while
+    # the cursor file's mtime kept looking alive (the file was rewritten
+    # with identical content every pass). Deferred grants keep their
+    # cursor - their events must be retried once the pending job resolves;
+    # every other cursor moves to the page's last_event_id.
+    page_last = parse_event_id(batch.get("last_event_id"))
+    if not page_last and events:
+        # test doubles and older connectors omit last_event_id: the page is
+        # ordered, so the last row IS the page end.
+        page_last = parse_event_id(events[-1].get("id"))
+    deferred_grants = {str(d.get("grant")) for d in summary["deferred"]}
+    if page_last:
+        # Active grants with no cursor yet initialize at the page end too:
+        # no bucket formed for them in this page, so nothing is skipped;
+        # their pre-existing history belongs to full-scan onboarding, not
+        # to the incremental wave (same rule as the unknown_project drop).
+        for grant_id in sorted(set(cursors) | active):
+            if grant_id in deferred_grants:
+                continue
+            if parse_event_id(cursors.get(grant_id)) < page_last:
+                cursors[grant_id] = f"e_{page_last}"
+
     save_cursors(store.root, cursors)
     return summary
