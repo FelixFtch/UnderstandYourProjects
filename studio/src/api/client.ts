@@ -2,8 +2,9 @@
 // Auth: HomeHub bearer token in localStorage (pair once; it never expires). The token is
 // cleared only when HomeHub's own /api/studio/me rejects it — see handleUnauthorized.
 import type {
-  AnalyzeJob, AnalyzeResult, Contact, Device, DirectoryEntry, FlowEvent, FlowSpec, Me, Message,
-  HomeDeviceActionResult, HomeDeviceProjection, PairResponse, PolicyDoc, PolicyDomain, PolicyTree,
+  AnalyzeJob, AnalyzeResult, CloudUsage, Contact, Device, DirectoryEntry, FlowEvent, FlowSpec, Me, Message,
+  HomeDeviceActionResult, HomeDeviceProjection, ModelModeResult, ModelModeSettings, ModelModeUpdate,
+  PairResponse, PolicyDoc, PolicyDomain, PolicyTree,
   ProjectAnswer, ProjectDigest, ProjectGraph, ProjectList, SendResult, SensorDeviceList, SensorHistory,
   SensorStateRow, ShareCard, ShareCardUpdate, Thread,
 } from "./contracts";
@@ -206,4 +207,9 @@ export const api = {
   sensorStates: (s?: AbortSignal) => get<SensorStateRow[]>("/api/sensors/states", s),
   sensorHistory: (entityId: string, hours = 24, s?: AbortSignal) =>
     get<SensorHistory>(`/api/sensors/entities/${encodeURIComponent(entityId)}/history?hours=${hours}`, s),
+
+  // §6c model mode & qwen cloud usage (2026-10-14)
+  modelMode: (s?: AbortSignal) => get<ModelModeSettings>("/api/settings/model-mode", s),
+  putModelMode: (update: ModelModeUpdate, s?: AbortSignal) => send<ModelModeResult>("PUT", "/api/settings/model-mode", update, s),
+  cloudUsage: (s?: AbortSignal) => get<CloudUsage>("/api/studio/cloud-usage", s),
 };

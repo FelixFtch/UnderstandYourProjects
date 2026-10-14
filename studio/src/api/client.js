@@ -178,6 +178,14 @@ export const api = {
     // §6 devices / projects
     devices: (s) => get("/api/studio/devices", s),
     renameDevice: (id, label) => send("PATCH", `/api/studio/devices/${encodeURIComponent(id)}`, { label }),
+    homeDevices: (s) => get("/api/studio/home-devices", s),
+    homeDeviceAction: (homeDeviceId, actionId, executionMode = "live", requestId) => send("POST", `/api/studio/home-devices/${encodeURIComponent(homeDeviceId)}/actions`, {
+        schema_version: "homehub-device-action-request-v1",
+        action_id: actionId,
+        parameters: {},
+        ...(requestId ? { request_id: requestId } : {}),
+        execution_mode: executionMode,
+    }),
     projects: (s) => get("/api/studio/projects", s),
     project: (id, s) => get(`/api/studio/projects/${encodeURIComponent(id)}`, s),
     projectGraph: (id, s) => get(`/api/studio/projects/${encodeURIComponent(id)}/graph`, s),
@@ -188,4 +196,8 @@ export const api = {
     sensorDevices: (s) => get("/api/sensors/devices", s),
     sensorStates: (s) => get("/api/sensors/states", s),
     sensorHistory: (entityId, hours = 24, s) => get(`/api/sensors/entities/${encodeURIComponent(entityId)}/history?hours=${hours}`, s),
+    // §6c model mode & qwen cloud usage (2026-10-14)
+    modelMode: (s) => get("/api/settings/model-mode", s),
+    putModelMode: (update, s) => send("PUT", "/api/settings/model-mode", update, s),
+    cloudUsage: (s) => get("/api/studio/cloud-usage", s),
 };

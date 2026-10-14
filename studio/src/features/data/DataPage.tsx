@@ -7,9 +7,11 @@ import type { HaPolicy, Me, PolicyDoc, PolicyDomain, PolicyTree, PrivacyPolicy, 
 import { dataApi } from "./adapter";
 import { HaTab } from "./HaTab";
 import {
-  DOMAINS, DOMAIN_LABEL, KIND_INFO, clone, dataHash, deepEqual, flattenScopes, parseDataRoute, scopeChain,
+  DOMAINS, KIND_INFO, TAB_LABEL, clone, dataHash, deepEqual, flattenScopes, parseDataRoute, scopeChain,
   validatePrivacy, validateSchedule,
+  type DataTab,
 } from "./inherit";
+import { ModelTab } from "./ModelTab";
 import { PrivacyTab } from "./PrivacyTab";
 import { ScheduleTab } from "./ScheduleTab";
 import { Icon, KIND_ICON, Modal, Spinner } from "./ui";
@@ -76,21 +78,25 @@ export default function DataPage({ param, navigate }: FeaturePageProps) {
 
   const nodes = useMemo(() => (tree ? flattenScopes(tree.scopes) : []), [tree]);
   const domains = tree?.domains?.length ? tree.domains.filter((d) => DOMAINS.includes(d)) : DOMAINS;
+  // 2026-10-14: the policy domains plus the household-wide "Model" switch tab.
+  const tabs: DataTab[] = [...domains, "model"];
   const myScope = me ? `member:${me.member_id}` : null;
   const scope = route.scope && (!tree || nodes.some((n) => n.scope.scope === route.scope))
     ? route.scope
     : nodes.find((n) => n.scope.scope === myScope)?.scope.scope ?? nodes.find((n) => n.scope.kind === "household")?.scope.scope ?? nodes[0]?.scope.scope;
-  const domain: PolicyDomain = route.domain && domains.includes(route.domain) ? route.domain : "privacy";
+  const domain: DataTab = route.domain && tabs.includes(route.domain) ? route.domain : "privacy";
   const unknownScope = Boolean(route.scope && tree && !nodes.some((n) => n.scope.scope === route.scope));
+  const domainPhrase = domain === "model" ? "model mode" : DOMAIN_PHRASE[domain];
 
   const chain = useMemo(() => (tree && scope ? scopeChain(tree.scopes, scope) : []), [tree, scope]);
   const current = chain[chain.length - 1];
   const parent = chain.length > 1 ? chain[chain.length - 2] : null;
   const isRoot = !current?.parent;
 
-  // Load the policy document for scope × domain.
+  // Load the policy document for scope × domain. The Model tab is not a policy
+  // domain: it loads its own household-wide setting, so there is no doc to fetch.
   useEffect(() => {
-    if (!scope) return;
+    if (!scope || domain === "model") { setDoc(null); setLoadError(null); setSaveError(null); return; }
     let alive = true;
     setDoc(null); setLoadError(null); setSaveError(null); setJustSaved(false);
     dataApi.policy<Obj>(scope, domain)
@@ -122,7 +128,8 @@ export default function DataPage({ param, navigate }: FeaturePageProps) {
   }, [dirty, readOnly]);
 
   async function save() {
-    if (!scope || !doc || readOnly || clientErrors.length) return;
+    // the Model tab has no policy doc, so `doc` is only set for real policy domains
+    if (!scope || !doc || domain === "model" || readOnly || clientErrors.length) return;
     setSaving(true);
     setSaveError(null);
     try {
@@ -190,28 +197,34 @@ export default function DataPage({ param, navigate }: FeaturePageProps) {
             {isRoot && current ? <p className="dm-note dm-note-sm"><Icon name="info" /> <span>This is the root: everything below inherits from here, and there is nothing above it to inherit.</span></p> : null}
             {unknownScope ? <p className="dm-alert dm-alert-warn"><Icon name="alert" /> Unknown scope “{route.scope}”. Showing {current?.label}.</p> : null}
             <div className="dm-tabs" role="tablist" aria-label="Domain">
-              {domains.map((d) => (
+              {tabs.map((d) => (
                 <button key={d} type="button" role="tab" aria-selected={d === domain} className="dm-tab"
-                  onClick={() => scope && go(dataHash(scope, d))}>{DOMAIN_LABEL[d]}</button>
+                  onClick={() => scope && go(dataHash(scope, d))}>{TAB_LABEL[d]}</button>
               ))}
             </div>
           </header>
 
-          <div className="dm-scroll" role="tabpanel" aria-label={DOMAIN_LABEL[domain]}>
-            {loadError ? (
-              <div className="dm-alert dm-alert-error"><Icon name="alert" /> <span className="flex-1">{loadError}</span>
-                <button type="button" className="dm-btn dm-btn-xs" onClick={() => setNonce((n) => n + 1)}>Retry</button></div>
-            ) : null}
-            {!doc && !loadError && scope ? <div className="dm-center dm-tall"><Spinner /> Loading {DOMAIN_PHRASE[domain]}…</div> : null}
-            {doc && doc.scope === scope && doc.domain === domain ? (
-              domain === "privacy" ? <PrivacyTab doc={doc as unknown as PolicyDoc<PrivacyPolicy>} {...tabProps} />
-                : domain === "ha" ? <HaTab doc={doc as unknown as PolicyDoc<HaPolicy>} {...tabProps} />
-                : <ScheduleTab doc={doc as unknown as PolicyDoc<SchedulePolicy>} {...tabProps} />
-            ) : null}
+          <div className="dm-scroll" role="tabpanel" aria-label={TAB_LABEL[domain]}>
+            {domain === "model" ? (
+              <ModelTab me={me} readOnly={readOnly} />
+            ) : (<>
+              {loadError ? (
+                <div className="dm-alert dm-alert-error"><Icon name="alert" /> <span className="flex-1">{loadError}</span>
+                  <button type="button" className="dm-btn dm-btn-xs" onClick={() => setNonce((n) => n + 1)}>Retry</button></div>
+              ) : null}
+              {!doc && !loadError && scope ? <div className="dm-center dm-tall"><Spinner /> Loading {domainPhrase}…</div> : null}
+              {doc && doc.scope === scope && doc.domain === domain ? (
+                domain === "privacy" ? <PrivacyTab doc={doc as unknown as PolicyDoc<PrivacyPolicy>} {...tabProps} />
+                  : domain === "ha" ? <HaTab doc={doc as unknown as PolicyDoc<HaPolicy>} {...tabProps} />
+                  : <ScheduleTab doc={doc as unknown as PolicyDoc<SchedulePolicy>} {...tabProps} />
+              ) : null}
+            </>)}
           </div>
 
           <footer className={`dm-savebar${dirty && !readOnly ? " is-dirty" : ""}${saveError ? " is-error" : ""}`}>
-            {readOnly ? (
+            {domain === "model" ? (
+              <span className="dm-savebar-msg dm-muted"><Icon name="info" size={14} /> Model mode applies the moment you switch it — nothing to save here.</span>
+            ) : readOnly ? (
               <span className="dm-savebar-msg"><Icon name="lock" size={14} />
                 {me ? <>Only the household owner can change policy. You're signed in as <b>{me.role}</b>.</> : meError ? <>Couldn't confirm your role ({meError}); editing is disabled.</> : <>Checking your role…</>}
               </span>
@@ -223,7 +236,7 @@ export default function DataPage({ param, navigate }: FeaturePageProps) {
               </>
             ) : dirty ? (
               <>
-                <span className="dm-savebar-msg">Unsaved changes to {DOMAIN_PHRASE[domain]} for {current?.label}</span>
+                <span className="dm-savebar-msg">Unsaved changes to {domainPhrase} for {current?.label}</span>
                 <button type="button" className="dm-btn dm-btn-sm" disabled={saving} onClick={() => setDraft(clone((doc?.values ?? {}) as Obj))}>Discard</button>
                 <button type="button" className="dm-btn dm-btn-sm dm-btn-primary" disabled={saving} onClick={() => void save()}>{saving ? "Saving…" : "Save"}</button>
               </>
@@ -243,7 +256,7 @@ export default function DataPage({ param, navigate }: FeaturePageProps) {
           <button type="button" className="dm-btn" data-autofocus onClick={() => setPendingHash(null)}>Keep editing</button>
           <button type="button" className="dm-btn dm-btn-danger" onClick={() => { const h = pendingHash; setPendingHash(null); setDraft(clone((doc?.values ?? {}) as Obj)); navigate(h); }}>Discard</button>
         </>}>
-          <p>You changed {DOMAIN_PHRASE[domain]} for {current?.label} without saving.</p>
+          <p>You changed {domainPhrase} for {current?.label} without saving.</p>
         </Modal>
       ) : null}
     </div>

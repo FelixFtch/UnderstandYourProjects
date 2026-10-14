@@ -2,7 +2,7 @@
 // store that computes inherited/effective like §5 and validates like the server would.
 // Append ?fixtureRole=member to the URL to see the read-only (non-owner) state.
 import { ApiError } from "../../api/client";
-import type { Me, PolicyDoc, PolicyDomain, PolicyScope, Role } from "../../api/contracts";
+import type { Me, ModelModeResult, ModelModeSettings, ModelModeUpdate, PolicyDoc, PolicyDomain, PolicyScope, Role } from "../../api/contracts";
 import type { DataApi } from "./adapter";
 import { CATEGORIES, deepMerge, getPath, isEntityId, isObj, scopeChain, validatePrivacy, validateSchedule } from "./inherit";
 
@@ -96,6 +96,13 @@ function validate(scope: string, domain: PolicyDomain, values: Record<string, un
 }
 
 export function createFixtureApi(): DataApi {
+  // 2026-10-14: in-memory model-mode store for the Model tab; starts local, owner-only to change.
+  let mode: ModelModeSettings = {
+    mode: "local",
+    cloud_model_route: "qwen3.8-flash",
+    cloud_model_persona: "qwen3.8-flash",
+    updated_at: new Date(Date.now() - 26 * 3600_000).toISOString(),
+  };
   return {
     async me(): Promise<Me> {
       await wait(60);
@@ -115,6 +122,18 @@ export function createFixtureApi(): DataApi {
       (store[scope] ??= {})[domain] = clone(values as Record<string, unknown>);
       meta[`${scope}/${domain}`] = { at: new Date().toISOString(), by: "robin" };
       return doc<T>(scope, domain);
+    },
+    async modelMode(): Promise<ModelModeSettings> { await wait(); return clone(mode); },
+    async putModelMode(update: ModelModeUpdate): Promise<ModelModeResult> {
+      await wait(380);
+      if (role() !== "owner") throw new ApiError(403, "only the household owner can switch the model mode");
+      mode = {
+        mode: update.mode,
+        cloud_model_route: update.cloud_model_route ?? mode.cloud_model_route,
+        cloud_model_persona: update.cloud_model_persona ?? mode.cloud_model_persona,
+        updated_at: new Date().toISOString(),
+      };
+      return { ...clone(mode), pushed: true };
     },
   };
 }

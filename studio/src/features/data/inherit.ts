@@ -8,6 +8,11 @@ type Obj = Record<string, unknown>;
 export const DOMAINS: PolicyDomain[] = ["privacy", "ha", "schedule"];
 export const DOMAIN_LABEL: Record<PolicyDomain, string> = { privacy: "Privacy rings", ha: "Home Assistant", schedule: "Scheduling" };
 
+// 2026-10-14: "Model" is a page-level tab next to the policy domains (the local/cloud
+// switch is one household-wide setting, not a per-scope inheritable policy domain).
+export type DataTab = PolicyDomain | "model";
+export const TAB_LABEL: Record<DataTab, string> = { ...DOMAIN_LABEL, model: "Model" };
+
 export const CATEGORIES: PrivacyCategory[] = [
   "profile", "calendar", "reminders", "shopping", "family_messages", "projects", "location", "health", "contacts",
 ];
@@ -246,16 +251,16 @@ export const KIND_INFO: Record<PolicyScope["kind"], { title: string; text: strin
 };
 
 /** Route param of #/data/<scope>/<domain?> → parts. Scope ids may contain ':' (member:robin). */
-export function parseDataRoute(raw: string | undefined): { scope?: string; domain?: PolicyDomain } {
+export function parseDataRoute(raw: string | undefined): { scope?: string; domain?: DataTab } {
   if (!raw) return {};
   const [s, d] = raw.replace(/^\/+/, "").split(/[/?]/);
   let scope: string | undefined;
   try { scope = s ? decodeURIComponent(s) : undefined; } catch { scope = s; }
-  const domain = DOMAINS.includes(d as PolicyDomain) ? (d as PolicyDomain) : undefined;
+  const domain = DOMAINS.includes(d as PolicyDomain) ? (d as PolicyDomain) : d === "model" ? "model" : undefined;
   return { scope, domain };
 }
 
-export function dataHash(scope: string, domain: PolicyDomain): string {
+export function dataHash(scope: string, domain: DataTab): string {
   return `#/data/${scope}/${domain}`;
 }
 

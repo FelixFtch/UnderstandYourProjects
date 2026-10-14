@@ -1,7 +1,7 @@
 // Offline fixtures for Devices (VITE_STUDIO_FIXTURES=true only).
 import { ApiError } from "../../api/client";
 import type {
-  AnalyzeJob, AnalyzeResult, Device, ProjectAnswer, ProjectDigest, ProjectList, ProjectSummary, ProjectTreeNode,
+  AnalyzeJob, AnalyzeResult, CloudUsage, Device, ProjectAnswer, ProjectDigest, ProjectList, ProjectSummary, ProjectTreeNode,
   HomeDeviceActionResult, HomeDeviceProjection, SensorDeviceList, SensorHistoryPoint, SensorStateRow,
 } from "../../api/contracts";
 import { basename } from "../../design/format";
@@ -302,9 +302,7 @@ const SENSOR_STATES: SensorStateRow[] = [
 export async function sensorDevices(): Promise<SensorDeviceList> {
   await wait(380);
   return SENSOR_DEVICES;
-}
-
-export async function sensorStates(): Promise<SensorStateRow[]> {
+}export async function sensorStates(): Promise<SensorStateRow[]> {
   await wait(380);
   return SENSOR_STATES;
 }
@@ -336,4 +334,22 @@ export async function sensorHistory(entityId: string): Promise<{ points: SensorH
     points.push(point(m, v.toFixed(Number.isInteger(base) ? 1 : 3)));
   }
   return { points, count: points.length };
+}
+
+// ── qwen cloud usage (2026-10-14): mirror of GET /api/studio/cloud-usage ──────
+export async function cloudUsage(): Promise<CloudUsage> {
+  await wait(320);
+  return {
+    mode: "cloud",
+    currency: "CNY",
+    today: { prompt_tokens: 48_210, completion_tokens: 12_980, cost_yuan: 0.42 },
+    month: { prompt_tokens: 913_400, completion_tokens: 246_010, cost_yuan: 7.83 },
+    total: { prompt_tokens: 2_411_500, completion_tokens: 688_420, cost_yuan: 21.06 },
+    by_surface: [
+      { surface: "route", prompt_tokens: 1_502_300, completion_tokens: 402_100, cost_yuan: 12.41 },
+      { surface: "persona", prompt_tokens: 812_400, completion_tokens: 256_320, cost_yuan: 7.69 },
+      { surface: "split", prompt_tokens: 96_800, completion_tokens: 30_000, cost_yuan: 0.96 },
+    ],
+    updated_at: new Date().toISOString(),
+  };
 }
