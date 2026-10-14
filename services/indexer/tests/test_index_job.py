@@ -127,6 +127,57 @@ class IndexJobTests(unittest.TestCase):
         self.assertEqual(registry["connectors"][0]["manifestState"], "ready")
         self.assertNotIn("grantId", json.dumps(registry))
 
+    def test_incremental_publish_merges_over_published_baseline(self):
+        """2026-10-14 field incident: a one-file incremental wave published a
+        one-file staging and the whole-tree swap replaced the project with a
+        sliver (jarvis-homehub collapsed 3179 -> 3 files). The baseline merge
+        must make the incremental candidate complete by construction."""
+        output = self.root / "output"
+        baseline = output / "demo"
+        baseline.mkdir(parents=True)
+        (baseline / "old.py.knowledge.json").write_text(
+            json.dumps({"file": "old.py", "v": 1}), encoding="utf-8")
+        (baseline / "keep.py.knowledge.json").write_text(
+            json.dumps({"file": "keep.py"}), encoding="utf-8")
+        job = self.make_job(metadata={"limit": 0, "incremental": True,
+                                      "changed_files": ["new.py", "old.py"],
+                                      "changedCount": 2, "full_reconcile": False,
+                                      "deleted_files": [], "deletedCount": 0,
+                                      "lastEventId": "e_9"})
+
+        def fake_runner(command, env):
+            candidate = Path(env["UYP_OUTPUT_ROOT"]) / "demo"
+            candidate.mkdir(parents=True)
+            # the wave stages ONLY its changed files (targeted worker)
+            (candidate / "new.py.knowledge.json").write_text(
+                json.dumps({"file": "new.py"}), encoding="utf-8")
+            (candidate / "old.py.knowledge.json").write_text(
+                json.dumps({"file": "old.py", "v": 2}), encoding="utf-8")
+
+        def fake_ua(**kwargs):
+            graph_dir = Path(kwargs["state_root"]) / "demo" / "ua"
+            graph_dir.mkdir(parents=True)
+            (graph_dir / "knowledge-graph.json").write_text("{}", encoding="utf-8")
+            return {"stagedFiles": 3, "nodes": 0, "edges": 0}
+
+        with patch.object(index_job, "connector_call",
+                          return_value={"root_name": "demo", "total": 3, "source_epoch": "e1"}):
+            result = index_job.run_job(
+                self.store, job["jobId"], context=access_context(),
+                connector_host="http://connector", token_file=str(self.token),
+                ua_root=str(self.root / "ua"), output_root=str(output),
+                runner=fake_runner, ua_runner=fake_ua,
+            )
+        self.assertEqual(result["phase"], "published")
+        names = sorted(p.name for p in (output / "demo").glob("*.knowledge.json"))
+        self.assertEqual(names, ["keep.py.knowledge.json",
+                                 "new.py.knowledge.json", "old.py.knowledge.json"])
+        # the wave's version wins over the baseline copy
+        merged = json.loads((output / "demo" / "old.py.knowledge.json").read_text())
+        self.assertEqual(merged["v"], 2)
+        self.assertEqual(json.loads(
+            (output / "demo" / "keep.py.knowledge.json").read_text())["file"], "keep.py")
+
     def test_epoch_mismatch_revokes_before_worker(self):
         job = self.make_job()
         with patch.object(index_job, "connector_call", return_value={"root_name": "demo", "total": 1, "source_epoch": "e1"}):

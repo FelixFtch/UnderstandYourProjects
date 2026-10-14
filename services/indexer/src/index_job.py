@@ -536,6 +536,26 @@ def publish_staged(job: dict[str, Any], *, stage_root: Path, output_root: Path, 
     }
 
 
+def _merge_incremental_baseline(*, stage_root: Path, output_root: Path, project: str) -> int:
+    """Fill an incremental job's staging with the currently published items.
+
+    Returns the number of baseline items copied (0 when the project was never
+    published - a first publish has nothing to merge). Staged (changed) items
+    are never overwritten; only files the wave did not touch ride along."""
+    staged_dir = stage_root / "output" / safe_component(project, "project id")
+    current = output_root / safe_component(project, "project id")
+    if not current.is_dir():
+        return 0
+    staged_dir.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for item in current.glob("*.knowledge.json"):
+        target = staged_dir / item.name
+        if not target.exists():
+            shutil.copy2(item, target)
+            copied += 1
+    return copied
+
+
 def _count_staged_items(stage_root: Path, project_id: str) -> int:
     """Count KnowledgeItems a previous attempt already staged for the project."""
     try:
@@ -698,6 +718,21 @@ def run_job(
         command.extend(["--changes-file", str(changes_path)])
     try:
         runner(command, env)
+        if metadata.get("incremental") and not metadata.get("full_reconcile"):
+            # Incremental workers stage only the wave's changed files; a
+            # whole-tree publish of that staging replaces the project with a
+            # sliver (2026-10-14 field incident: jarvis-homehub collapsed
+            # 3179 -> 3 files when a one-file wave published). Fill the
+            # staging with the CURRENT published items first so the candidate
+            # is complete by construction; staged items overwrite stale ones.
+            baseline = _merge_incremental_baseline(
+                stage_root=stage_root,
+                output_root=Path(os.path.expanduser(output_root)).resolve(),
+                project=str(job["projectId"]),
+            )
+            if baseline:
+                store.event(job_id, "running", {"baselineItems": baseline,
+                                                "note": "incremental staging merged over the published baseline"})
         if ua_runner is None:
             from ua_bridge import run as ua_runner  # local import keeps CLI lightweight
         ua_summary = ua_runner(
