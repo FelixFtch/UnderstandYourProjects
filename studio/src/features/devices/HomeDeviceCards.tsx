@@ -5,6 +5,24 @@ import { Icon } from "../../design/icons";
 import { Button, Card, Chip, EmptyState, StatusDot, type Tone } from "../../design/primitives";
 import { devicesData } from "./data";
 
+/** Stable HomeHub catalog IDs shown while the authorized projection is pending.
+ * These cards are read-only placeholders; they never imply that a provider or
+ * current state is online. The real GET projection replaces them automatically.
+ */
+export const HOME_DEVICE_CONTRACT_PENDING: HomeDeviceProjection = {
+  status: "contract_pending",
+  schema_version: "homehub-home-devices-v1",
+  provider: "homehub",
+  state: "contract_pending",
+  readOnly: true,
+  controlEnabled: false,
+  reason: "HomeHub has not returned an authorized device projection yet",
+  devices: [
+    { homeDeviceId: "home-device-kitchen-light", providerId: "espnow-lights-v1", displayName: "Kitchen light", roomId: "kitchen", kind: "switch", capabilities: ["read_state", "turn_on", "turn_off"], availability: "unknown", state: { power: "unknown" } },
+    { homeDeviceId: "home-device-living-room-light", providerId: "espnow-lights-v1", displayName: "Living room light", roomId: "living_room", kind: "switch", capabilities: ["read_state", "turn_on", "turn_off"], availability: "unknown", state: { power: "unknown" } },
+  ],
+};
+
 function availabilityTone(value: string): Tone {
   if (value === "online") return "ok";
   if (value === "offline" || value === "revoked") return "err";
