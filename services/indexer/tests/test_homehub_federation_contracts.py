@@ -10,8 +10,11 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 import connector_registry  # noqa: E402
 from federation_protocol import (  # noqa: E402
+    AGENT_IDENTITY_VERSION,
     FederationProtocolError,
     PROTOCOL_VERSION,
+    validate_agent_card,
+    validate_agent_message,
     validate_group_invite,
     validate_group_invite_result,
     validate_peer_metadata,
@@ -31,6 +34,95 @@ from pairing_protocol import PairingProtocolError, validate_pairing_approval  # 
 
 def future() -> str:
     return (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat().replace("+00:00", "Z")
+
+
+def issued() -> str:
+    return (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat().replace("+00:00", "Z")
+
+
+class AgentIdentityMessagingTests(unittest.TestCase):
+    """The shared skill is shape/confidentiality validation only.
+
+    HomeHub still owns signature verification, audience resolution, grants,
+    and revocation; these tests pin that UYP never treats a legacy discovery
+    card or a transport envelope as authority.
+    """
+
+    def card(self):
+        return {
+            "schemaVersion": AGENT_IDENTITY_VERSION,
+            "cardId": "card:felix-1",
+            "jarvisNodeId": "jetson-1",
+            "agentUrn": "urn:jarvis:felix",
+            "jarvisNumber": "J-1234-5678",
+            "displayLabel": "Felix's Jarvis",
+            "capabilities": ["project.search", "group.message"],
+            "issuer": "homehub",
+            "audience": "nanda-town",
+            "issuedAt": issued(),
+            "expiresAt": future(),
+            "revocationRef": "homehub:card:felix-1",
+            "keyFingerprint": "sha256:key",
+            "signature": "homehub-signature",
+        }
+
+    def message(self):
+        return {
+            "schemaVersion": AGENT_IDENTITY_VERSION,
+            "messageId": "msg:1",
+            "kind": "agent.ask",
+            "requestId": "req:1",
+            "senderNodeId": "jetson-1",
+            "receiverNodeId": "robin-jetson",
+            "nonce": "nonce:1",
+            "issuedAt": issued(),
+            "expiresAt": future(),
+            "audience": "robin-jetson",
+            "authorizationRef": "homehub:delegation:1",
+            "contactId": "contact:robin",
+            "scope": {"sharePolicy": "summary_only", "projectScopes": ["project:alpha"]},
+            "body": {"question": "Which project has the parser?"},
+        }
+
+    def test_verified_card_shape_is_normalized_but_not_trusted(self):
+        normalized = validate_agent_card(self.card(), audience="nanda-town")
+        self.assertEqual(normalized["agentUrn"], "urn:jarvis:felix")
+        # A HomeHub signature is data here; UYP has no issuer key and makes no
+        # claim that this card is verified merely because the shape is valid.
+        legacy = {"display": "Felix's Jarvis", "number": "J-1234-5678",
+                  "urn": "urn:jarvis:felix", "town": {"participant": "home"}}
+        with self.assertRaises(FederationProtocolError):
+            validate_agent_card(legacy)
+
+    def test_card_rejects_wrong_audience_or_revocation(self):
+        with self.assertRaises(FederationProtocolError):
+            validate_agent_card(self.card(), audience="other-town")
+        revoked = self.card()
+        revoked["revoked"] = True
+        with self.assertRaises(FederationProtocolError):
+            validate_agent_card(revoked)
+
+    def test_message_requires_scope_and_never_carries_authority(self):
+        normalized = validate_agent_message(self.message())
+        self.assertEqual(normalized["scope"]["sharePolicy"], "summary_only")
+        forbidden = self.message()
+        forbidden["token"] = "secret"
+        with self.assertRaises(FederationProtocolError):
+            validate_agent_message(forbidden)
+        forbidden = self.message()
+        forbidden["body"] = {"filesystemPath": "/private/source"}
+        with self.assertRaises(FederationProtocolError):
+            validate_agent_message(forbidden)
+
+    def test_message_requires_conversation_binding_and_expiry(self):
+        no_contact = self.message()
+        del no_contact["contactId"]
+        with self.assertRaises(FederationProtocolError):
+            validate_agent_message(no_contact)
+        expired = self.message()
+        expired["expiresAt"] = "2020-01-01T00:00:00Z"
+        with self.assertRaises(FederationProtocolError):
+            validate_agent_message(expired)
 
 
 class HomeHubContextTests(unittest.TestCase):
