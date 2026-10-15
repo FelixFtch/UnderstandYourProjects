@@ -11,6 +11,11 @@ LANGFLOW_CONTAINER="${LANGFLOW_CONTAINER:-uyp-langflow}"
 LANGFLOW_PORT="${LANGFLOW_PORT:-7860}"
 AGENT_RUNTIME_PORT="${AGENT_RUNTIME_PORT:-8868}"
 LANGFLOW_USER="${LANGFLOW_SUPERUSER:-felix}"
+# LangFlow persists imported flows in its local database.  An old canvas can
+# otherwise remain in the database forever and still show pre-typed-handle
+# edges as "invalid" after the .flow artifact is fixed.  Re-import/delete is
+# explicit because a user may intentionally keep a hand-edited canvas.
+LANGFLOW_SYNC_FLOWS="${LANGFLOW_SYNC_FLOWS:-0}"
 
 COMPONENTS="$HH_ROOT/jetson/services/agent-runtime/langflow_components/components"
 EXAMPLES="$HH_ROOT/jetson/services/agent-runtime/langflow_components/examples"
@@ -93,15 +98,35 @@ TOKEN="$(curl -fsS -X POST "http://127.0.0.1:${LANGFLOW_PORT}/api/v1/login" \
 
 for flow in studio voice; do
   name="Jarvis $flow flow"
-  present="$(curl --compressed -fsS "http://127.0.0.1:${LANGFLOW_PORT}/api/v1/flows/" \
+  # The upload endpoint upserts a flow when its stable id is present.  If an
+  # older import has a different id (or duplicate rows share the name), remove
+  # those rows first so the UI cannot keep loading a stale canvas.
+  matching_ids="$(curl --compressed -fsS \
+    "http://127.0.0.1:${LANGFLOW_PORT}/api/v1/flows/" \
     -H "Authorization: Bearer $TOKEN" | \
-    python3 -c "import json,sys; name=sys.argv[1]; print('true' if any(f.get('name') == name for f in json.load(sys.stdin)) else 'false')" "$name")"
-  if [[ "$present" != true ]]; then
+    python3 -c 'import json,sys; name=sys.argv[1]; print("\n".join(str(f.get("id")) for f in json.load(sys.stdin) if f.get("name") == name and f.get("id")))' "$name")"
+  canonical_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$TMP_DIR/$flow.flow")"
+  if [[ "${LANGFLOW_SYNC_FLOWS}" == "1" ]]; then
+    while IFS= read -r existing_id; do
+      [[ -z "$existing_id" || "$existing_id" == "$canonical_id" ]] && continue
+      curl --compressed -fsS -X DELETE \
+        "http://127.0.0.1:${LANGFLOW_PORT}/api/v1/flows/${existing_id}" \
+        -H "Authorization: Bearer $TOKEN" >/dev/null
+      echo "Removed stale $name ($existing_id)"
+    done <<< "$matching_ids"
     curl --compressed -fsS -X POST \
       "http://127.0.0.1:${LANGFLOW_PORT}/api/v1/flows/upload/" \
       -H "Authorization: Bearer $TOKEN" \
       -F "file=@$TMP_DIR/$flow.flow;type=application/json" >/dev/null
-    echo "Imported $name"
+    echo "Synchronized $name ($canonical_id)"
+  elif [[ -z "$matching_ids" ]]; then
+    curl --compressed -fsS -X POST \
+      "http://127.0.0.1:${LANGFLOW_PORT}/api/v1/flows/upload/" \
+      -H "Authorization: Bearer $TOKEN" \
+      -F "file=@$TMP_DIR/$flow.flow;type=application/json" >/dev/null
+    echo "Imported $name ($canonical_id)"
+  else
+    echo "Keeping existing $name (LANGFLOW_SYNC_FLOWS=0)"
   fi
 done
 
