@@ -7,4 +7,7 @@ export const jarvisData = {
     messages: (opts, signal) => FIXTURES ? fx().then((f) => f.messages(opts)) : api.messages("jarvis", opts, signal),
     chat: (text, onEvent, signal) => FIXTURES ? fx().then((f) => f.chat(text, onEvent, signal)) : api.chatJarvis(text, onEvent, signal),
     flow: () => (FIXTURES ? fx().then((f) => f.flowSpec()) : api.flow("studio")),
+    // 2026-10-14: header quick switch for the household model mode.
+    modelMode: (s) => (FIXTURES ? fx().then((f) => f.modelMode()) : api.modelMode(s)),
+    putModelMode: (update) => (FIXTURES ? fx().then((f) => f.putModelMode(update)) : api.putModelMode(update)),
 };

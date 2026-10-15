@@ -69,6 +69,27 @@ export async function messages(opts) {
         return { messages: [], has_more: false };
     return { messages: HISTORY, has_more: false };
 }
+// 2026-10-14: in-memory model-mode store for the header quick switch (starts local).
+let MODEL_MODE = {
+    mode: "local",
+    cloud_model_route: "qwen3.8-flash",
+    cloud_model_persona: "qwen3.8-flash",
+    updated_at: ago(26),
+};
+export async function modelMode() {
+    await wait(200);
+    return { ...MODEL_MODE };
+}
+export async function putModelMode(update) {
+    await wait(320);
+    MODEL_MODE = {
+        mode: update.mode,
+        cloud_model_route: update.cloud_model_route ?? MODEL_MODE.cloud_model_route,
+        cloud_model_persona: update.cloud_model_persona ?? MODEL_MODE.cloud_model_persona,
+        updated_at: new Date().toISOString(),
+    };
+    return { ...MODEL_MODE, pushed: true };
+}
 function scriptFor(text) {
     const t = text.toLowerCase();
     const head = [

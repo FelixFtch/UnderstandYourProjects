@@ -8,7 +8,9 @@ import { dataApi } from "./adapter";
 import { Icon, Spinner, Toggle } from "./ui";
 
 // Fixed privacy copy — do not soften: this is the promise the switch makes.
-const PRIVACY_NOTE =
+// 2026-10-14: also shown by the quick switch in the Jarvis chat header
+// (features/jarvis/ModelModeSwitch.tsx); keep the two in sync by sharing this constant.
+export const MODEL_MODE_PRIVACY_NOTE =
   "In cloud mode, turns that involve personal or household-private data still run on the local model (privacy floor); raw voice audio is never uploaded to the cloud.";
 
 function errText(e: unknown): string {
@@ -124,7 +126,7 @@ export function ModelTab({ me, readOnly }: { me: Me | null; readOnly: boolean })
           </div>
         </dl>
 
-        <p className="dm-note dm-note-sm"><Icon name="info" /> <span>{PRIVACY_NOTE}</span></p>
+        <p className="dm-note dm-note-sm"><Icon name="info" /> <span>{MODEL_MODE_PRIVACY_NOTE}</span></p>
 
         {pushed !== null && !switchError ? (
           <p className="dm-alert dm-alert-ok" role="status">

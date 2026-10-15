@@ -7,6 +7,7 @@ import { Icon } from "../../design/icons";
 import { Button, ErrorState, Skeleton, Spinner, StatusDot } from "../../design/primitives";
 import { useChat } from "./chatStore";
 import { Composer } from "./Composer";
+import { ModelModeSwitch } from "./ModelModeSwitch";
 import { DaySeparator, JarvisReply, MeBubble } from "./Reply";
 import { SuggestedPrompts } from "./SuggestedPrompts";
 
@@ -109,6 +110,8 @@ export default function JarvisPage(_props: FeaturePageProps) {
               </div>
             </div>
           </div>
+          {/* 2026-10-14: one-glance local/cloud switch; full settings in Data → Model */}
+          <ModelModeSwitch />
           <a href="#/flow" className="flex shrink-0 items-center gap-1.5 rounded-control px-2 py-1 text-[12.5px] text-muted hover:bg-surface hover:text-ink">
             <Icon name="flow" size={15} /> <span className="hidden sm:inline">See the flow</span>
           </a>
