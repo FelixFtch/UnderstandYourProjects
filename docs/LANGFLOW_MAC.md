@@ -34,7 +34,15 @@ export LANGFLOW_SUPERUSER_PASSWORD="$(openssl rand -hex 16)"
 Open <http://127.0.0.1:7860> and sign in with the username `felix` and the
 password held in `LANGFLOW_SUPERUSER_PASSWORD`. The launcher imports both
 `Jarvis studio flow` and `Jarvis voice flow` automatically. Re-running it is
-safe: existing flows are not duplicated.
+safe: the checked-in flows carry stable ids, so an explicit sync is an upsert
+rather than a second execution path. When `LANGFLOW_SYNC_FLOWS=1`, the
+launcher removes an older duplicate with the same name before uploading the
+canonical id. This matters when a previous Langflow database still contains
+the pre-typed-handle canvas: the UI can otherwise report that every `Turn
+bundle` edge was removed even though the checked-in `.flow` artifact is
+correct. The default is `LANGFLOW_SYNC_FLOWS=0`, which imports only a missing
+flow and preserves an existing hand-edited canvas; set it to `1` deliberately
+to repair the persisted canvas.
 
 The Docker container receives the component pack and the `agent_runtime` and
 `voice_common` source packages as read-only mounts. The imported copy of each
