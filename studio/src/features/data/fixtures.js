@@ -107,6 +107,19 @@ export function createFixtureApi() {
         cloud_model_persona: "qwen3.8-flash",
         updated_at: new Date(Date.now() - 26 * 3600_000).toISOString(),
     };
+    // 2026-10-15: in-memory multi-vendor provider store for the Model tab's
+    // "Cloud provider" card; owner-only to change, keys never leave the fixture.
+    let providers = {
+        active: "qwen",
+        providers: [
+            { id: "qwen", label: "Qwen · Alibaba Bailian", model: "qwen3.8-flash", has_key: true, key_hint: "sk-…1a2b" },
+            { id: "openai", label: "OpenAI", model: "gpt-5.2", has_key: false, key_hint: null },
+            { id: "claude", label: "Claude · Anthropic", model: "claude-sonnet-4-6", has_key: true, key_hint: "sk-…9z8y" },
+            { id: "gemini", label: "Gemini · Google", model: "gemini-3-flash", has_key: false, key_hint: null },
+            { id: "deepseek", label: "DeepSeek", model: "deepseek-v4-flash", has_key: false, key_hint: null },
+        ],
+        updated_at: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+    };
     return {
         async me() {
             await wait(60);
@@ -140,6 +153,34 @@ export function createFixtureApi() {
                 updated_at: new Date().toISOString(),
             };
             return { ...clone(mode), pushed: true };
+        },
+        async llmProviders() { await wait(); return clone(providers); },
+        async putLlmProviders(update) {
+            await wait(380);
+            if (role() !== "owner")
+                throw new ApiError(403, "only the household owner can change cloud provider settings");
+            // switching the active provider pushes to the voice runtime; a single-provider
+            // update is stored and applies on the next turn (pushed: false)
+            if ("active" in update) {
+                if (!providers.providers.some((p) => p.id === update.active))
+                    throw new ApiError(404, `unknown provider '${update.active}'`);
+                providers = { ...providers, active: update.active, updated_at: new Date().toISOString() };
+                return { ...clone(providers), pushed: true };
+            }
+            const idx = providers.providers.findIndex((p) => p.id === update.provider);
+            if (idx < 0)
+                throw new ApiError(404, `unknown provider '${update.provider}'`);
+            const next = clone(providers.providers);
+            const p = { ...next[idx] };
+            if (update.model !== undefined && update.model.trim())
+                p.model = update.model.trim();
+            if (update.api_key !== undefined && update.api_key) {
+                p.has_key = true;
+                p.key_hint = `sk-…${update.api_key.slice(-4)}`;
+            }
+            next[idx] = p;
+            providers = { ...providers, providers: next, updated_at: new Date().toISOString() };
+            return { ...clone(providers), pushed: false };
         },
     };
 }

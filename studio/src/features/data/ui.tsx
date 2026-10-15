@@ -19,6 +19,9 @@ const PATHS: Record<string, ReactNode> = {
   arrow: <path d="M5 12h14M13 6l6 6-6 6" />,
   trash: <path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12" />,
   chevron: <path d="M9 6l6 6-6 6" />,
+  // 2026-10-15: provider dropdown (Cloud provider card)
+  chevronDown: <path d="M6 9.5l6 6 6-6" />,
+  server: <><rect x="4.5" y="4.5" width="15" height="6" rx="1.5" /><rect x="4.5" y="13.5" width="15" height="6" rx="1.5" /><path d="M8 7.5h.01M8 16.5h.01" /></>,
 };
 
 export function Icon({ name, size = 16 }: { name: string; size?: number }) {

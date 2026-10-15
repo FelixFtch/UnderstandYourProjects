@@ -1,6 +1,9 @@
 // Model tab (2026-10-14): mode badge rendering, owner switch via PUT /api/settings/model-mode,
 // pushed feedback, and the read-only state for non-owners.
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+// 2026-10-15: the tab also mounts the Cloud provider card (ProviderCard.tsx, covered by its
+// own test file) — the fetch stub below answers /api/settings/llm-providers by default so
+// these tests stay focused on the mode switch.
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Me } from "../../api/contracts";
 import { ModelTab } from "./ModelTab";
@@ -20,6 +23,15 @@ const MODE_LOCAL = {
   updated_at: "2026-10-13T08:00:00Z",
 };
 
+const PROVIDERS = {
+  active: "qwen",
+  providers: [
+    { id: "qwen", label: "Qwen · Alibaba Bailian", model: "qwen3.8-flash", has_key: true, key_hint: "sk-…1234" },
+    { id: "openai", label: "OpenAI", model: "gpt-5.2", has_key: false, key_hint: null },
+  ],
+  updated_at: "2026-10-14T08:00:00Z",
+};
+
 type Handler = (url: string, init: RequestInit) => { status: number; body?: unknown } | undefined;
 let handler: Handler;
 const calls: Array<{ url: string; method: string; body?: unknown }> = [];
@@ -28,7 +40,8 @@ beforeEach(() => {
   calls.length = 0;
   vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit = {}) => {
     calls.push({ url, method: init.method ?? "GET", body: init.body ? JSON.parse(String(init.body)) : undefined });
-    const r = handler(url, init);
+    // the provider card mounts alongside the switch; serve it unless a test says otherwise
+    const r = handler(url, init) ?? (url === "/api/settings/llm-providers" ? { status: 200, body: PROVIDERS } : undefined);
     const status = r?.status ?? 404;
     const body = r?.body ?? { detail: "not in this test" };
     return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -46,11 +59,14 @@ describe("ModelTab", () => {
     render(<ModelTab me={ME_OWNER} readOnly={false} />);
 
     expect(await screen.findByText("Local")).toBeTruthy();
-    expect(screen.getAllByText("qwen3.8-flash")).toHaveLength(2); // route + persona
+    // the route + persona names render in the mode card (the provider card shows its own copy)
+    const modeCard = screen.getByRole("region", { name: "Model mode" });
+    expect(within(modeCard).getAllByText("qwen3.8-flash")).toHaveLength(2);
     expect(screen.getByText(/privacy floor/)).toBeTruthy();
     expect(screen.getByText(/raw voice audio is never uploaded/)).toBeTruthy();
     expect(screen.getByRole("switch", { name: "Cloud mode" }).getAttribute("aria-checked")).toBe("false");
-    expect(calls).toEqual([{ url: "/api/settings/model-mode", method: "GET", body: undefined }]);
+    expect(calls.filter((c) => c.url === "/api/settings/model-mode"))
+      .toEqual([{ url: "/api/settings/model-mode", method: "GET", body: undefined }]);
   });
 
   it("switches to cloud with a PUT and shows the pushed-to-runtime feedback", async () => {

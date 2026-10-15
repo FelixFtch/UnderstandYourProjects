@@ -18,6 +18,9 @@ const PATHS = {
     arrow: _jsx("path", { d: "M5 12h14M13 6l6 6-6 6" }),
     trash: _jsx("path", { d: "M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12" }),
     chevron: _jsx("path", { d: "M9 6l6 6-6 6" }),
+    // 2026-10-15: provider dropdown (Cloud provider card)
+    chevronDown: _jsx("path", { d: "M6 9.5l6 6 6-6" }),
+    server: _jsxs(_Fragment, { children: [_jsx("rect", { x: "4.5", y: "4.5", width: "15", height: "6", rx: "1.5" }), _jsx("rect", { x: "4.5", y: "13.5", width: "15", height: "6", rx: "1.5" }), _jsx("path", { d: "M8 7.5h.01M8 16.5h.01" })] }),
 };
 export function Icon({ name, size = 16 }) {
     return (_jsx("svg", { className: "dm-icon", width: size, height: size, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": true, children: PATHS[name] ?? null }));

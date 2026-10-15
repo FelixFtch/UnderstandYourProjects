@@ -52,6 +52,8 @@ const PATHS = {
   globe: "M12 3.5a8.5 8.5 0 1 0 0 17 8.5 8.5 0 0 0 0-17ZM3.5 12h17M12 3.5c2.5 2.6 2.5 14.4 0 17M12 3.5c-2.5 2.6-2.5 14.4 0 17",
   more: "M5.5 12h.01M12 12h.01M18.5 12h.01",
   command: "M9 6.5a2.5 2.5 0 1 0-2.5 2.5H9zm0 0V9m0 0h6m-6 0v6m6-6V6.5A2.5 2.5 0 1 1 17.5 9H15zm0 0v6m0 0h2.5A2.5 2.5 0 1 1 15 17.5zm0 0H9m0 0v2.5A2.5 2.5 0 1 1 6.5 15H9z",
+  // 2026-10-15: notification bell for the top bar
+  bell: "M6 10a6 6 0 0 1 12 0c0 3.6 1.3 4.9 2 6H4c.7-1.1 2-2.4 2-6Zm4 9.5a2.1 2.1 0 0 0 4 0",
 } as const;
 
 export type IconName = keyof typeof PATHS;

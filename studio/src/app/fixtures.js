@@ -25,3 +25,32 @@ export function enroll() {
     return { enrolled: true, box_id: "box_q8Zt1fKx" };
 }
 export const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+// 2026-10-15: in-memory notifications for the top-bar bell (fixtures mode only).
+// Newest first; `read` mirrors the server's 0/1 flag.
+let NOTES = [
+    {
+        id: 3, ts: new Date(Date.now() - 22 * 60_000).toISOString(), kind: "settings", read: 0,
+        title: "Model mode switched to cloud",
+        body: "Robin switched Jarvis to cloud mode — qwen3.8-flash now serves route and persona.",
+    },
+    {
+        id: 2, ts: new Date(Date.now() - 3 * 3600_000).toISOString(), kind: "settings", read: 0,
+        title: "Cloud provider key updated",
+        body: "The Qwen · Alibaba Bailian key was replaced (sk-…1a2b).",
+    },
+    {
+        id: 1, ts: new Date(Date.now() - 26 * 3600_000).toISOString(), kind: "system", read: 1,
+        title: "Agent box enrolled",
+        body: "This Jetson's project worker enrolled with HomeHub as box_q8Zt1fKx.",
+    },
+];
+export async function notifications() {
+    await delay(120);
+    return { items: NOTES.map((n) => ({ ...n })), unread: NOTES.filter((n) => !n.read).length };
+}
+export async function markNotificationsRead(req) {
+    await delay(160);
+    const ids = "all" in req ? null : new Set(req.ids);
+    NOTES = NOTES.map((n) => (ids === null || ids.has(n.id) ? { ...n, read: 1 } : n));
+    return { ok: true };
+}
