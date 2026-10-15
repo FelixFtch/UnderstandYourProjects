@@ -96,6 +96,46 @@ TOKEN="$(curl -fsS -X POST "http://127.0.0.1:${LANGFLOW_PORT}/api/v1/login" \
   --data-urlencode "password=$LANGFLOW_SUPERUSER_PASSWORD" | \
   python3 -c "import json,sys; print(json.load(sys.stdin)['access_token'])")"
 
+verify_imported_flow() {
+  local flow_id="$1"
+  local expected_file="$2"
+  local actual_file="$TMP_DIR/$(basename "$expected_file").actual.json"
+  curl --compressed -fsS \
+    "http://127.0.0.1:${LANGFLOW_PORT}/api/v1/flows/${flow_id}" \
+    -H "Authorization: Bearer $TOKEN" > "$actual_file"
+  python3 - "$actual_file" "$expected_file" <<'PY'
+import json
+import sys
+
+actual = json.load(open(sys.argv[1], encoding="utf-8"))
+expected = json.load(open(sys.argv[2], encoding="utf-8"))
+data = actual.get("data") if isinstance(actual, dict) else None
+expected_data = expected.get("data") or {}
+if not isinstance(data, dict):
+    raise SystemExit("Langflow returned no flow data after import")
+actual_nodes = {node.get("id") for node in data.get("nodes") or []}
+expected_nodes = {node.get("id") for node in expected_data.get("nodes") or []}
+actual_edges = data.get("edges") or []
+expected_edges = expected_data.get("edges") or []
+if actual_nodes != expected_nodes:
+    raise SystemExit(
+        f"Langflow changed canonical node set ({len(actual_nodes)} != {len(expected_nodes)})"
+    )
+if len(actual_edges) != len(expected_edges):
+    raise SystemExit(
+        f"Langflow dropped canonical edges ({len(actual_edges)} != {len(expected_edges)})"
+    )
+for edge in actual_edges:
+    if edge.get("source") not in actual_nodes or edge.get("target") not in actual_nodes:
+        raise SystemExit("Langflow returned an edge with an unknown endpoint")
+    source = edge.get("data", {}).get("sourceHandle", {})
+    target = edge.get("data", {}).get("targetHandle", {})
+    if source.get("id") != edge.get("source") or target.get("id") != edge.get("target"):
+        raise SystemExit("Langflow returned a handle whose node id does not match its edge")
+print(f"verified {len(actual_nodes)} nodes / {len(actual_edges)} edges")
+PY
+}
+
 for flow in studio voice; do
   name="Jarvis $flow flow"
   # The upload endpoint upserts a flow when its stable id is present.  If an
@@ -118,12 +158,14 @@ for flow in studio voice; do
       "http://127.0.0.1:${LANGFLOW_PORT}/api/v1/flows/upload/" \
       -H "Authorization: Bearer $TOKEN" \
       -F "file=@$TMP_DIR/$flow.flow;type=application/json" >/dev/null
+    verify_imported_flow "$canonical_id" "$TMP_DIR/$flow.flow"
     echo "Synchronized $name ($canonical_id)"
   elif [[ -z "$matching_ids" ]]; then
     curl --compressed -fsS -X POST \
       "http://127.0.0.1:${LANGFLOW_PORT}/api/v1/flows/upload/" \
       -H "Authorization: Bearer $TOKEN" \
       -F "file=@$TMP_DIR/$flow.flow;type=application/json" >/dev/null
+    verify_imported_flow "$canonical_id" "$TMP_DIR/$flow.flow"
     echo "Imported $name ($canonical_id)"
   else
     echo "Keeping existing $name (LANGFLOW_SYNC_FLOWS=0)"
