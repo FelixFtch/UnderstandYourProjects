@@ -4,6 +4,7 @@ import { api } from "../../api/client";
 import type {
   LlmProvidersResult, LlmProvidersSettings, LlmProvidersUpdate,
   Me, ModelModeResult, ModelModeSettings, ModelModeUpdate, PolicyDoc, PolicyDomain, PolicyTree,
+  UaModeResult, UaModeSettings, UaModeUpdate, VoiceProfilesResult, VoiceProfilesSettings, VoiceProfilesUpdate,
 } from "../../api/contracts";
 
 export interface DataApi {
@@ -17,6 +18,11 @@ export interface DataApi {
   // 2026-10-15: multi-vendor cloud provider settings (Model tab, "Cloud provider" card).
   llmProviders(): Promise<LlmProvidersSettings>;
   putLlmProviders(update: LlmProvidersUpdate): Promise<LlmProvidersResult>;
+  // 2026-10-15: voice chain profiles (STT/LLM/TTS) and UA analysis mode (Model tab).
+  voiceProfiles(): Promise<VoiceProfilesSettings>;
+  putVoiceProfiles(update: VoiceProfilesUpdate): Promise<VoiceProfilesResult>;
+  uaMode(): Promise<UaModeSettings>;
+  putUaMode(update: UaModeUpdate): Promise<UaModeResult>;
 }
 
 export const FIXTURES = import.meta.env.VITE_STUDIO_FIXTURES === "true";
@@ -30,6 +36,10 @@ const live: DataApi = {
   putModelMode: (update) => api.putModelMode(update),
   llmProviders: () => api.llmProviders(),
   putLlmProviders: (update) => api.putLlmProviders(update),
+  voiceProfiles: () => api.voiceProfiles(),
+  putVoiceProfiles: (update) => api.putVoiceProfiles(update),
+  uaMode: () => api.uaMode(),
+  putUaMode: (update) => api.putUaMode(update),
 };
 
 let fixtureImpl: Promise<DataApi> | null = null;
@@ -48,4 +58,8 @@ export const dataApi: DataApi = {
   putModelMode: async (update) => (await impl()).putModelMode(update),
   llmProviders: async () => (await impl()).llmProviders(),
   putLlmProviders: async (update) => (await impl()).putLlmProviders(update),
+  voiceProfiles: async () => (await impl()).voiceProfiles(),
+  putVoiceProfiles: async (update) => (await impl()).putVoiceProfiles(update),
+  uaMode: async () => (await impl()).uaMode(),
+  putUaMode: async (update) => (await impl()).putUaMode(update),
 };

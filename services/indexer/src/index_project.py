@@ -16,6 +16,7 @@ import argparse, http.client, json, os, posixpath, re, subprocess, sys, time, ur
 import threading
 
 import key_file_classifier as kfc
+import ua_llm_client as ua_llm  # UA 云端/本地分析模式 (2026-10-15): 只切换 qwen 富集段
 
 MODELS = os.environ.get("UYP_MODELS_ROOT", "/home/jetson/dev/uyp/models")
 BIN = os.environ.get("UYP_LLAMACPP_BIN", "/home/jetson/dev/uyp/llama.cpp-build/build/bin")
@@ -154,13 +155,30 @@ def _yield_to_interactive(max_wait_s: int = 600):
         waited += 0.5
 
 
-def qwen_enrich(content: str, think: bool):
-    _yield_to_interactive()
+def _enrich_instruction() -> str:
+    """The enrichment prompt preamble, shared verbatim by the local ollama
+    path (qwen_enrich) and the UA cloud path (cloud_enrich) so both modes ask
+    the identical question (2026-10-15)."""
     instr = ("You are a project file analyzer. Output ONLY a JSON object with keys: "
              "purpose (one sentence), key_points (max 3 strings), components (max 3), "
              "depends_on (max 3). Answer in the SAME LANGUAGE as the file. No other text.")
     if EXTRA_CONTEXT:
         instr += ("\nPROJECT CONTEXT (orientation only; describe THIS file): " + EXTRA_CONTEXT)
+    return instr
+
+def cloud_enrich(client: "ua_llm.CloudClient", content: str):
+    """UA 云端分析模式 (2026-10-15): same prompt and content window as
+    qwen_enrich, routed to the user-chosen provider.  `think` is a local
+    ollama concept — cloud calls are plain completions.  No
+    _yield_to_interactive here: voice preemption exists to free the local
+    GPU, and a cloud call holds none of it.  Raises ua_llm.CloudError on
+    failure; the caller degrades the file to structure-only (never crashes)."""
+    return client.chat([{"role": "user", "content": _enrich_instruction()
+                         + "\n\nFILE CONTENT:\n" + content[:2600]}])
+
+def qwen_enrich(content: str, think: bool):
+    _yield_to_interactive()
+    instr = _enrich_instruction()
     model = os.environ.get("UYP_OLLAMA_MODEL", "qwen3.5-route")
     body = json.dumps({"model": model, "think": think, "stream": False,
                        "options": {"num_ctx": 4096},
@@ -368,6 +386,22 @@ def main():
             EXTRA_CONTEXT = " ".join(fh.read().split())[:1200]
     token = open(a.token_file).read().strip()
 
+    # UA 云端/本地分析模式 (owner decision 2026-10-15): ONLY this qwen
+    # enrichment stage is switchable.  The Laya front-stage — hard gates in
+    # key_file_classifier plus laya_decide triage on :8901 — is ALWAYS local,
+    # owner-pinned (业主钦定); never route it through a cloud client.
+    ua_client = None
+    try:
+        ua_client = ua_llm.load_client()
+    except ua_llm.CloudConfigError as exc:
+        # Honest fallback: a broken cloud config must not kill a job that can
+        # still enrich locally.  Loud warning; the local path is untouched.
+        print(f"WARNING: UA cloud config error, using LOCAL enrichment: {exc}", flush=True)
+    ua_breaker = ua_llm.CloudBreaker()
+    if ua_client is not None:
+        print(f"UA analysis mode: CLOUD ({ua_client.provider}/{ua_client.model}); "
+              "local ollama enrichment bypassed, Laya triage stays local", flush=True)
+
     man = fetch_full_manifest(a.host, token, a.grant)
     root = str(man["root_name"])
     # Connector root names are metadata, never filesystem paths.  Rejecting
@@ -551,15 +585,51 @@ def main():
                 print(f"  too-large->{verdict:15s} {rel[:70]}", flush=True)
                 return
             t0 = time.time()
-            raw, tok = qwen_enrich(full, think)
-            bump("tokens", tok)
-            parsed = brace_json(raw)
-            item["derived"] = parsed or {"raw_head": raw[:400]}
-            item["think_used"] = think
-            item["eval_tokens"] = tok
-            item["enrich_s"] = round(time.time() - t0, 1)
-            bump("deep" if think else "quick")
-            bump("json_ok" if parsed else "json_bad")
+            if ua_client is not None:
+                # 云端模式失败策略 (2026-10-15 contract): 单次调用失败 -> 该文件
+                # 诚实降级 structure-only + enrich_warning, 作业不炸; 连续 5 次
+                # 失败 -> 熔断, 本作业剩余文件全部 structure-only, run-state 记
+                # cloud_enrich_broken (ua_bridge 汇总进作业 uaSummary)。
+                if ua_breaker.tripped:
+                    verdict = item["verdict"] = "structure-only"
+                    item["derived"] = structure_only_summary(full)
+                    item["enrich_warning"] = "cloud_enrich_broken"
+                    bump("cloud_breaker_structure")
+                else:
+                    try:
+                        raw, tok = cloud_enrich(ua_client, full)
+                    except ua_llm.CloudError as exc:
+                        tripped = ua_breaker.fail()
+                        verdict = item["verdict"] = "structure-only"
+                        item["derived"] = structure_only_summary(full)
+                        item["enrich_warning"] = "cloud_enrich_failed"
+                        bump("cloud_fail")
+                        print(f"  WARNING cloud enrich failed ({ua_breaker.failures} consecutive): "
+                              f"{exc} -> structure-only: {rel[:60]}", flush=True)
+                        if tripped:
+                            print(f"  WARNING cloud enrichment broken after {ua_breaker.threshold} "
+                                  "consecutive failures; remaining files degrade to structure-only",
+                                  flush=True)
+                    else:
+                        ua_breaker.ok()
+                        bump("tokens", tok)
+                        parsed = brace_json(raw)
+                        item["derived"] = parsed or {"raw_head": raw[:400]}
+                        item["think_used"] = think
+                        item["eval_tokens"] = tok
+                        item["enrich_s"] = round(time.time() - t0, 1)
+                        bump("deep" if think else "quick")
+                        bump("json_ok" if parsed else "json_bad")
+            else:
+                raw, tok = qwen_enrich(full, think)
+                bump("tokens", tok)
+                parsed = brace_json(raw)
+                item["derived"] = parsed or {"raw_head": raw[:400]}
+                item["think_used"] = think
+                item["eval_tokens"] = tok
+                item["enrich_s"] = round(time.time() - t0, 1)
+                bump("deep" if think else "quick")
+                bump("json_ok" if parsed else "json_bad")
         # 抢占检查: 锁新鲜时不写输出 — 文件保持未分析, 恢复时重做
         try:
             _lk = float(open(INTERACTIVE_LOCK).read().strip())
@@ -580,8 +650,13 @@ def main():
     with ThreadPoolExecutor(max_workers=workers) as pool:
         list(pool.map(process_file, files))
 
-    json.dump({"grant": a.grant, "root": root, "ran_at": time.strftime("%FT%T"), "stats": stats},
-              open(f"{STATE}/{root}.json", "w"))
+    run_state = {"grant": a.grant, "root": root, "ran_at": time.strftime("%FT%T"),
+                 "stats": stats, "ua_mode": "cloud" if ua_client is not None else "local"}
+    if ua_client is not None and ua_breaker.tripped:
+        # 熔断标记 (2026-10-15): ua_bridge.run 把它汇总进作业 uaSummary 的
+        # "cloud_enrich_broken": true, 让操作员看到诚实降级而非沉默的全 structure-only。
+        run_state["cloud_enrich_broken"] = True
+    json.dump(run_state, open(f"{STATE}/{root}.json", "w"))
     print(f"\nDONE in {time.time()-t_start:.0f}s | {json.dumps(stats)}")
 
 if __name__ == "__main__":

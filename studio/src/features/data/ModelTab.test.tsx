@@ -32,6 +32,20 @@ const PROVIDERS = {
   updated_at: "2026-10-14T08:00:00Z",
 };
 
+// 2026-10-15: the tab also mounts the voice-profile and UA-mode cards — serve them too.
+const VOICE = {
+  active: "local",
+  profiles: [
+    { name: "local", label: "Local (offline)", stt: "local", llm: "local", tts: "local", builtin: 1 },
+    { name: "cloud-full", label: "Cloud full chain", stt: "qwen", llm: "qwen", tts: "qwen", builtin: 1 },
+  ],
+  stt_options: ["local", "qwen"],
+  llm_options: ["local", "qwen"],
+  tts_options: ["local", "qwen"],
+};
+
+const UA_MODE = { mode: "local", provider: "qwen", model: "qwen3.8-flash" };
+
 type Handler = (url: string, init: RequestInit) => { status: number; body?: unknown } | undefined;
 let handler: Handler;
 const calls: Array<{ url: string; method: string; body?: unknown }> = [];
@@ -40,8 +54,11 @@ beforeEach(() => {
   calls.length = 0;
   vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit = {}) => {
     calls.push({ url, method: init.method ?? "GET", body: init.body ? JSON.parse(String(init.body)) : undefined });
-    // the provider card mounts alongside the switch; serve it unless a test says otherwise
-    const r = handler(url, init) ?? (url === "/api/settings/llm-providers" ? { status: 200, body: PROVIDERS } : undefined);
+    // the sibling cards mount alongside the switch; serve them unless a test says otherwise
+    const r = handler(url, init)
+      ?? (url === "/api/settings/llm-providers" ? { status: 200, body: PROVIDERS } : undefined)
+      ?? (url === "/api/settings/voice-profiles" ? { status: 200, body: VOICE } : undefined)
+      ?? (url === "/api/settings/ua-mode" ? { status: 200, body: UA_MODE } : undefined);
     const status = r?.status ?? 404;
     const body = r?.body ?? { detail: "not in this test" };
     return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });

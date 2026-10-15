@@ -1,24 +1,18 @@
 // Cloud provider card (2026-10-15): the Model tab's second card, below the
-// local ↔ cloud mode switch. Picks which of the five vendors serves cloud mode
+// local ↔ cloud mode switch. Picks which of the vendors serves cloud mode
 // (GET/PUT /api/settings/llm-providers), and edits one provider's model + API
-// key. Keys are write-only: the server returns has_key + key_hint, never the
+// key. The directory is fully server-driven — this card renders whatever the
+// hub returns (7 vendors as of 2026-10-15, grok/muse included); only datalist
+// suggestions come from the shared static table (providerCatalog.ts).
+// Keys are write-only: the server returns has_key + key_hint, never the
 // key itself. Owner-only to change; members/guests can inspect but not edit.
 // `pushed` feedback mirrors the model-mode switch semantics (ModelModeSwitch.tsx).
 import { useEffect, useId, useRef, useState } from "react";
 import { ApiError } from "../../api/client";
 import type { LlmProvider, LlmProvidersSettings, Me } from "../../api/contracts";
 import { dataApi } from "./adapter";
+import { MODEL_SUGGESTIONS } from "./providerCatalog";
 import { Icon, Spinner } from "./ui";
-
-/** Default model hints per vendor for the datalist — suggestions only, the
- * field accepts any model name; the provider's current model is always listed. */
-const MODEL_SUGGESTIONS: Record<string, string[]> = {
-  qwen: ["qwen3.8-flash", "qwen3.8-plus", "qwen3-max"],
-  openai: ["gpt-5.2", "gpt-5.2-mini", "gpt-5.2-pro"],
-  claude: ["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"],
-  gemini: ["gemini-3-flash", "gemini-3-pro"],
-  deepseek: ["deepseek-v4-flash", "deepseek-v4-pro"],
-};
 
 const KEY_PLACEHOLDER = "Paste the key - stored on the Jetson, never shown in full";
 

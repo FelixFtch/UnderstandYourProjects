@@ -22,6 +22,9 @@ const PATHS: Record<string, ReactNode> = {
   // 2026-10-15: provider dropdown (Cloud provider card)
   chevronDown: <path d="M6 9.5l6 6 6-6" />,
   server: <><rect x="4.5" y="4.5" width="15" height="6" rx="1.5" /><rect x="4.5" y="13.5" width="15" height="6" rx="1.5" /><path d="M8 7.5h.01M8 16.5h.01" /></>,
+  // 2026-10-15: voice profiles card (waveform) & UA analysis mode card (brain)
+  activity: <path d="M3.5 12h4l2.5-6.5 4 13 2.5-6.5h4" />,
+  brain: <><path d="M9 4.5a3 3 0 0 0-3 3 3 3 0 0 0-1.5 5.5A3 3 0 0 0 9 18.5V4.5Z" /><path d="M15 4.5a3 3 0 0 1 3 3 3 3 0 0 1 1.5 5.5 3 3 0 0 1-4.5 5.5V4.5Z" /><path d="M9 4.5a2.5 2.5 0 0 1 3 0m0 0v15" /></>,
 };
 
 export function Icon({ name, size = 16 }: { name: string; size?: number }) {

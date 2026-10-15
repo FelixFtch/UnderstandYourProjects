@@ -109,6 +109,10 @@ export function createFixtureApi() {
     };
     // 2026-10-15: in-memory multi-vendor provider store for the Model tab's
     // "Cloud provider" card; owner-only to change, keys never leave the fixture.
+    // The catalog is server-driven (7 vendors as of 2026-10-15: grok/muse added).
+    // Note: muse has no TTS offering, but the hub's voice *_options lists are
+    // capability-agnostic (local + providers with a stored key) — the frontend
+    // renders them as-is and does no capability filtering.
     let providers = {
         active: "qwen",
         providers: [
@@ -117,9 +121,25 @@ export function createFixtureApi() {
             { id: "claude", label: "Claude · Anthropic", model: "claude-sonnet-4-6", has_key: true, key_hint: "sk-…9z8y" },
             { id: "gemini", label: "Gemini · Google", model: "gemini-3-flash", has_key: false, key_hint: null },
             { id: "deepseek", label: "DeepSeek", model: "deepseek-v4-flash", has_key: false, key_hint: null },
+            { id: "grok", label: "Grok · xAI", model: "grok-4.7", has_key: false, key_hint: null },
+            { id: "muse", label: "Muse · Meta", model: "muse-spark-1.3", has_key: false, key_hint: null },
         ],
         updated_at: new Date(Date.now() - 2 * 86_400_000).toISOString(),
     };
+    // 2026-10-15: voice chain profiles. Options = "local" + providers with a
+    // stored key (qwen, claude here) — same rule as the hub.
+    let voice = {
+        active: "local",
+        profiles: [
+            { name: "local", label: "Local (offline)", stt: "local", llm: "local", tts: "local", builtin: 1 },
+            { name: "cloud-full", label: "Cloud full chain", stt: "qwen", llm: "qwen", tts: "qwen", builtin: 1 },
+        ],
+        stt_options: ["local", "qwen", "claude"],
+        llm_options: ["local", "qwen", "claude"],
+        tts_options: ["local", "qwen", "claude"],
+    };
+    // 2026-10-15: UA analysis mode (Understand Anything indexer); starts local.
+    let uaMode = { mode: "local", provider: "qwen", model: "qwen3.8-flash" };
     return {
         async me() {
             await wait(60);
@@ -181,6 +201,52 @@ export function createFixtureApi() {
             next[idx] = p;
             providers = { ...providers, providers: next, updated_at: new Date().toISOString() };
             return { ...clone(providers), pushed: false };
+        },
+        async voiceProfiles() { await wait(); return clone(voice); },
+        async putVoiceProfiles(update) {
+            await wait(380);
+            if (role() !== "owner")
+                throw new ApiError(403, "only the household owner can change voice profiles");
+            if ("active" in update) {
+                const p = voice.profiles.find((x) => x.name === update.active);
+                if (!p)
+                    throw new ApiError(404, `unknown voice profile '${update.active}'`);
+                voice = { ...voice, active: p.name };
+                // per-section push: the TTS section has no hot-push channel in this fixture
+                return { ...clone(voice), pushed: { llm: true, stt: true, tts: false } };
+            }
+            const existing = voice.profiles.find((x) => x.name === update.name);
+            if (existing?.builtin)
+                throw new ApiError(400, `builtin profile '${update.name}' cannot be edited`);
+            for (const [seg, v] of [["stt", update.stt], ["llm", update.llm], ["tts", update.tts]]) {
+                const opts = voice[`${seg}_options`];
+                if (!opts.includes(v))
+                    throw new ApiError(422, `${seg}: '${v}' is not an available option`);
+            }
+            const nextProfile = {
+                name: update.name, label: update.label?.trim() || update.name,
+                stt: update.stt, llm: update.llm, tts: update.tts, builtin: 0,
+            };
+            const profiles = existing
+                ? voice.profiles.map((x) => (x.name === update.name ? nextProfile : x))
+                : [...voice.profiles, nextProfile];
+            voice = { ...voice, profiles };
+            // saving a mix never pushes to the runtime
+            return { ...clone(voice), pushed: null };
+        },
+        async uaMode() { await wait(); return clone(uaMode); },
+        async putUaMode(update) {
+            await wait(320);
+            if (role() !== "owner")
+                throw new ApiError(403, "only the household owner can change the analysis mode");
+            if (update.mode === "cloud" && !update.model?.trim())
+                throw new ApiError(422, "cloud mode needs a model");
+            uaMode = {
+                mode: update.mode,
+                provider: update.provider ?? uaMode.provider,
+                model: update.mode === "cloud" ? update.model.trim() : update.model?.trim() || uaMode.model,
+            };
+            return { ...clone(uaMode), written: true };
         },
     };
 }

@@ -2,12 +2,15 @@ import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from "react/jsx-run
 // Model tab (added 2026-10-14): the household-wide local ↔ cloud switch for Jarvis's
 // LLM route. One big switch card — not a per-scope policy, so it ignores the scope tree
 // and applies immediately on PUT /api/settings/model-mode. Guests/members see it read-only.
-// 2026-10-15: the "Cloud provider" card (ProviderCard.tsx) sits below the mode switch —
-// which vendor serves cloud mode, its model and API key (PUT /api/settings/llm-providers).
+// 2026-10-15: three more cards stack below the mode switch — Voice profiles
+// (VoiceProfileCard.tsx, STT/LLM/TTS chain), Cloud provider (ProviderCard.tsx,
+// vendor/model/key) and UA analysis mode (UaModeCard.tsx, indexer engine).
 import { useEffect, useState } from "react";
 import { ApiError } from "../../api/client";
 import { dataApi } from "./adapter";
 import { ProviderCard } from "./ProviderCard";
+import { UaModeCard } from "./UaModeCard";
+import { VoiceProfileCard } from "./VoiceProfileCard";
 import { Icon, Spinner, Toggle } from "./ui";
 // Fixed privacy copy — do not soften: this is the promise the switch makes.
 // 2026-10-14: also shown by the quick switch in the Jarvis chat header
@@ -70,5 +73,5 @@ export function ModelTab({ me, readOnly }) {
                                             ? "Jarvis routes and replies through the cloud model."
                                             : "Everything runs on the local model on the Jetson." })] }), _jsxs("div", { className: "dm-model-switch", children: [_jsx(Toggle, { checked: cloud, disabled: readOnly || busy, label: "Cloud mode", onChange: (v) => void switchTo(v ? "cloud" : "local") }), _jsx("button", { type: "button", className: "dm-btn dm-btn-primary dm-btn-sm", disabled: readOnly || busy, onClick: () => void switchTo(next), children: busy ? "Switching…" : cloud ? "Switch to local" : "Switch to cloud" })] })] }), _jsxs("dl", { className: "dm-model-specs", children: [_jsxs("div", { children: [_jsx("dt", { children: "Cloud route model" }), _jsx("dd", { className: "dm-mono", children: settings.cloud_model_route })] }), _jsxs("div", { children: [_jsx("dt", { children: "Cloud persona model" }), _jsx("dd", { className: "dm-mono", children: settings.cloud_model_persona })] }), _jsxs("div", { children: [_jsx("dt", { children: "Last changed" }), _jsx("dd", { children: settings.updated_at ? new Date(settings.updated_at).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "—" })] })] }), _jsxs("p", { className: "dm-note dm-note-sm", children: [_jsx(Icon, { name: "info" }), " ", _jsx("span", { children: MODEL_MODE_PRIVACY_NOTE })] }), pushed !== null && !switchError ? (_jsxs("p", { className: "dm-alert dm-alert-ok", role: "status", children: [_jsx(Icon, { name: "check" }), pushed
                                 ? `Switched to ${cloud ? "cloud" : "local"} — pushed to the voice runtime, effective immediately.`
-                                : `Switched to ${cloud ? "cloud" : "local"} — saved; the voice runtime picks it up on its next turn.`] })) : null, switchError ? (_jsxs("p", { className: "dm-alert dm-alert-error", role: "alert", children: [_jsx(Icon, { name: "alert" }), " ", switchError] })) : null, readOnly ? (_jsxs("p", { className: "dm-note dm-note-sm", children: [_jsx(Icon, { name: "lock", size: 13 }), _jsxs("span", { children: ["Only the household owner can switch the model mode.", me ? _jsxs(_Fragment, { children: [" You're signed in as ", _jsx("b", { children: me.role }), "."] }) : null] })] })) : null] }), _jsx(ProviderCard, { me: me, readOnly: readOnly })] }));
+                                : `Switched to ${cloud ? "cloud" : "local"} — saved; the voice runtime picks it up on its next turn.`] })) : null, switchError ? (_jsxs("p", { className: "dm-alert dm-alert-error", role: "alert", children: [_jsx(Icon, { name: "alert" }), " ", switchError] })) : null, readOnly ? (_jsxs("p", { className: "dm-note dm-note-sm", children: [_jsx(Icon, { name: "lock", size: 13 }), _jsxs("span", { children: ["Only the household owner can switch the model mode.", me ? _jsxs(_Fragment, { children: [" You're signed in as ", _jsx("b", { children: me.role }), "."] }) : null] })] })) : null] }), _jsx(VoiceProfileCard, { me: me, readOnly: readOnly }), _jsx(ProviderCard, { me: me, readOnly: readOnly }), _jsx(UaModeCard, { me: me, readOnly: readOnly })] }));
 }

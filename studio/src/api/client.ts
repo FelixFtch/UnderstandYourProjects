@@ -8,6 +8,7 @@ import type {
   PairResponse, PolicyDoc, PolicyDomain, PolicyTree,
   ProjectAnswer, ProjectDigest, ProjectGraph, ProjectList, SendResult, SensorDeviceList, SensorHistory,
   SensorStateRow, ShareCard, ShareCardUpdate, Thread,
+  UaModeResult, UaModeSettings, UaModeUpdate, VoiceProfilesResult, VoiceProfilesSettings, VoiceProfilesUpdate,
 } from "./contracts";
 
 const TOKEN_KEY = "jarvis.studio.token";
@@ -219,4 +220,10 @@ export const api = {
   putLlmProviders: (update: LlmProvidersUpdate, s?: AbortSignal) => send<LlmProvidersResult>("PUT", "/api/settings/llm-providers", update, s),
   notifications: (limit = 20, s?: AbortSignal) => get<NotificationList>(`/api/studio/notifications?limit=${limit}`, s),
   markNotificationsRead: (req: MarkReadRequest, s?: AbortSignal) => send<{ ok: boolean }>("POST", "/api/studio/notifications/mark-read", req, s),
+
+  // §6e voice profiles (STT/LLM/TTS chain) & UA analysis mode (2026-10-15)
+  voiceProfiles: (s?: AbortSignal) => get<VoiceProfilesSettings>("/api/settings/voice-profiles", s),
+  putVoiceProfiles: (update: VoiceProfilesUpdate, s?: AbortSignal) => send<VoiceProfilesResult>("PUT", "/api/settings/voice-profiles", update, s),
+  uaMode: (s?: AbortSignal) => get<UaModeSettings>("/api/settings/ua-mode", s),
+  putUaMode: (update: UaModeUpdate, s?: AbortSignal) => send<UaModeResult>("PUT", "/api/settings/ua-mode", update, s),
 };
