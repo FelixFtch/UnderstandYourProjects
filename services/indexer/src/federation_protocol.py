@@ -9,13 +9,24 @@ local HomeHub-aware query coordinator.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import re
 from typing import Any, Mapping
 
 
 PROTOCOL_VERSION = "uyp-federation-v1"
+AGENT_IDENTITY_VERSION = "uyp-agent-identity-v1"
 OPERATIONS = {"project.search", "project.related"}
 VISIBILITIES = {"summary", "evidence_refs"}
 SHARE_POLICIES = {"summary_only", "summary_and_evidence_refs"}
+AGENT_MESSAGE_KINDS = {
+    "agent.ask", "agent.reply", "contact.invite", "contact.accept",
+    "group.invite", "group.accept", "group.message",
+}
+_JARVIS_NUMBER = re.compile(r"^J-[0-9]{4}-[0-9]{4}$")
+_AGENT_FORBIDDEN = {
+    "token", "bearer", "device_token", "accessContext", "grant",
+    "rawSource", "sourceBytes", "filesystemPath", "vectorStore", "database",
+}
 
 
 class FederationProtocolError(ValueError):
@@ -43,6 +54,142 @@ def _future_expiry(value: Any) -> str:
     if expiry.tzinfo is None or expiry.astimezone(timezone.utc) <= datetime.now(timezone.utc):
         raise FederationProtocolError("federation request is expired")
     return expiry.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _issued_at(value: Any) -> str:
+    """Normalize an issuance timestamp without treating it as authority."""
+    text = _text(value, "issuedAt")
+    try:
+        issued = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise FederationProtocolError("issuedAt must be ISO-8601") from exc
+    if issued.tzinfo is None:
+        raise FederationProtocolError("issuedAt must include a timezone")
+    return issued.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _bounded_scopes(value: Any, field: str) -> list[str]:
+    scopes = _list(value, field)
+    if len(scopes) > 64:
+        raise FederationProtocolError(f"{field} is too large")
+    return scopes
+
+
+def validate_agent_card(value: Mapping[str, Any], *, audience: str | None = None,
+                       now: datetime | None = None) -> dict[str, Any]:
+    """Validate a HomeHub-issued public Agent card projection.
+
+    This checks the transport shape, expiry, revocation marker, and audience;
+    it does *not* verify a signature or mint trust.  The HomeHub adapter must
+    perform cryptographic verification and revocation lookup before a caller
+    treats the returned card as verified.  Legacy Studio ``my_card`` values
+    (display/number/urn/town only) are discovery metadata and intentionally do
+    not pass this validator.
+    """
+    if not isinstance(value, Mapping):
+        raise FederationProtocolError("agent card must be an object")
+    required = {
+        "schemaVersion", "cardId", "jarvisNodeId", "agentUrn", "jarvisNumber",
+        "displayLabel", "capabilities", "issuer", "audience", "issuedAt",
+        "expiresAt", "revocationRef", "keyFingerprint", "signature",
+    }
+    missing = required.difference(value.keys())
+    if missing:
+        raise FederationProtocolError("missing agent card fields: " + ", ".join(sorted(missing)))
+    if value["schemaVersion"] != AGENT_IDENTITY_VERSION:
+        raise FederationProtocolError("unsupported agent identity protocol")
+    if _AGENT_FORBIDDEN.intersection(value.keys()):
+        raise FederationProtocolError("agent card contains authority or private source material")
+    card = {key: _text(value[key], key) for key in (
+        "schemaVersion", "cardId", "jarvisNodeId", "agentUrn", "jarvisNumber",
+        "displayLabel", "issuer", "audience", "revocationRef",
+        "keyFingerprint", "signature")}
+    if not _JARVIS_NUMBER.fullmatch(card["jarvisNumber"]):
+        raise FederationProtocolError("jarvisNumber must be J-####-####")
+    card["issuedAt"] = _issued_at(value["issuedAt"])
+    card["expiresAt"] = _future_expiry(value["expiresAt"])
+    if value.get("revoked") is True or value.get("validation") in {"revoked", "expired"}:
+        raise FederationProtocolError("agent card is revoked or expired")
+    if audience is not None and card["audience"] != _text(audience, "audience"):
+        raise FederationProtocolError("agent card audience mismatch")
+    card["capabilities"] = _bounded_scopes(value["capabilities"], "capabilities")
+    return card
+
+
+def validate_agent_message(value: Mapping[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
+    """Validate the shared Miku/Jarvis/NandaTown message envelope.
+
+    This is a shape and confidentiality boundary only.  HomeHub must still
+    resolve the sender/receiver, delegation, share card, grant epoch, and
+    revocation state before dispatching the body.  The envelope never carries
+    a bearer, AccessContext, raw source, vector store, or database.
+    """
+    if not isinstance(value, Mapping):
+        raise FederationProtocolError("agent message must be an object")
+    required = {
+        "schemaVersion", "messageId", "kind", "requestId", "senderNodeId",
+        "receiverNodeId", "nonce", "issuedAt", "expiresAt", "audience",
+        "authorizationRef", "scope", "body",
+    }
+    missing = required.difference(value.keys())
+    if missing:
+        raise FederationProtocolError("missing agent message fields: " + ", ".join(sorted(missing)))
+    if value["schemaVersion"] != AGENT_IDENTITY_VERSION:
+        raise FederationProtocolError("unsupported agent identity protocol")
+    if value["kind"] not in AGENT_MESSAGE_KINDS:
+        raise FederationProtocolError("unsupported agent message kind")
+    if _AGENT_FORBIDDEN.intersection(value.keys()):
+        raise FederationProtocolError("agent message contains authority or private source material")
+    result = {
+        "schemaVersion": AGENT_IDENTITY_VERSION,
+        "messageId": _text(value["messageId"], "messageId"),
+        "kind": _text(value["kind"], "kind"),
+        "requestId": _text(value["requestId"], "requestId"),
+        "senderNodeId": _text(value["senderNodeId"], "senderNodeId"),
+        "receiverNodeId": _text(value["receiverNodeId"], "receiverNodeId"),
+        "nonce": _text(value["nonce"], "nonce"),
+        "issuedAt": _issued_at(value["issuedAt"]),
+        "expiresAt": _future_expiry(value["expiresAt"]),
+        "audience": _text(value["audience"], "audience"),
+        "authorizationRef": _text(value["authorizationRef"], "authorizationRef"),
+    }
+    if result["senderNodeId"] == result["receiverNodeId"]:
+        raise FederationProtocolError("agent message must target a different node")
+    scope = value["scope"]
+    if not isinstance(scope, Mapping):
+        raise FederationProtocolError("scope must be an object")
+    share = _text(scope.get("sharePolicy"), "scope.sharePolicy")
+    if share not in SHARE_POLICIES:
+        raise FederationProtocolError("unsupported scope share policy")
+    normalized_scope = {"sharePolicy": share}
+    for key in ("projectScopes", "sourceScopes"):
+        if key in scope:
+            normalized_scope[key] = _bounded_scopes(scope[key], f"scope.{key}")
+    result["scope"] = normalized_scope
+    body = value["body"]
+    if not isinstance(body, Mapping):
+        raise FederationProtocolError("body must be an object")
+    if _AGENT_FORBIDDEN.intersection(body.keys()):
+        raise FederationProtocolError("agent message body contains private source material")
+    # Body is intentionally opaque to the transport, but bounded to prevent a
+    # discovery/mailbox protocol from becoming a source-dump channel.
+    try:
+        encoded = __import__("json").dumps(body, ensure_ascii=False)
+    except (TypeError, ValueError) as exc:
+        raise FederationProtocolError("body must be JSON serializable") from exc
+    if len(encoded.encode("utf-8")) > 64 * 1024:
+        raise FederationProtocolError("agent message body is too large")
+    result["body"] = dict(body)
+    for key in ("groupId", "contactId", "sessionId", "delegationRef"):
+        if key in value and value[key] is not None:
+            result[key] = _text(value[key], key)
+    if value["kind"].startswith("group.") and not result.get("groupId"):
+        raise FederationProtocolError("group messages require groupId")
+    if value["kind"].startswith("contact.") and not result.get("contactId"):
+        raise FederationProtocolError("contact messages require contactId")
+    if value["kind"].startswith("agent.") and not (result.get("contactId") or result.get("groupId")):
+        raise FederationProtocolError("agent messages require contactId or groupId")
+    return result
 
 
 def validate_peer_metadata(value: Mapping[str, Any]) -> dict[str, Any]:
