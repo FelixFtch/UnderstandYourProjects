@@ -154,6 +154,23 @@ def run_checked(command: list[str], *, env: dict[str, str], attempts: int = 3, b
             time.sleep(backoff_s * attempt)
 
 
+def _indexer_run_flags(state: Path, root_name: str) -> dict:
+    """Operator-visible flags from the enrichment worker's run-state JSON
+    (<state_root>/<root>.json) — UA 云端分析模式 (2026-10-15): "ua_mode"
+    records which enrichment path ran, and "cloud_enrich_broken" is set when
+    5 consecutive cloud failures degraded the rest of the job to
+    structure-only.  Surfacing them on the job's uaSummary keeps an
+    all-structure-only degradation visible instead of silent.  Missing or
+    unreadable state -> {} (a standalone CLI run has no worker file)."""
+    try:
+        data = json.loads((state / (root_name + ".json")).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: data[k] for k in ("ua_mode", "cloud_enrich_broken") if data.get(k)}
+
+
 def run(
     *,
     host: str,
@@ -277,6 +294,9 @@ def run(
         "edges": len(graph.get("edges", [])),
         "languages": graph.get("project", {}).get("languages", []),
     }
+    # Merge the enrichment worker's UA-mode flags (cloud_enrich_broken) so the
+    # job's uaSummary tells the operator when cloud enrichment degraded.
+    summary.update(_indexer_run_flags(state, str(manifest.get("root_name") or root_name)))
     (project_state / "run-summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     return summary
 

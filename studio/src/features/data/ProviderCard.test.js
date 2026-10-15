@@ -19,6 +19,9 @@ const PROVIDERS = {
         { id: "claude", label: "Claude · Anthropic", model: "claude-sonnet-4-6", has_key: false, key_hint: null },
         { id: "gemini", label: "Gemini · Google", model: "gemini-3-flash", has_key: false, key_hint: null },
         { id: "deepseek", label: "DeepSeek", model: "deepseek-v4-flash", has_key: true, key_hint: "sk-…abcd" },
+        // 2026-10-15: the hub catalog grew to seven vendors (grok + muse)
+        { id: "grok", label: "Grok · xAI", model: "grok-4.7", has_key: false, key_hint: null },
+        { id: "muse", label: "Muse · Meta", model: "muse-spark-1.3", has_key: false, key_hint: null },
     ],
     updated_at: "2026-10-14T08:00:00Z",
 };
@@ -43,7 +46,7 @@ function putProviders(body) {
     return { status: 200, body: typeof body === "object" && body !== null && "pushed" in body ? body : { ...body, pushed: false } };
 }
 describe("ProviderCard (Data → Model)", () => {
-    it("renders the five providers with model + key status, preselecting the active one", async () => {
+    it("renders all seven providers with model + key status, preselecting the active one", async () => {
         handler = (url) => (url === GET_URL ? { status: 200, body: PROVIDERS } : undefined);
         render(_jsx(ProviderCard, { me: ME_OWNER, readOnly: false }));
         // card header names the active provider; the picker is preselected on it
@@ -52,16 +55,18 @@ describe("ProviderCard (Data → Model)", () => {
         expect(picker.textContent).toContain("Qwen · Alibaba Bailian");
         expect(picker.textContent).toContain("qwen3.8-flash");
         expect(calls.filter((c) => c.url === GET_URL)).toEqual([{ url: GET_URL, method: "GET", body: undefined }]);
-        // the dropdown lists all five vendors with their model and a key-status dot
+        // the dropdown is server-driven: all seven vendors with their model and a key-status dot
         fireEvent.click(picker);
         const listbox = await screen.findByRole("listbox", { name: "Cloud providers" });
-        expect(within(listbox).getAllByRole("option")).toHaveLength(5);
-        for (const label of ["Qwen · Alibaba Bailian", "OpenAI", "Claude · Anthropic", "Gemini · Google", "DeepSeek"]) {
+        expect(within(listbox).getAllByRole("option")).toHaveLength(7);
+        for (const label of ["Qwen · Alibaba Bailian", "OpenAI", "Claude · Anthropic", "Gemini · Google", "DeepSeek", "Grok · xAI", "Muse · Meta"]) {
             expect(within(listbox).getByText(label)).toBeTruthy();
         }
         expect(within(listbox).getAllByTitle(/Key stored/)).toHaveLength(2); // qwen + deepseek
-        expect(within(listbox).getAllByTitle("No key stored")).toHaveLength(3);
+        expect(within(listbox).getAllByTitle("No key stored")).toHaveLength(5);
         expect(within(listbox).getByText("deepseek-v4-flash")).toBeTruthy();
+        expect(within(listbox).getByText("grok-4.7")).toBeTruthy();
+        expect(within(listbox).getByText("muse-spark-1.3")).toBeTruthy();
         fireEvent.keyDown(document, { key: "Escape" });
         // selected provider detail: model prefilled (with datalist suggestions), stored-key hint + Replace key
         const model = screen.getByLabelText("Model");

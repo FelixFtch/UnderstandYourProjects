@@ -33,6 +33,8 @@ Usage: anchored_enrich.py --graph <knowledge-graph.json> --output-root <dir> \
 from __future__ import annotations
 import argparse, glob, json, os, re, subprocess, time, unicodedata, urllib.request
 
+import ua_llm_client as ua_llm  # UA 云端/本地分析模式 (2026-10-15): 只切换 qwen 富集段
+
 def api(host, token, path, binary=False):
     req = urllib.request.Request(host.rstrip("/") + path,
                                  headers={"Authorization": f"Bearer {token}"})
@@ -62,6 +64,23 @@ def load_symbols(graph_path: str) -> dict[str, list[dict]]:
     return symbols_from_graph(json.load(open(graph_path, encoding="utf-8")))
 
 def qwen(prompt: str) -> tuple[str, int]:
+    # UA 云端/本地分析模式 (2026-10-15): cloud config active -> the user-chosen
+    # provider answers; failures raise RuntimeError exactly like the local
+    # retry exhaustion below, so the caller's honest skip (the file keeps its
+    # published derived) is unchanged.  Local mode falls through to the
+    # byte-identical curl path.  Laya triage is not part of this script and
+    # stays local regardless (owner-pinned).
+    try:
+        client = ua_llm.load_client()
+    except ua_llm.CloudConfigError as exc:
+        print(f"  WARNING UA cloud config error, using local ollama: {exc}", flush=True)
+        client = None
+    if client is not None:
+        try:
+            return client.chat([{"role": "user", "content": prompt}],
+                               max_tokens=1200, timeout=200)
+        except ua_llm.CloudError as exc:
+            raise RuntimeError(f"cloud enrich ({client.provider}) failed: {exc}") from None
     body = json.dumps({"model": os.environ.get("UYP_OLLAMA_MODEL", "qwen3.5-route"), "think": False, "stream": False,
                        "options": {"num_ctx": 4096},
                        "messages": [{"role": "user", "content": prompt}]})
@@ -304,6 +323,15 @@ def main():
     symbols = load_symbols(a.graph)
     items = sorted(glob.glob(os.path.join(a.output_root, "*.knowledge.json")))
     n_done = n_tok = n_retry = 0
+    # UA cloud breaker (2026-10-15): in cloud mode, 5 consecutive enrichment
+    # failures stop the pass; files not yet visited keep their published
+    # summaries (the honest structure-only equivalent for a re-enrichment
+    # pass).  Local mode keeps the historical per-file skip behavior.
+    try:
+        cloud_mode = ua_llm.load_client() is not None
+    except ua_llm.CloudConfigError:
+        cloud_mode = False  # qwen() already printed the warning; local path
+    cloud_fails = 0
     for path in items:
         d = json.load(open(path, encoding="utf-8"))
         rel = d.get("file", "")
@@ -353,7 +381,14 @@ def main():
                     print(f"  qwen-fail(retry) {rel}: {e}", flush=True)
                     parsed = None
         except RuntimeError as e:
-            print(f"  qwen-fail {rel}: {e}", flush=True); continue
+            print(f"  qwen-fail {rel}: {e}", flush=True)
+            if cloud_mode:
+                cloud_fails += 1
+                if cloud_fails >= ua_llm.BREAKER_THRESHOLD:
+                    print(f"  WARNING cloud enrichment broken ({cloud_fails} consecutive failures); "
+                          "stopping the pass, remaining files keep their published summaries", flush=True)
+                    break
+            continue
         if parsed and not parsed["components"]:
             # 结构性泄漏修复: 72/119 零 components -> 表内前三行兜底 (确定性)
             parsed["components"] = component_fallback(syms)
@@ -364,6 +399,7 @@ def main():
         d["anchor_symbols"] = len(syms)
         d["anchor_top"] = f"{anchor['name']} L{anchor['lo']}-L{anchor['hi']}"
         json.dump(d, open(path, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+        cloud_fails = 0  # a successful write resets the cloud breaker streak
         n_done += 1; n_tok += tok
         print(f"  anchored {rel[:66]} | anchor={anchor['name']} | {tok}tok {time.time()-t0:.0f}s | {'OK' if parsed else 'RAW'}", flush=True)
     print(f"\nDONE anchored={n_done} retries={n_retry} tokens={n_tok}")

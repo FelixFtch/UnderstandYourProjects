@@ -29,6 +29,7 @@ from datetime import datetime, timedelta, timezone
 
 import project_jobs as J
 import projects as P
+import ua_llm_client as ua_llm  # UA 云端/本地分析模式 (2026-10-15): ask 综合段可切云端
 from knowledge_search import INTERACTIVE_LOCK, score as lexical_score, tokenize
 
 TIER_ORDER = {"A": 0, "B": 1, "C": 2, "gate": 3}
@@ -290,7 +291,22 @@ def gbrain_blocks(question: str, member: str, role: str) -> list[dict]:
 
 
 def ollama_chat(prompt: str) -> str | None:
-    """Local Qwen synthesis (same model env as knowledge_search, think:false)."""
+    """UA 分析模式 (2026-10-15): with a UA cloud config present the synthesis
+    goes to the user-chosen provider; otherwise the local Qwen path below is
+    byte-identical (same model env as knowledge_search, think:false).  Cloud
+    failures return None — the same honest "model unavailable" contract
+    callers already handle for the local path."""
+    try:
+        client = ua_llm.load_client()
+    except ua_llm.CloudConfigError:
+        client = None  # a broken cloud config must never break a query; local path
+    if client is not None:
+        try:
+            content, _tokens = client.chat([{"role": "user", "content": prompt}],
+                                           max_tokens=800, timeout=80.0)
+        except ua_llm.CloudError:
+            return None
+        return content.strip() or None
     url = os.environ.get("UYP_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/") + "/api/chat"
     body = {"model": os.environ.get("UYP_OLLAMA_MODEL", "qwen3.5-route"), "think": False, "stream": False,
             "options": {"num_ctx": 4096}, "messages": [{"role": "user", "content": prompt}]}

@@ -332,3 +332,16 @@
 .dm-prov-keyrow .dm-input { flex: 1 1 auto; min-width: 0; }
 .dm-prov-keyrow .dm-btn { flex: none; }
 .dm-prov-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+
+/* ── Voice profile card (2026-10-15): builtin switches + custom mix editor ── */
+.dm-voice-builtins { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 8px; margin-top: 12px; }
+.dm-voice-builtin { padding: 9px 12px; }
+.dm-voice-builtin .dm-prov-active { margin-left: auto; }
+.dm-voice-custom { margin-top: 14px; }
+.dm-voice-mixsel { margin-left: auto; width: auto; min-width: 170px; height: 30px; font-size: 12.5px; }
+.dm-voice-mix { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr)); gap: 10px; }
+
+/* ── UA analysis mode card (2026-10-15) ── */
+.dm-ua { margin-top: 14px; }
+.dm-ua-mode { margin-top: 12px; }
+.dm-ua .dm-prov-form { margin-top: 12px; }

@@ -11,6 +11,10 @@ const live = {
     putModelMode: (update) => api.putModelMode(update),
     llmProviders: () => api.llmProviders(),
     putLlmProviders: (update) => api.putLlmProviders(update),
+    voiceProfiles: () => api.voiceProfiles(),
+    putVoiceProfiles: (update) => api.putVoiceProfiles(update),
+    uaMode: () => api.uaMode(),
+    putUaMode: (update) => api.putUaMode(update),
 };
 let fixtureImpl = null;
 function impl() {
@@ -28,4 +32,8 @@ export const dataApi = {
     putModelMode: async (update) => (await impl()).putModelMode(update),
     llmProviders: async () => (await impl()).llmProviders(),
     putLlmProviders: async (update) => (await impl()).putLlmProviders(update),
+    voiceProfiles: async () => (await impl()).voiceProfiles(),
+    putVoiceProfiles: async (update) => (await impl()).putVoiceProfiles(update),
+    uaMode: async () => (await impl()).uaMode(),
+    putUaMode: async (update) => (await impl()).putUaMode(update),
 };

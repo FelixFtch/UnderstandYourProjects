@@ -1,13 +1,16 @@
 // Model tab (added 2026-10-14): the household-wide local ↔ cloud switch for Jarvis's
 // LLM route. One big switch card — not a per-scope policy, so it ignores the scope tree
 // and applies immediately on PUT /api/settings/model-mode. Guests/members see it read-only.
-// 2026-10-15: the "Cloud provider" card (ProviderCard.tsx) sits below the mode switch —
-// which vendor serves cloud mode, its model and API key (PUT /api/settings/llm-providers).
+// 2026-10-15: three more cards stack below the mode switch — Voice profiles
+// (VoiceProfileCard.tsx, STT/LLM/TTS chain), Cloud provider (ProviderCard.tsx,
+// vendor/model/key) and UA analysis mode (UaModeCard.tsx, indexer engine).
 import { useEffect, useState } from "react";
 import { ApiError } from "../../api/client";
 import type { Me, ModelMode, ModelModeSettings } from "../../api/contracts";
 import { dataApi } from "./adapter";
 import { ProviderCard } from "./ProviderCard";
+import { UaModeCard } from "./UaModeCard";
+import { VoiceProfileCard } from "./VoiceProfileCard";
 import { Icon, Spinner, Toggle } from "./ui";
 
 // Fixed privacy copy — do not soften: this is the promise the switch makes.
@@ -149,8 +152,14 @@ export function ModelTab({ me, readOnly }: { me: Me | null; readOnly: boolean })
         ) : null}
       </section>
 
-      {/* 2026-10-15: multi-vendor cloud provider settings, below the mode switch */}
+      {/* 2026-10-15: voice chain profiles (STT/LLM/TTS), between mode and vendor */}
+      <VoiceProfileCard me={me} readOnly={readOnly} />
+
+      {/* 2026-10-15: multi-vendor cloud provider settings */}
       <ProviderCard me={me} readOnly={readOnly} />
+
+      {/* 2026-10-15: Understand Anything analysis engine, bottom of the tab */}
+      <UaModeCard me={me} readOnly={readOnly} />
     </div>
   );
 }

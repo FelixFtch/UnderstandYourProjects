@@ -508,3 +508,71 @@ export interface NotificationList {
 
 /** POST /api/studio/notifications/mark-read body: everything, or specific ids. */
 export type MarkReadRequest = { all: true } | { ids: number[] };
+
+// ── §6e Voice profiles & UA analysis mode (companion-api, added 2026-10-15) ──
+// A voice profile bundles the STT/LLM/TTS chain; the two builtins ("local",
+// "cloud-full") are fixed, custom mixes are owner-made. The *_options lists are
+// what the hub can actually serve for each link: "local" plus keyed
+// providers that implement that link. For example, a provider with STT but
+// no TTS is excluded from tts_options instead of creating a dead profile.
+export interface VoiceProfile {
+  name: string; // "local" | "cloud-full" | custom slug
+  label: string; // "Local (offline)"
+  stt: string; // "local" or a provider id
+  llm: string;
+  tts: string;
+  builtin: 0 | 1; // builtins cannot be renamed or re-sectioned
+}
+
+/** GET /api/settings/voice-profiles */
+export interface VoiceProfilesSettings {
+  active: string;
+  profiles: VoiceProfile[];
+  stt_options: string[];
+  llm_options: string[];
+  tts_options: string[];
+}
+
+/** Which chain sections were pushed to the voice runtime on a switch. */
+export interface VoicePush {
+  llm: boolean;
+  stt: boolean;
+  tts: boolean;
+}
+
+/** PUT /api/settings/voice-profiles response: settings plus the per-section
+ * push result — present only when switching `active`; saving a custom mix
+ * never pushes (pushed: null). */
+export interface VoiceProfilesResult extends VoiceProfilesSettings {
+  pushed: VoicePush | null;
+}
+
+/** PUT /api/settings/voice-profiles body: switch the active profile, or
+ * create/update a custom mix (name is the identity; builtin names rejected). */
+export type VoiceProfilesUpdate =
+  | { active: string }
+  | { name: string; stt: string; llm: string; tts: string; label?: string };
+
+export type UaMode = "local" | "cloud";
+
+/** GET /api/settings/ua-mode: which engine runs Understand Anything's deep
+ * analysis (Laya pre-filtering always stays local). */
+export interface UaModeSettings {
+  mode: UaMode;
+  provider: string; // qwen | openai | claude | gemini | deepseek | grok | muse
+  model: string;
+}
+
+/** PUT /api/settings/ua-mode response: `written` = the indexer config file was
+ * updated (false = saved on the hub but the running indexer keeps its mode). */
+export interface UaModeResult extends UaModeSettings {
+  written: boolean;
+}
+
+/** PUT /api/settings/ua-mode body. For mode "local" the provider/model may be
+ * omitted (the stored pair is kept). */
+export interface UaModeUpdate {
+  mode: UaMode;
+  provider?: string;
+  model?: string;
+}

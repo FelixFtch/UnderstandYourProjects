@@ -108,7 +108,11 @@ class TestIndexRunWritesUaCache(unittest.TestCase):
 
         argv = ["index_project.py", "--host", "http://connector",
                 "--token-file", str(token), "--grant", "g_test", "--limit", "0"]
-        run_env = {"UYP_KEYFILE": "off", "UYP_ENRICH_WORKERS": "1"}
+        run_env = {"UYP_KEYFILE": "off", "UYP_ENRICH_WORKERS": "1",
+                   # Hermetic on machines where a real ua-cloud.json exists
+                   # (UA 云端分析模式 2026-10-15): pin the config path at an
+                   # absent file so these tests always exercise the local path.
+                   "UYP_UA_CLOUD_CONFIG": str(root / "absent-ua-cloud.json")}
         run_env.update(env)
         with patch.object(sys, "argv", argv), \
              patch.dict(os.environ, run_env), \
