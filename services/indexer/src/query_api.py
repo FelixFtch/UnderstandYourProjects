@@ -228,6 +228,23 @@ def _job_projection(raw: dict) -> dict | None:
         value = raw.get(key)
         if isinstance(value, str) and value.strip() and len(value) <= 256:
             result[key] = value.strip()
+    # Optional asynchronous gBrain mirror status.  Keep this projection to
+    # version/epoch/attempt metadata: local knowledge paths, endpoints, and
+    # writer credentials never cross the Studio boundary.
+    mirror = raw.get("gbrainMirror")
+    if isinstance(mirror, dict):
+        mirror_result = {}
+        for key in ("mirrorJobId", "indexJobId", "projectId", "knowledgeVersion",
+                    "sourceEpoch", "grantEpoch", "publishedAt", "phase",
+                    "attempts", "maxAttempts", "nextAttemptAt", "lastError",
+                    "createdAt", "updatedAt"):
+            value = mirror.get(key)
+            if isinstance(value, str) and len(value) <= 300:
+                mirror_result[key] = value
+            elif key in {"attempts", "maxAttempts"} and isinstance(value, int) and value >= 0:
+                mirror_result[key] = value
+        if mirror_result:
+            result["gbrainMirror"] = mirror_result
     return result
 
 
@@ -658,8 +675,15 @@ def start_nandatown_poller() -> bool:
     return True
 
 
-def project_snapshot(project_id: str | None = None) -> dict:
-    context = load_access_context()
+def project_snapshot(project_id: str | None = None, *, context: dict | None = None) -> dict:
+    """Build a snapshot from an already resolved HomeHub context.
+
+    Direct callers that omit ``context`` retain the local CLI/test projection.
+    HTTP Studio handlers resolve the caller first and pass the request-scoped
+    context here, so a process-level fallback can never cross user sessions.
+    """
+    if context is None:
+        context = load_access_context()
     all_groups = grouped_items()
     if context:
         visible: dict[str, list[dict]] = {}
@@ -1194,14 +1218,16 @@ class QueryHandler(BaseHTTPRequestHandler):
             self.json_response(health_payload(), audit=audit)
             return
         if parsed.path == "/api/studio/snapshot":
-            self.json_response(project_snapshot((query.get("projectId") or [None])[0]), audit=audit)
+            caller = self._project_caller(audit)
+            if caller is None:
+                return
+            self.json_response(project_snapshot((query.get("projectId") or [None])[0], context=caller["context"]), audit=audit)
             return
         if parsed.path == "/api/knowledge-graph":
-            context = load_access_context()
-            if context is None:
-                self.json_response({"ok": False, "error": "access_context_unavailable", "message": "HomeHub must provide an AccessContext before the UA graph can be published."}, 503, audit)
+            caller = self._project_caller(audit)
+            if caller is None:
                 return
-            snapshot = project_snapshot((query.get("projectId") or [None])[0])
+            snapshot = project_snapshot((query.get("projectId") or [None])[0], context=caller["context"])
             graph = snapshot.get("graph")
             if graph is None:
                 self.json_response({"ok": False, "error": "knowledge_graph_unavailable"}, 404, audit)
@@ -1209,10 +1235,16 @@ class QueryHandler(BaseHTTPRequestHandler):
                 self.json_response(graph, audit=audit)
             return
         if parsed.path == "/api/sources":
-            self.json_response({"sources": project_snapshot((query.get("projectId") or [None])[0])["sources"]}, audit=audit)
+            caller = self._project_caller(audit)
+            if caller is None:
+                return
+            self.json_response({"sources": project_snapshot((query.get("projectId") or [None])[0], context=caller["context"])["sources"]}, audit=audit)
             return
         if parsed.path == "/api/connectors":
-            context = load_access_context()
+            caller = self._project_caller(audit)
+            if caller is None:
+                return
+            context = caller["context"]
             self.json_response({
                 "connectors": connector_registry_projection(context),
                 "registry": registry_health(),
@@ -1259,13 +1291,19 @@ class QueryHandler(BaseHTTPRequestHandler):
             self._get_projects(parsed.path, query, audit)
             return
         if parsed.path == "/api/index/jobs":
-            context = load_access_context()
+            caller = self._project_caller(audit)
+            if caller is None:
+                return
+            context = caller["context"]
             project = (query.get("projectId") or [None])[0]
             self.json_response({"jobs": load_persisted_index_jobs(project, context), "accessContext": bool(context)}, audit=audit)
             return
         if parsed.path.startswith("/api/knowledge/evidence/"):
+            caller = self._project_caller(audit)
+            if caller is None:
+                return
             evidence_id = parsed.path.rsplit("/", 1)[-1]
-            evidence = next((item for item in project_snapshot((query.get("projectId") or [None])[0])["evidence"] if item["evidenceId"] == evidence_id), None)
+            evidence = next((item for item in project_snapshot((query.get("projectId") or [None])[0], context=caller["context"])["evidence"] if item["evidenceId"] == evidence_id), None)
             if evidence is None:
                 self.json_response({"ok": False, "error": "evidence_not_found"}, 404, audit)
             else:

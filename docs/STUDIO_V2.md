@@ -256,9 +256,18 @@ loopback `X-Agent-Member` path (b)); companion proxies `/api/studio/projects*` �
     "status":"analyzed"|"analyzing"|"queued"|"stale"|"failed"|"not_analyzed",
     "analyzed_at":"ISO"|null,"stats":{"files":int,"summarized":int,"nodes":int,"edges":int,"languages":[str]},
     "tiers":{"A":int,"B":int,"C":int,"gate":int},"embedded_roots":[str]}],
-   "tree":[{"project_id":…,"children":[…]}]}
+   "tree":[{"project_id":…,"children":[…]}],
+   "folder_tree":[{"folder_id":"folder:…","project_id":"…","name":str,
+     "path":str,"device_id":str|null,"status":str,
+     "parent_folder_id":"folder:…"|null,"children":[…]}]}
   ```
   `path` is owner-visible metadata from the project registry; never a source read.
+  `tree` remains the compact project-id relation for existing clients.
+  `folder_tree` is the explicit visualization projection: one node exists for
+  each visible, registered analyzed folder, with a stable `folder_id`, parent
+  pointer, and nested children. It does not invent nodes for subdirectories
+  that have not been separately analyzed; files and symbols remain in the UA
+  graph returned by `/api/projects/{id}/graph`.
 - `GET /api/projects/{id}` → digest:
   ```json
   {"project":{…as above},"overview":str,"key_files":[{"file","tier","purpose","key_points":[str]}],

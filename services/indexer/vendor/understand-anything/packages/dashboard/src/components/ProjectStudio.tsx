@@ -22,7 +22,7 @@ interface ProjectStudioProps {
 }
 
 const sectionLabels: Record<StudioSection, { label: string; detail: string }> = {
-  overview: { label: "Today", detail: "Project command center" },
+  overview: { label: "Understanding", detail: "Map, files, and evidence" },
   projects: { label: "Projects", detail: "Your indexed work" },
   conversation: { label: "Ask Jarvis", detail: "Project conversation" },
   evidence: { label: "Evidence", detail: "Trace every answer" },
@@ -645,7 +645,7 @@ function ProjectStudioSurface({ onOpenGraph, snapshot: suppliedSnapshot }: Proje
         <button className="studio-workspace-switcher" type="button" onClick={() => setActiveSection("sources")}><span className="studio-workspace-avatar">J</span><span><strong>Current Jarvis box</strong><small>Jetson target · pairing draft</small></span><Icon name="chevron" size={14} /></button>
         <nav className="studio-nav" aria-label="Project studio navigation">
           {(Object.keys(sectionLabels) as StudioSection[]).map((section) => (
-            <button key={section} type="button" className={`studio-nav-item ${activeSection === section ? "is-active" : ""} ${section === "conversation" || section === "collaborate" || section === "automations" || section === "privacy" ? "studio-nav-priority" : ""}`} onClick={() => setActiveSection(section)}><Icon name={section === "overview" ? "grid" : section === "projects" || section === "sources" ? "folder" : section === "evidence" ? "search" : section === "activity" || section === "automations" ? "pulse" : section === "privacy" ? "shield" : section === "conversation" ? "message" : "users"} size={17} /><span>{sectionLabels[section].label}</span>{section === "overview" && <span className="studio-nav-badge">Now</span>}{section === "collaborate" && <span className="studio-nav-badge studio-nav-badge-warn">New</span>}{section === "automations" && <span className="studio-nav-badge">Read-only</span>}</button>
+            <button key={section} type="button" title={sectionLabels[section].detail} className={`studio-nav-item ${activeSection === section ? "is-active" : ""} ${section === "conversation" || section === "collaborate" || section === "automations" || section === "privacy" ? "studio-nav-priority" : ""}`} onClick={() => setActiveSection(section)}><Icon name={section === "overview" ? "grid" : section === "projects" || section === "sources" ? "folder" : section === "evidence" ? "search" : section === "activity" || section === "automations" ? "pulse" : section === "privacy" ? "shield" : section === "conversation" ? "message" : "users"} size={17} /><span>{sectionLabels[section].label}</span>{section === "overview" && <span className="studio-nav-badge">Map</span>}{section === "collaborate" && <span className="studio-nav-badge studio-nav-badge-warn">New</span>}{section === "automations" && <span className="studio-nav-badge">Read-only</span>}</button>
           ))}
         </nav>
         <div className="studio-sidebar-bottom"><div className="studio-privacy-card"><span className="studio-privacy-icon"><Icon name="shield" size={15} /></span><div><strong>HomeHub boundary</strong><p>Identity and access are supplied by HomeHub.</p></div></div><button type="button" className="studio-help-link">Keyboard shortcuts <span>?</span></button></div>

@@ -95,7 +95,11 @@ def list_projects(context: dict) -> dict:
     records = sorted((r for r in doc["projects"] if P.visible(context, r)), key=lambda r: r["project_id"])
     ids = {r["project_id"] for r in records}
     projects = [P.public_record(doc, r, ids) for r in records]
-    return {"projects": projects, "tree": P.build_tree(projects)}
+    # ``tree`` is the stable compact relation shape.  ``folder_tree`` adds
+    # the owner-visible folder metadata required by Studio tree/treemap views;
+    # both are derived from the same registry parent/children relation.
+    return {"projects": projects, "tree": P.build_tree(projects),
+            "folder_tree": P.build_folder_tree(projects)}
 
 
 def _resolve(context: dict, project_id: str):

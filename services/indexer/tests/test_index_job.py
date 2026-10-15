@@ -126,6 +126,12 @@ class IndexJobTests(unittest.TestCase):
         self.assertEqual(registry["connectors"][0]["sourceIds"], ["connector:demo"])
         self.assertEqual(registry["connectors"][0]["manifestState"], "ready")
         self.assertNotIn("grantId", json.dumps(registry))
+        self.assertEqual(result["gbrainMirror"]["phase"], "queued")
+        mirror_files = list((self.root / "state" / "gbrain-mirrors").glob("*.json"))
+        self.assertEqual(len(mirror_files), 1)
+        mirror = json.loads(mirror_files[0].read_text(encoding="utf-8"))
+        self.assertEqual(mirror["sourceEpoch"], "e1")
+        self.assertEqual(mirror["grantEpoch"], "g1")
 
     def test_incremental_publish_merges_over_published_baseline(self):
         """2026-10-14 field incident: a one-file incremental wave published a

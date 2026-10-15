@@ -108,10 +108,35 @@ function apiBase(): string | null {
   return "";
 }
 
+/**
+ * Forward the existing dashboard session to the Studio BFF.
+ *
+ * The graph viewer has historically carried its token in a query parameter,
+ * while Studio calls go through the scoped query API.  Keeping the token in
+ * sessionStorage lets both surfaces use the same HomeHub session without
+ * putting it back in a URL.  Demo mode intentionally has no auth header.
+ */
+export function studioAuthHeaders(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  try {
+    const token = window.sessionStorage.getItem("understand-anything-token");
+    if (!token || token === "__demo__") return {};
+    return { Authorization: `Bearer ${token}` };
+  } catch {
+    // Storage can be unavailable in privacy mode; the API will fail closed.
+    return {};
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit, signal?: AbortSignal): Promise<T> {
   const base = apiBase();
   if (base === null) throw new Error("studio_api_not_configured");
-  const response = await fetch(`${base}${path}`, { ...init, signal, headers: { "Content-Type": "application/json", ...(init?.headers || {}) } });
+  const headers = new Headers(init?.headers);
+  if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+  for (const [name, value] of Object.entries(studioAuthHeaders())) {
+    if (!headers.has(name)) headers.set(name, value);
+  }
+  const response = await fetch(`${base}${path}`, { ...init, signal, headers });
   let body: unknown = null;
   try { body = await response.json(); } catch { /* preserve the HTTP error below */ }
   if (!response.ok) {

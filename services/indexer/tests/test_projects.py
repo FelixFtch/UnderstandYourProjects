@@ -281,6 +281,56 @@ class HierarchyTests(FixtureMixin, unittest.TestCase):
         self.assertEqual([n["project_id"] for n in tree[0]["children"]], ["commontasks", "other"])
         self.assertEqual(tree[0]["children"][0]["children"][0]["project_id"], "web")
 
+    def test_folder_tree_exposes_registered_nested_folder_metadata(self):
+        by_id = self._doc(
+            ("code", "/Users/robin/code", "d_mac"),
+            ("commontasks", "/Users/robin/code/commontasks", "d_mac"),
+            ("web", "/Users/robin/code/commontasks/web", "d_mac"),
+        )
+        records = [projects.public_record({}, record, set(by_id)) for record in by_id.values()]
+        tree = projects.build_folder_tree(records)
+        self.assertEqual(tree[0]["folder_id"], "folder:code")
+        self.assertEqual(tree[0]["path"], "/Users/robin/code")
+        self.assertEqual(tree[0]["parent_folder_id"], None)
+        child = tree[0]["children"][0]
+        self.assertEqual(child["folder_id"], "folder:commontasks")
+        self.assertEqual(child["parent_folder_id"], "folder:code")
+        self.assertEqual(child["children"][0]["folder_id"], "folder:web")
+        self.assertEqual(child["children"][0]["parent_folder_id"], "folder:commontasks")
+
+    def test_folder_tree_updates_for_added_moved_and_removed_folder(self):
+        by_id = self._doc(("code", "/Users/robin/code", "d_mac"))
+        added = projects.new_record("docs", root_name="docs", path="/Users/robin/code/docs",
+                                    device_id="d_mac", output_dir="docs", grant_id=None, origin="analyze")
+        by_id["docs"] = added
+        doc = {"schema_version": projects.SCHEMA, "projects": [
+            next(record for record in by_id.values() if record["project_id"] == "code"), added,
+        ]}
+        projects.relink(doc)
+        public = [projects.public_record(doc, record, {"code", "docs"}) for record in doc["projects"]]
+        tree = projects.build_folder_tree(public)
+        self.assertEqual([node["project_id"] for node in tree[0]["children"]], ["docs"])
+
+        # Moving a registered folder turns it into a sibling/root after relink.
+        added["path"] = "/Users/robin/docs"
+        projects.relink(doc)
+        public = [projects.public_record(doc, record, {"code", "docs"}) for record in doc["projects"]]
+        tree = projects.build_folder_tree(public)
+        self.assertEqual([node["project_id"] for node in tree], ["code", "docs"])
+        self.assertIsNone(next(node for node in tree if node["project_id"] == "docs")["parent_folder_id"])
+
+        # Removing the child removes the folder node and cannot leave a stale
+        # child pointer on its former parent.
+        doc["projects"] = [record for record in doc["projects"] if record["project_id"] != "docs"]
+        projects.relink(doc)
+        public = [projects.public_record(doc, record, {"code"}) for record in doc["projects"]]
+        tree = projects.build_folder_tree(public)
+        self.assertEqual(tree, [{
+            "folder_id": "folder:code", "project_id": "code", "name": "code",
+            "path": "/Users/robin/code", "device_id": "d_mac", "status": "not_analyzed",
+            "parent_folder_id": None, "children": [],
+        }])
+
     def test_relations_only_on_the_same_device(self):
         by_id = self._doc(("code", "/Users/robin/code", "d_mac"),
                           ("nas-copy", "/Users/robin/code/commontasks", "d_nas"))
@@ -292,6 +342,8 @@ class HierarchyTests(FixtureMixin, unittest.TestCase):
         public = projects.public_record({}, by_id["commontasks"], {"commontasks"})
         self.assertIsNone(public["parent_id"])
         self.assertEqual(projects.public_record({}, by_id["code"], {"code"})["children"], [])
+        visible = [projects.public_record({}, by_id["commontasks"], {"commontasks"})]
+        self.assertEqual(projects.build_folder_tree(visible)[0]["parent_folder_id"], None)
 
     def test_unique_ids_for_same_folder_name(self):
         doc = {"projects": []}
@@ -329,12 +381,14 @@ class DigestTests(FixtureMixin, unittest.TestCase):
 
     def test_list_filters_by_project_and_source_scopes(self):
         self.assertEqual(project_digest.list_projects(self.ctx)["projects"][0]["project_id"], "commontasks")
-        self.assertEqual(project_digest.list_projects(context_for("other")), {"projects": [], "tree": []})
+        self.assertEqual(project_digest.list_projects(context_for("other")), {"projects": [], "tree": [], "folder_tree": []})
         no_source = {"projectScopes": ["commontasks"], "sourceScopes": ["connector:other"]}
         self.assertEqual(project_digest.list_projects(no_source)["projects"], [])
         wildcard = {"projectScopes": ["*"], "sourceScopes": ["*"]}
         listing = project_digest.list_projects(wildcard)
         self.assertEqual(listing["tree"], [{"project_id": "commontasks", "children": []}])
+        self.assertEqual(listing["folder_tree"][0]["folder_id"], "folder:commontasks")
+        self.assertEqual(listing["folder_tree"][0]["children"], [])
         self.assertEqual(set(listing["projects"][0]), {
             "project_id", "device_id", "root_name", "path", "parent_id", "children", "status",
             "analyzed_at", "stats", "tiers", "embedded_roots"})

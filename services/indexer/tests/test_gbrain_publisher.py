@@ -17,6 +17,7 @@ import threading
 import unittest
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -216,6 +217,16 @@ class GbrainPublisherTests(unittest.TestCase):
                                   project_id="demo", version="v9", grant_epoch="g1")
         self.assertIn("- Structure: 12 lines, 2 py defs, 3 imports", structure["content"])
 
+    def test_page_carries_source_epoch_and_evidence_anchor(self):
+        item = quick_item("src/main.py")
+        item["anchor_top"] = "file:src/main.py#L12-L18"
+        page = gp.build_page(item, project_id="demo", version="v9", grant_epoch="g1",
+                             source_epoch="epoch-7", published_at="2026-10-10T00:00:00Z")
+        self.assertIn('uyp_source_epoch: "epoch-7"', page["content"])
+        self.assertIn('uyp_evidence_anchor: "file:src/main.py#L12-L18"', page["content"])
+        self.assertIn("- Source epoch: epoch-7", page["content"])
+        self.assertIn("- Evidence anchor: file:src/main.py#L12-L18", page["content"])
+
     def test_manifest_lists_every_entry_slug(self):
         entries = [gp.build_page(quick_item("src/main.py"), project_id="demo",
                                  version="v1", grant_epoch="g1")]
@@ -223,6 +234,53 @@ class GbrainPublisherTests(unittest.TestCase):
         self.assertEqual(manifest["slug"], "project_knowledge/demo/g1/__manifest__")
         self.assertIn(entries[0]["slug"], manifest["content"])
         self.assertIn("uyp_revoked: false", manifest["content"])
+
+    def test_mirror_enqueue_is_durable_and_idempotent_without_network(self):
+        state = self.root / "state"
+        first = gp.enqueue_mirror(
+            state_root=state, index_job_id="job-1", project_id="demo",
+            knowledge_root=self.root / "output" / "demo", version="epoch-7",
+            source_epoch="epoch-7", grant_epoch="grant-1",
+            published_at="2026-10-10T00:00:00Z")
+        self.assertEqual(first["phase"], "queued")
+        self.assertEqual(first["attempts"], 0)
+        self.assertEqual(len(gp.MirrorJobStore(state).list()), 1)
+        second = gp.enqueue_mirror(
+            state_root=state, index_job_id="job-1", project_id="demo",
+            knowledge_root=self.root / "output" / "demo", version="epoch-7",
+            source_epoch="epoch-7", grant_epoch="grant-1",
+            published_at="2026-10-10T00:00:00Z")
+        self.assertEqual(first["mirrorJobId"], second["mirrorJobId"])
+        self.assertEqual(len(gp.MirrorJobStore(state).list()), 1)
+
+    def test_mirror_worker_retries_then_succeeds_without_network(self):
+        state = self.root / "state"
+        gp.enqueue_mirror(
+            state_root=state, index_job_id="job-retry", project_id="demo",
+            knowledge_root=self.root / "output" / "demo", version="epoch-7",
+            source_epoch="epoch-7", grant_epoch="grant-1")
+        calls = []
+
+        def fake_publish(*args, **kwargs):
+            calls.append((args, kwargs))
+            if len(calls) == 1:
+                raise OSError("serve offline")
+            return {"manifestWritten": True, "entries": 1,
+                    "manifestSlug": "project_knowledge/demo/grant-1/__manifest__"}
+
+        store = gp.MirrorJobStore(state)
+        first = store.list()[0]
+        failed = gp.run_mirror_job(first, state_root=state, publisher=fake_publish,
+                                   log=lambda line: None)
+        self.assertEqual(failed["phase"], "retry_wait")
+        self.assertEqual(failed["attempts"], 1)
+        # A controlled time after the retry window keeps this test fully local.
+        due = datetime.fromisoformat(failed["nextAttemptAt"].replace("Z", "+00:00"))
+        result = gp.run_pending_mirrors(state, now=due, publisher=fake_publish,
+                                        log=lambda line: None)
+        self.assertEqual(result["scheduled"], 1)
+        self.assertEqual(result["jobs"][0]["phase"], "succeeded")
+        self.assertEqual(len(calls), 2)
 
     def test_sanitized_slug_collision_fails_closed(self):
         out = make_knowledge_root(self.root)
