@@ -182,6 +182,7 @@ The detailed review documents are:
 
 - [Execution Plan](docs/EXECUTION_PLAN.md) — staged delivery, gates, evidence, collaboration, and release boundaries.
 - [AgentFlow Architecture](docs/AGENTFLOW_ARCHITECTURE.md) — voiceprint, HomeHub policy, project knowledge, Studio, Coding Agent, and Jarvis Group integration.
+- [Target Architecture v2](docs/TARGET_ARCHITECTURE_V2.md) — accepted target for Langflow visualization, Studio/Jarvis conversations, Agent Groups, hybrid UA/UYP/gbrain retrieval, and shared Agent identity messaging.
 - [Real Langflow canvas on Mac](docs/LANGFLOW_MAC.md) — runs the HomeHub custom Jarvis nodes in Langflow, imports the pre-wired Studio and voice canvases, and replays turns against Jetson through a loopback-only SSH tunnel.
 - [Investigation Report](docs/INVESTIGATION_REPORT_2026-10-09.md) — gbrain/framework capability audit and Jetson/Qwen capacity decision.
 - [Jetson Model Strategy](docs/JETSON_MODEL_STRATEGY.md) — resident Qwen3.5-4B, maintenance profiles, memory evidence, and the safe A/B plan.
