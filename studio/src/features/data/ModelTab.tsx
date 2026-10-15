@@ -1,10 +1,13 @@
 // Model tab (added 2026-10-14): the household-wide local ↔ cloud switch for Jarvis's
 // LLM route. One big switch card — not a per-scope policy, so it ignores the scope tree
 // and applies immediately on PUT /api/settings/model-mode. Guests/members see it read-only.
+// 2026-10-15: the "Cloud provider" card (ProviderCard.tsx) sits below the mode switch —
+// which vendor serves cloud mode, its model and API key (PUT /api/settings/llm-providers).
 import { useEffect, useState } from "react";
 import { ApiError } from "../../api/client";
 import type { Me, ModelMode, ModelModeSettings } from "../../api/contracts";
 import { dataApi } from "./adapter";
+import { ProviderCard } from "./ProviderCard";
 import { Icon, Spinner, Toggle } from "./ui";
 
 // Fixed privacy copy — do not soften: this is the promise the switch makes.
@@ -145,6 +148,9 @@ export function ModelTab({ me, readOnly }: { me: Me | null; readOnly: boolean })
           </p>
         ) : null}
       </section>
+
+      {/* 2026-10-15: multi-vendor cloud provider settings, below the mode switch */}
+      <ProviderCard me={me} readOnly={readOnly} />
     </div>
   );
 }

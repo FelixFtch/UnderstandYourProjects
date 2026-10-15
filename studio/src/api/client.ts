@@ -3,7 +3,8 @@
 // cleared only when HomeHub's own /api/studio/me rejects it — see handleUnauthorized.
 import type {
   AnalyzeJob, AnalyzeResult, CloudUsage, Contact, Device, DirectoryEntry, FlowEvent, FlowSpec, Me, Message,
-  HomeDeviceActionResult, HomeDeviceProjection, ModelModeResult, ModelModeSettings, ModelModeUpdate,
+  HomeDeviceActionResult, HomeDeviceProjection, LlmProvidersResult, LlmProvidersSettings, LlmProvidersUpdate,
+  MarkReadRequest, ModelModeResult, ModelModeSettings, ModelModeUpdate, NotificationList,
   PairResponse, PolicyDoc, PolicyDomain, PolicyTree,
   ProjectAnswer, ProjectDigest, ProjectGraph, ProjectList, SendResult, SensorDeviceList, SensorHistory,
   SensorStateRow, ShareCard, ShareCardUpdate, Thread,
@@ -212,4 +213,10 @@ export const api = {
   modelMode: (s?: AbortSignal) => get<ModelModeSettings>("/api/settings/model-mode", s),
   putModelMode: (update: ModelModeUpdate, s?: AbortSignal) => send<ModelModeResult>("PUT", "/api/settings/model-mode", update, s),
   cloudUsage: (s?: AbortSignal) => get<CloudUsage>("/api/studio/cloud-usage", s),
+
+  // §6d multi-vendor LLM providers & Studio notifications (2026-10-15)
+  llmProviders: (s?: AbortSignal) => get<LlmProvidersSettings>("/api/settings/llm-providers", s),
+  putLlmProviders: (update: LlmProvidersUpdate, s?: AbortSignal) => send<LlmProvidersResult>("PUT", "/api/settings/llm-providers", update, s),
+  notifications: (limit = 20, s?: AbortSignal) => get<NotificationList>(`/api/studio/notifications?limit=${limit}`, s),
+  markNotificationsRead: (req: MarkReadRequest, s?: AbortSignal) => send<{ ok: boolean }>("POST", "/api/studio/notifications/mark-read", req, s),
 };

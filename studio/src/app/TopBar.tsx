@@ -4,6 +4,7 @@ import { Button, Chip, cx, Kbd, Segmented, Spinner, StatusDot } from "../design/
 import type { Me } from "../api/contracts";
 import { Monogram } from "./Brand";
 import { MOD_KEY } from "./nav";
+import { NotificationBell } from "./NotificationBell";
 import type { RouteDef } from "./routes";
 import { FIXTURES, useSession } from "./session";
 import { useTheme, type ThemePref } from "./theme";
@@ -38,6 +39,8 @@ export function TopBar({ route, onOpenPalette, className }: { route: RouteDef; o
           <span className="rounded-md border border-line bg-surface px-1.5 py-0.5 font-mono text-[12px] text-ink">{me.jarvis.number}</span>
         </div>
       ) : null}
+      {/* 2026-10-15: notification bell — the top-right entry, left of the profile menu */}
+      {me ? <NotificationBell /> : null}
       {me ? <ProfileMenu me={me} /> : null}
     </header>
   );

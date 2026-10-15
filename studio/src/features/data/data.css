@@ -294,3 +294,41 @@
 .dm-model-specs dd { margin: 2px 0 0; font-size: 13px; }
 .dm-model-card .dm-alert { margin: 10px 0 0; }
 .dm-model-card .dm-note { margin: 10px 0 0; }
+
+/* ── Cloud provider card (2026-10-15): multi-vendor picker + model/key form ── */
+.dm-prov { margin-top: 14px; }
+.dm-prov-picker { position: relative; margin-top: 12px; }
+.dm-prov-current {
+  width: 100%; display: flex; align-items: center; gap: 9px; padding: 8px 11px; border-radius: 10px;
+  border: 1px solid var(--dm-line); background: var(--dm-surface); color: var(--dm-ink);
+  font: inherit; font-size: 13.5px; cursor: pointer; text-align: left;
+}
+.dm-prov-current:hover:not(:disabled) { border-color: color-mix(in srgb, var(--dm-ink) 25%, var(--dm-line)); }
+.dm-prov-current > .dm-icon { margin-left: auto; color: var(--dm-muted); }
+.dm-prov-list {
+  position: absolute; z-index: 30; top: calc(100% + 6px); left: 0; right: 0; padding: 4px;
+  border-radius: 12px; border: 1px solid var(--dm-line); background: var(--dm-surface);
+  box-shadow: 0 14px 40px rgb(20 19 15 / 0.18); max-height: 290px; overflow-y: auto;
+}
+.dm-prov-row {
+  width: 100%; display: flex; align-items: center; gap: 9px; padding: 7px 9px; border: 0; border-radius: 8px;
+  background: none; color: inherit; font: inherit; font-size: 13px; cursor: pointer; text-align: left;
+}
+.dm-prov-row:hover { background: color-mix(in srgb, var(--dm-ink) 5%, transparent); }
+.dm-prov-row[aria-selected="true"] { background: color-mix(in srgb, var(--dm-accent) 12%, var(--dm-surface)); }
+.dm-prov-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--dm-warn); }
+.dm-prov-dot.is-key { background: var(--dm-ok); }
+.dm-prov-row-text { min-width: 0; display: flex; flex-direction: column; }
+.dm-prov-label { font-weight: 600; font-size: 13px; }
+.dm-prov-model { color: var(--dm-muted); font-size: 11.5px; }
+.dm-prov-active {
+  margin-left: auto; flex: none; font-size: 10.5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.06em; color: var(--dm-accent);
+}
+.dm-prov-form { display: grid; gap: 12px; margin-top: 14px; }
+.dm-prov-field { display: grid; gap: 5px; min-width: 0; }
+.dm-prov-field-label { font-size: 12px; font-weight: 650; color: var(--dm-muted); }
+.dm-prov-keyrow { display: flex; gap: 8px; align-items: center; }
+.dm-prov-keyrow .dm-input { flex: 1 1 auto; min-width: 0; }
+.dm-prov-keyrow .dm-btn { flex: none; }
+.dm-prov-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; }

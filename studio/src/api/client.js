@@ -200,4 +200,9 @@ export const api = {
     modelMode: (s) => get("/api/settings/model-mode", s),
     putModelMode: (update, s) => send("PUT", "/api/settings/model-mode", update, s),
     cloudUsage: (s) => get("/api/studio/cloud-usage", s),
+    // §6d multi-vendor LLM providers & Studio notifications (2026-10-15)
+    llmProviders: (s) => get("/api/settings/llm-providers", s),
+    putLlmProviders: (update, s) => send("PUT", "/api/settings/llm-providers", update, s),
+    notifications: (limit = 20, s) => get(`/api/studio/notifications?limit=${limit}`, s),
+    markNotificationsRead: (req, s) => send("POST", "/api/studio/notifications/mark-read", req, s),
 };

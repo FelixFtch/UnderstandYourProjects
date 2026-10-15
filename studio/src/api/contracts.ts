@@ -456,3 +456,55 @@ export interface CloudUsage {
   by_surface: Array<CloudUsageBucket & { surface: CloudUsageSurface }>;
   updated_at: string; // ISO
 }
+
+// ── §6d LLM providers & Studio notifications (companion-api, added 2026-10-15) ──
+// Cloud mode is served by one of five vendors; keys live on the Jetson and the
+// API never returns them in full — only `has_key` plus a short `key_hint`.
+export type LlmProviderId = "qwen" | "openai" | "claude" | "gemini" | "deepseek" | (string & {});
+
+export interface LlmProvider {
+  id: LlmProviderId;
+  label: string; // "Qwen · Alibaba Bailian"
+  model: string;
+  has_key: boolean;
+  key_hint: string | null; // "sk-…1234" when has_key, else null
+}
+
+/** GET /api/settings/llm-providers */
+export interface LlmProvidersSettings {
+  active: LlmProviderId;
+  providers: LlmProvider[];
+  updated_at: string; // ISO
+}
+
+/** PUT /api/settings/llm-providers response: the new settings plus whether the
+ * change was pushed to the voice runtime (`pushed` is only true when switching
+ * the active provider — a single-provider update applies on the next turn). */
+export interface LlmProvidersResult extends LlmProvidersSettings {
+  pushed: boolean;
+}
+
+/** PUT /api/settings/llm-providers body: either switch the active provider, or
+ * update one provider's model/key (api_key omitted = keep the stored key). */
+export type LlmProvidersUpdate =
+  | { active: LlmProviderId }
+  | { provider: LlmProviderId; model?: string; api_key?: string };
+
+/** GET /api/studio/notifications item. `read` is 0/1 (SQLite-style flag). */
+export interface StudioNotification {
+  id: number;
+  ts: string; // ISO
+  kind: string; // "settings" | "system" | …
+  title: string;
+  body: string;
+  read: 0 | 1;
+}
+
+/** GET /api/studio/notifications?limit=… */
+export interface NotificationList {
+  items: StudioNotification[];
+  unread: number;
+}
+
+/** POST /api/studio/notifications/mark-read body: everything, or specific ids. */
+export type MarkReadRequest = { all: true } | { ids: number[] };

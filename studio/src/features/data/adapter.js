@@ -9,6 +9,8 @@ const live = {
     putPolicy: (scope, domain, values) => api.putPolicy(scope, domain, values),
     modelMode: () => api.modelMode(),
     putModelMode: (update) => api.putModelMode(update),
+    llmProviders: () => api.llmProviders(),
+    putLlmProviders: (update) => api.putLlmProviders(update),
 };
 let fixtureImpl = null;
 function impl() {
@@ -24,4 +26,6 @@ export const dataApi = {
     putPolicy: async (scope, domain, values) => (await impl()).putPolicy(scope, domain, values),
     modelMode: async () => (await impl()).modelMode(),
     putModelMode: async (update) => (await impl()).putModelMode(update),
+    llmProviders: async () => (await impl()).llmProviders(),
+    putLlmProviders: async (update) => (await impl()).putLlmProviders(update),
 };

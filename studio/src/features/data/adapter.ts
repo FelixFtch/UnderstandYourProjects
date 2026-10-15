@@ -2,6 +2,7 @@
 // VITE_STUDIO_FIXTURES === "true" (offline dev). The fixture chunk is never loaded otherwise.
 import { api } from "../../api/client";
 import type {
+  LlmProvidersResult, LlmProvidersSettings, LlmProvidersUpdate,
   Me, ModelModeResult, ModelModeSettings, ModelModeUpdate, PolicyDoc, PolicyDomain, PolicyTree,
 } from "../../api/contracts";
 
@@ -13,6 +14,9 @@ export interface DataApi {
   // 2026-10-14: household-wide local/cloud model switch (Model tab).
   modelMode(): Promise<ModelModeSettings>;
   putModelMode(update: ModelModeUpdate): Promise<ModelModeResult>;
+  // 2026-10-15: multi-vendor cloud provider settings (Model tab, "Cloud provider" card).
+  llmProviders(): Promise<LlmProvidersSettings>;
+  putLlmProviders(update: LlmProvidersUpdate): Promise<LlmProvidersResult>;
 }
 
 export const FIXTURES = import.meta.env.VITE_STUDIO_FIXTURES === "true";
@@ -24,6 +28,8 @@ const live: DataApi = {
   putPolicy: <T,>(scope: string, domain: PolicyDomain, values: Partial<T>) => api.putPolicy<T>(scope, domain, values),
   modelMode: () => api.modelMode(),
   putModelMode: (update) => api.putModelMode(update),
+  llmProviders: () => api.llmProviders(),
+  putLlmProviders: (update) => api.putLlmProviders(update),
 };
 
 let fixtureImpl: Promise<DataApi> | null = null;
@@ -40,4 +46,6 @@ export const dataApi: DataApi = {
   putPolicy: async <T,>(scope: string, domain: PolicyDomain, values: Partial<T>) => (await impl()).putPolicy<T>(scope, domain, values),
   modelMode: async () => (await impl()).modelMode(),
   putModelMode: async (update) => (await impl()).putModelMode(update),
+  llmProviders: async () => (await impl()).llmProviders(),
+  putLlmProviders: async (update) => (await impl()).putLlmProviders(update),
 };
