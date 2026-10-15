@@ -56,6 +56,20 @@ function shouldShowOnboarding(): boolean {
   return window.localStorage.getItem(ONBOARDING_DISMISSED_KEY) !== "1";
 }
 
+/** The Understanding workspace is a small, URL-addressable wrapper around
+ * the existing Studio and graph surfaces.  It deliberately does not add a
+ * second router or duplicate graph state. */
+function isUnderstandingRoute(): boolean {
+  return typeof window !== "undefined" && window.location.hash.startsWith("#/understanding");
+}
+
+function setUnderstandingRoute(open: boolean): void {
+  if (typeof window === "undefined") return;
+  const hash = open ? "#/understanding" : "";
+  if (window.location.hash === hash) return;
+  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}${hash}`);
+}
+
 /** Resolve data file URL — in demo mode, use env var URLs; otherwise use local paths with token. */
 function dataUrl(fileName: string, token: string | null): string {
   if (DEMO_MODE) {
@@ -339,7 +353,7 @@ function DashboardContent({
   const toggleShowFunctionsInClassView = useDashboardStore((s) => s.toggleShowFunctionsInClassView);
   const [showKeyboardHelp, setShowKeyboardHelp] = useState(false);
   const [sidebarTab, setSidebarTab] = useState<SidebarTab>("info");
-  const [studioMode, setStudioMode] = useState(false);
+  const [studioMode, setStudioMode] = useState(isUnderstandingRoute);
   const [showOnboarding, setShowOnboarding] = useState(shouldShowOnboarding);
   const dismissOnboarding = useCallback((remember: boolean) => {
     if (remember && typeof window !== "undefined") {
@@ -358,6 +372,22 @@ function DashboardContent({
     () => [...graphIssues, ...layoutIssues],
     [graphIssues, layoutIssues],
   );
+
+  useEffect(() => {
+    const onHashChange = () => setStudioMode(isUnderstandingRoute());
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  const openUnderstanding = useCallback(() => {
+    setUnderstandingRoute(true);
+    setStudioMode(true);
+  }, []);
+
+  const closeUnderstanding = useCallback(() => {
+    setUnderstandingRoute(false);
+    setStudioMode(false);
+  }, []);
 
   useEffect(() => {
     if (selectedNodeId) setSidebarTab("info");
@@ -522,7 +552,7 @@ function DashboardContent({
   );
 
   if (studioMode) {
-    return <ProjectStudio onOpenGraph={() => setStudioMode(false)} snapshot={studioSnapshot ?? undefined} />;
+    return <ProjectStudio onOpenGraph={closeUnderstanding} snapshot={studioSnapshot ?? undefined} />;
   }
 
   if (isMobile) {
@@ -673,9 +703,10 @@ function DashboardContent({
         {/* Right — fixed actions */}
         <div className="flex items-center gap-2 sm:gap-4 shrink-0">
           <button
-            onClick={() => setStudioMode(true)}
+            onClick={openUnderstanding}
             className="flex items-center gap-1.5 px-2 sm:px-3 py-1.5 rounded-lg text-sm bg-elevated text-text-secondary hover:text-text-primary transition-colors"
-            title="Open Project Studio"
+            title="Open Understanding workspace"
+            aria-label="Open Understanding workspace"
           >
             <svg
               className="w-4 h-4"
@@ -688,7 +719,7 @@ function DashboardContent({
               <rect x="3" y="14" width="7" height="7" rx="1" strokeWidth={2} />
               <rect x="14" y="14" width="7" height="7" rx="1" strokeWidth={2} />
             </svg>
-            <span className="hidden md:inline">Studio</span>
+            <span className="hidden md:inline">Understanding</span>
           </button>
           <FilterPanel />
           <ExportMenu />

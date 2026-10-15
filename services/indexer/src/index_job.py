@@ -578,6 +578,36 @@ def _preserve_staged_progress(store: "IndexJobStore", job_id: str, job: dict[str
         store.update(job_id, progress={"processed": staged_items, "total": manifest.get("total")})
 
 
+def _enqueue_gbrain_mirror(store: "IndexJobStore", job_id: str,
+                           job: dict[str, Any], publication: dict[str, Any]) -> dict[str, Any]:
+    """Best-effort queueing of a post-publish gBrain mirror.
+
+    The queue write is deliberately after the atomic local UYP/UA swap and
+    performs no network I/O. A missing queue directory or malformed metadata
+    is surfaced as an ``unavailable`` projection while the IndexJob remains
+    ``published``: local project knowledge is the primary product and the
+    optional gBrain mirror can be retried by its own worker.
+    """
+    try:
+        from gbrain_publisher import enqueue_mirror, mirror_projection
+        record = enqueue_mirror(
+            state_root=store.root,
+            index_job_id=job_id,
+            project_id=str(job["projectId"]),
+            knowledge_root=str(publication["outputPath"]),
+            version=str(publication["knowledgeVersion"]),
+            source_epoch=publication.get("sourceEpoch"),
+            grant_epoch=job.get("grantEpoch"),
+            published_at=publication.get("publishedAt"),
+        )
+        return mirror_projection(record)
+    except Exception as exc:  # queueing must never turn a local publish into failure
+        return {
+            "phase": "unavailable",
+            "lastError": f"{type(exc).__name__}: {exc}"[:300],
+        }
+
+
 def run_job(
     store: IndexJobStore,
     job_id: str,
@@ -764,7 +794,15 @@ def run_job(
         )
     except (OSError, shutil.Error, JobError) as exc:
         return _record_failure(store, job_id, job, phase="failed", reason="publish_failed", error=type(exc).__name__)
-    store.event(job_id, "published", {**publication, "auditId": context.get("auditId")})
+    # The local UYP publication is complete before this hook runs. Queueing a
+    # gBrain mirror is metadata-only and never blocks/fails the IndexJob; a
+    # separate mirror worker can process/retry the durable record later.
+    mirror = _enqueue_gbrain_mirror(store, job_id, store.get(job_id), publication)
+    store.event(job_id, "published", {
+        **publication,
+        "auditId": context.get("auditId"),
+        "gbrainMirror": mirror,
+    })
     return store.get(job_id)
 
 

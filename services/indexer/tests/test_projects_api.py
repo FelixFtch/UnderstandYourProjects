@@ -132,7 +132,7 @@ class ProjectsApiTests(FixtureMixin, ConnectorMixin, unittest.TestCase):
         self.assertIn(("/api/uyp/access-context", "tok-robin"), self.homehub.seen)
         # ly has no grant for it: empty listing, not an error.
         status, body = self.request("GET", "/api/projects", token="tok-ly")
-        self.assertEqual((status, body), (200, {"projects": [], "tree": []}))
+        self.assertEqual((status, body), (200, {"projects": [], "tree": [], "folder_tree": []}))
 
     def test_fail_closed_without_or_with_bad_credentials(self):
         status, body = self.request("GET", "/api/projects", token=None)
@@ -180,6 +180,25 @@ class ProjectsApiTests(FixtureMixin, ConnectorMixin, unittest.TestCase):
         self.assertEqual((status, body["error"]), (404, "project_not_found"))
         status, body = self.request("GET", "/api/projects/ghost")
         self.assertEqual(status, 404)
+
+    def test_studio_projection_uses_request_bearer_and_never_process_context(self):
+        status, body = self.request("GET", "/api/studio/snapshot")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["project"]["name"], "commontasks")
+        status, body = self.request("GET", "/api/studio/snapshot", token="tok-ly")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["project"]["name"], "Project scope unavailable")
+        self.assertNotIn("graph", body)
+
+        # Even if a stale process-level projection exists, browser Studio
+        # calls without a caller bearer cannot read it.
+        context_file = self.root / "box.json"
+        context_file.write_text(json.dumps(access_context("robin")), encoding="utf-8")
+        os.environ["UYP_ACCESS_CONTEXT_FILE"] = str(context_file)
+        status, body = self.request("GET", "/api/studio/snapshot", token=None)
+        self.assertEqual((status, body["error"]), (401, "credentials_required"))
+        status, body = self.request("GET", "/api/sources", token=None)
+        self.assertEqual((status, body["error"]), (401, "credentials_required"))
 
     def test_graph_is_caller_scoped_bounded_and_source_redacted(self):
         graph_path = self.root / "state" / "commontasks" / "ua" / "knowledge-graph.json"

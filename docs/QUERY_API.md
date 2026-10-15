@@ -43,11 +43,12 @@ development session. The Studio build variable is `VITE_STUDIO_API_URL`.
 | Endpoint | Purpose | Authority boundary |
 | --- | --- | --- |
 | `GET /api/health` | service, output, connector, and AccessContext presence | does not infer access |
-| `GET /api/studio/snapshot` | project, source, health, evidence, and IndexJob projection | only publishes HomeHub context when supplied |
-| `GET /api/knowledge-graph` | vendored Understand Anything graph projection | returns `503` until HomeHub supplies an AccessContext |
-| `GET /api/sources` | source projection for the Agent Box surface | source grant is not created here |
-| `GET /api/connectors` | durable multi-connector health and manifest projection | metadata-only without HomeHub; never mints pairing or grants |
-| `GET /api/index/jobs` | persisted IndexJob phase/progress projection | requires HomeHub scopes; grant IDs and filesystem paths are omitted |
+| `GET /api/studio/snapshot` | project, source, health, evidence, and IndexJob projection | requires the caller's HomeHub bearer/context; no process-level fallback |
+| `GET /api/knowledge-graph` | vendored Understand Anything graph projection | requires the caller's HomeHub bearer/context; structural metadata only |
+| `GET /api/sources` | source projection for the Agent Box surface | requires the caller's HomeHub bearer/context; source grant is not created here |
+| `GET /api/connectors` | durable multi-connector health and manifest projection | requires the caller's HomeHub bearer/context; never mints pairing or grants |
+| `GET /api/index/jobs` | persisted IndexJob phase/progress projection | requires the caller's HomeHub scopes; grant IDs and filesystem paths are omitted |
+| `GET /api/projects` | caller-scoped registered project list plus compact and folder-tree relations | requires HomeHub project and source scopes; `folder_tree` contains only visible analyzed folders |
 | `GET /api/projects/{id}/graph` | caller-scoped bounded Understand Anything graph | requires the caller's HomeHub bearer/context; structural metadata only, source-bearing content removed |
 | `POST /api/knowledge/search` | bounded lexical retrieval plus Qwen synthesis | requires a HomeHub AccessContext and filters before synthesis |
 | `POST /api/groups` | create a group record (owner-authored) | caller principal must be the record's `owner_member`; registry-validated |
@@ -60,9 +61,11 @@ development session. The Studio build variable is `VITE_STUDIO_API_URL`.
 `POST /api/knowledge/search` accepts `{ "query": "...", "projectId": "..." }`.
 Without a valid HomeHub context projection it returns `503
 access_context_unavailable`; it never searches the entire output directory as a
-fallback. The same redaction applies to the snapshot: without explicit
-`projectScopes` and `sourceScopes`, project names, paths, counts, and evidence
-are not published. Every response carries `X-UYP-Audit-Id`. Model calls remain
+fallback. The Studio projection endpoints resolve the bearer on every request
+through HomeHub and then apply explicit `projectScopes` and `sourceScopes`; they
+do not fall back to the Agent Box's process-level context. Without a valid
+caller context, they return an authentication or availability error rather than
+a different user's snapshot. Every response carries `X-UYP-Audit-Id`. Model calls remain
 `think:false` through the existing search implementation.
 
 This adapter does not implement pairing, grants, revocation, NandaTown

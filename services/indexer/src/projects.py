@@ -805,6 +805,13 @@ def public_record(doc: dict, record: dict, visible_ids: set[str], status: str | 
 
 
 def build_tree(projects: list[dict]) -> list[dict]:
+    """Build the compact project-relation tree kept for API compatibility.
+
+    ``tree`` deliberately contains only opaque project ids.  Consumers that
+    need to render a folder hierarchy should use :func:`build_folder_tree`,
+    which carries the owner-visible folder metadata alongside the same
+    parent/child relation.
+    """
     ids = {p["project_id"] for p in projects}
     by_parent: dict[str | None, list[str]] = {}
     for project in projects:
@@ -816,3 +823,50 @@ def build_tree(projects: list[dict]) -> list[dict]:
         return {"project_id": project_id, "children": [node(k, seen | {k}) for k in kids]}
 
     return [node(pid, frozenset({pid})) for pid in sorted(by_parent.get(None, []))]
+
+
+def build_folder_tree(projects: list[dict]) -> list[dict]:
+    """Build a caller-scoped tree of *registered analyzed folders*.
+
+    The project registry is the authority for folder-to-project relations;
+    Understand Anything's graph remains a separate file/symbol graph.  This
+    projection therefore creates one stable ``folder:<project_id>`` node per
+    visible project and does not infer or expose unregistered subdirectories.
+    Hidden parents are treated as roots, exactly like :func:`build_tree`, so a
+    caller never learns that an out-of-scope project exists.
+
+    ``path`` is already owner-visible registry metadata in ``public_record``;
+    it is not a source read.  ``parent_folder_id`` makes the relation
+    explicit for tree/treemap renderers while ``children`` remains nested for
+    simple clients.
+    """
+    ids = {str(project.get("project_id")) for project in projects
+           if isinstance(project, dict) and project.get("project_id")}
+    by_parent: dict[str | None, list[dict]] = {}
+    for project in projects:
+        if not isinstance(project, dict) or project.get("project_id") not in ids:
+            continue
+        parent = project.get("parent_id")
+        parent = str(parent) if parent in ids else None
+        by_parent.setdefault(parent, []).append(project)
+
+    def node(project: dict, seen: frozenset[str]) -> dict:
+        project_id = str(project["project_id"])
+        parent = project.get("parent_id")
+        parent = str(parent) if parent in ids else None
+        children = [child for child in sorted(
+            by_parent.get(project_id, []), key=lambda value: str(value.get("project_id")))
+                    if str(child.get("project_id")) not in seen]
+        return {
+            "folder_id": f"folder:{project_id}",
+            "project_id": project_id,
+            "name": str(project.get("root_name") or project_id),
+            "path": str(project.get("path") or ""),
+            "device_id": project.get("device_id"),
+            "status": str(project.get("status") or "not_analyzed"),
+            "parent_folder_id": f"folder:{parent}" if parent else None,
+            "children": [node(child, seen | {project_id}) for child in children],
+        }
+
+    roots = sorted(by_parent.get(None, []), key=lambda value: str(value.get("project_id")))
+    return [node(project, frozenset()) for project in roots]

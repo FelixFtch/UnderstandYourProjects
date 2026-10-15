@@ -83,7 +83,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -93,6 +93,16 @@ PROBE_SLUG = NAMESPACE + "/__probe__"
 INGESTED_VIA = "uyp-gbrain-publisher/1.0"
 SLUG_MAX = 255
 TOKEN_MARGIN_SECONDS = 120.0
+
+# A publish to UYP is a local, durable fact.  Mirroring that fact into gBrain
+# is deliberately a second, asynchronous lane: a slow or unavailable gBrain
+# serve must never make the IndexJob report a failed local publish.  These
+# records live below the UYP state root and contain no bearer credentials or
+# HomeHub context.
+MIRROR_SCHEMA_VERSION = "1.0"
+MIRROR_PHASES = {"queued", "running", "retry_wait", "succeeded", "failed", "blocked"}
+MIRROR_MAX_ATTEMPTS = 3
+MIRROR_RETRY_BACKOFF_SECONDS = 60
 
 
 class GbrainPublishError(RuntimeError):
@@ -111,6 +121,187 @@ class GbrainRejectedError(RuntimeError):
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _mirror_safe_component(value: Any, label: str = "mirror id") -> str:
+    """Validate one durable mirror id without importing IndexJob internals."""
+    text = str(value or "").strip()
+    if not text or text in {".", ".."} or "/" in text or "\\" in text or "\x00" in text:
+        raise GbrainPublishError(f"unsafe {label}: {value!r}")
+    return text
+
+
+def mirror_job_id(index_job_id: str) -> str:
+    """Return a stable queue id for one IndexJob publication.
+
+    The id is a digest rather than the raw job id so a future caller cannot
+    accidentally turn an imported job id containing path separators into a
+    filename.  Re-running the same IndexJob therefore reuses one mirror
+    record instead of creating duplicate remote pages.
+    """
+    raw = _mirror_safe_component(index_job_id, "index job id")
+    return "mirror-" + hashlib.sha256(raw.encode("utf-8", "surrogatepass")).hexdigest()[:32]
+
+
+def _mirror_retry_at(attempt: int, *, stamp: datetime | None = None) -> str:
+    stamp = stamp or datetime.now(timezone.utc)
+    seconds = MIRROR_RETRY_BACKOFF_SECONDS * (2 ** max(int(attempt) - 1, 0))
+    return (stamp + timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+
+
+def _mirror_due(record: dict[str, Any], stamp: datetime) -> bool:
+    phase = str(record.get("phase") or "")
+    if phase == "queued":
+        return True
+    if phase != "retry_wait":
+        return False
+    raw = str(record.get("nextAttemptAt") or "")
+    if not raw:
+        return True
+    try:
+        due = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if due.tzinfo is None:
+        due = due.replace(tzinfo=timezone.utc)
+    return due <= stamp
+
+
+class MirrorJobStore:
+    """Small durable queue for post-publish gBrain mirror attempts.
+
+    This store is intentionally independent of HomeHub and IndexJob state:
+    it records an *attempt* to mirror an already published local version. A
+    failure here is observable and retryable, but cannot change the local
+    KnowledgeVersion or its UA graph. The worker that calls ``run_pending``
+    must supply an explicitly provisioned project-knowledge gBrain endpoint;
+    no endpoint or credentials are persisted in these records.
+    """
+
+    def __init__(self, state_root: str | os.PathLike[str]):
+        self.root = Path(os.path.expanduser(str(state_root))).resolve()
+        self.directory = self.root / "gbrain-mirrors"
+        self.directory.mkdir(parents=True, exist_ok=True)
+
+    def _path(self, mirror_id: str) -> Path:
+        return self.directory / f"{_mirror_safe_component(mirror_id)}.json"
+
+    @staticmethod
+    def _write_atomic(path: Path, value: Any) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n",
+                                 encoding="utf-8")
+            os.replace(temporary, path)
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+
+    def get(self, mirror_id: str) -> dict[str, Any]:
+        try:
+            return json.loads(self._path(mirror_id).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise GbrainPublishError(f"gBrain mirror job not found: {mirror_id}") from exc
+
+    def list(self) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for path in sorted(self.directory.glob("*.json")):
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(record, dict):
+                records.append(record)
+        return records
+
+    def update(self, mirror_id: str, **fields: Any) -> dict[str, Any]:
+        record = self.get(mirror_id)
+        record.update(fields)
+        record["updatedAt"] = now_iso()
+        self._write_atomic(self._path(mirror_id), record)
+        return record
+
+    def event(self, mirror_id: str, phase: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
+        if phase not in MIRROR_PHASES:
+            raise GbrainPublishError(f"unknown gBrain mirror phase: {phase}")
+        record = self.get(mirror_id)
+        record["phase"] = phase
+        record["updatedAt"] = now_iso()
+        if details:
+            for key, value in details.items():
+                if key not in {"phase", "events"}:
+                    record[key] = value
+        record["events"] = int(record.get("events", 0)) + 1
+        self._write_atomic(self._path(mirror_id), record)
+        return record
+
+    def enqueue(self, *, index_job_id: str, project_id: str, knowledge_root: str,
+                version: str, source_epoch: str | None, grant_epoch: str | None,
+                published_at: str | None = None, mirror_id: str | None = None) -> dict[str, Any]:
+        """Create or refresh one queued mirror record idempotently.
+
+        A missing grant epoch blocks only the mirror lane. It is not invented
+        from the local version, because the grant epoch is the revocation key
+        and must remain supplied by the authorized IndexJob.
+        """
+        mirror_id = _mirror_safe_component(mirror_id or mirror_job_id(index_job_id))
+        existing_path = self._path(mirror_id)
+        if existing_path.exists():
+            existing = self.get(mirror_id)
+            if str(existing.get("knowledgeVersion")) == str(version) and str(existing.get("grantEpoch")) == str(grant_epoch):
+                return existing
+        stamp = now_iso()
+        record: dict[str, Any] = {
+            "schemaVersion": MIRROR_SCHEMA_VERSION,
+            "mirrorJobId": mirror_id,
+            "indexJobId": _mirror_safe_component(index_job_id, "index job id"),
+            "projectId": str(project_id),
+            # Needed by the worker, but never copied into Studio's public
+            # projection. This is a local path, not a source-byte payload.
+            "knowledgeRoot": str(Path(os.path.expanduser(str(knowledge_root))).resolve()),
+            "knowledgeVersion": str(version),
+            "sourceEpoch": str(source_epoch) if source_epoch is not None else None,
+            "grantEpoch": str(grant_epoch) if grant_epoch is not None else None,
+            "publishedAt": published_at or stamp,
+            "phase": "queued" if str(grant_epoch or "").strip() else "blocked",
+            "attempts": 0,
+            "maxAttempts": MIRROR_MAX_ATTEMPTS,
+            "nextAttemptAt": None,
+            "lastError": None,
+            "createdAt": stamp,
+            "updatedAt": stamp,
+            "events": 0,
+        }
+        if record["phase"] == "blocked":
+            record["lastError"] = "grant_epoch_missing"
+        self._write_atomic(existing_path, record)
+        return record
+
+
+def enqueue_mirror(*, state_root: str | os.PathLike[str], index_job_id: str,
+                   project_id: str, knowledge_root: str, version: str,
+                   source_epoch: str | None, grant_epoch: str | None,
+                   published_at: str | None = None) -> dict[str, Any]:
+    """Queue a post-publish mirror without doing network I/O."""
+    return MirrorJobStore(state_root).enqueue(
+        index_job_id=index_job_id, project_id=project_id, knowledge_root=knowledge_root,
+        version=version, source_epoch=source_epoch, grant_epoch=grant_epoch,
+        published_at=published_at)
+
+
+def mirror_projection(record: dict[str, Any]) -> dict[str, Any]:
+    """Return a Studio-safe status projection (no local paths or credentials)."""
+    result: dict[str, Any] = {}
+    for key in ("mirrorJobId", "indexJobId", "projectId", "knowledgeVersion",
+                "sourceEpoch", "grantEpoch", "publishedAt", "phase",
+                "attempts", "maxAttempts", "nextAttemptAt", "lastError",
+                "createdAt", "updatedAt"):
+        if key in record and record[key] is not None:
+            result[key] = record[key]
+    return result
 
 
 def _slug_segment(value: Any, label: str) -> str:
@@ -190,7 +381,8 @@ def load_items(knowledge_root: str | os.PathLike[str]) -> list[dict[str, Any]]:
 
 
 def build_page(item: dict[str, Any], *, project_id: str, version: str,
-               grant_epoch: str, published_at: str | None = None) -> dict[str, Any]:
+               grant_epoch: str, published_at: str | None = None,
+               source_epoch: str | None = None) -> dict[str, Any]:
     """Render one KnowledgeItem as a gbrain page (slug + markdown + metadata)."""
     relpath = str(item.get("file", "")).strip()
     slug = entry_slug(project_id, grant_epoch, relpath)
@@ -206,9 +398,21 @@ def build_page(item: dict[str, Any], *, project_id: str, version: str,
         "uyp_published_at": published_at or now_iso(),
         "uyp_revoked": False,
     }
+    if source_epoch is not None:
+        front["uyp_source_epoch"] = str(source_epoch)
+    # ``anchor_top`` is the stable evidence cursor emitted by the local
+    # KnowledgeItem builder. It lets gBrain results point back to an evidence
+    # range without copying source bytes into the page.
+    anchor_top = item.get("anchor_top")
+    if anchor_top is not None and str(anchor_top).strip():
+        front["uyp_evidence_anchor"] = str(anchor_top)
     lines = [f"# {project_id}: {relpath}", ""]
     lines.append(f"verdict: {item.get('verdict', '')} (think gate {item.get('think_gate', '')})")
     lines.append("")
+    if source_epoch is not None:
+        lines.append(f"- Source epoch: {source_epoch}")
+    if anchor_top is not None and str(anchor_top).strip():
+        lines.append(f"- Evidence anchor: {anchor_top}")
     purpose = str(derived.get("purpose", "")).strip()
     if purpose:
         lines.append(f"- Purpose: {purpose}")
@@ -231,7 +435,8 @@ def build_page(item: dict[str, Any], *, project_id: str, version: str,
 
 def build_manifest(project_id: str, grant_epoch: str, *, version: str,
                    entries: list[dict[str, Any]], published_at: str | None = None,
-                   revoked: bool = False, revoked_at: str | None = None) -> dict[str, Any]:
+                   revoked: bool = False, revoked_at: str | None = None,
+                   source_epoch: str | None = None) -> dict[str, Any]:
     """The per-epoch marker page: version manifest in life, tombstone after revoke."""
     front = {
         "type": "note",
@@ -243,6 +448,8 @@ def build_manifest(project_id: str, grant_epoch: str, *, version: str,
         "uyp_published_at": published_at or now_iso(),
         "uyp_revoked": revoked,
     }
+    if source_epoch is not None:
+        front["uyp_source_epoch"] = str(source_epoch)
     if revoked:
         front["uyp_revoked_at"] = revoked_at or now_iso()
     lines = [f"# {NAMESPACE} manifest: {project_id} @ {grant_epoch}", ""]
@@ -383,7 +590,8 @@ def publish(knowledge_root: str | os.PathLike[str], project_id: str, version: st
             base_url: str | None = None, creds: Any = None,
             client: McpServeClient | None = None,
             log: Callable[[str], None] = print,
-            published_at: str | None = None) -> dict[str, Any]:
+            published_at: str | None = None,
+            source_epoch: str | None = None) -> dict[str, Any]:
     """Mirror one KnowledgeVersion into gbrain under project_knowledge.
 
     dry_run (the default) builds the full payload plan and prints it without
@@ -400,11 +608,13 @@ def publish(knowledge_root: str | os.PathLike[str], project_id: str, version: st
     items = load_items(knowledge_root)
     published_at = published_at or now_iso()
     entries = [build_page(item, project_id=project_id, version=version,
-                          grant_epoch=grant_epoch, published_at=published_at)
+                          grant_epoch=grant_epoch, published_at=published_at,
+                          source_epoch=source_epoch)
                for item in items]
     _reject_slug_collisions(entries)
     manifest = build_manifest(project_id, grant_epoch, version=version,
-                              entries=entries, published_at=published_at)
+                              entries=entries, published_at=published_at,
+                              source_epoch=source_epoch)
     plan = entries + [manifest]
     total_bytes = sum(len(entry["content"].encode("utf-8", "surrogatepass")) for entry in plan)
     endpoint = (client.base if client is not None
@@ -464,6 +674,108 @@ def publish(knowledge_root: str | os.PathLike[str], project_id: str, version: st
         else:
             summary["ok"] += 1
     return summary
+
+
+def _mirror_error(exc: Exception) -> str:
+    return f"{type(exc).__name__}: {exc}"[:300]
+
+
+def run_mirror_job(record: dict[str, Any], *, state_root: str | os.PathLike[str],
+                   base_url: str | None = None, creds: Any = None,
+                   client: McpServeClient | None = None,
+                   publisher: Callable[..., dict[str, Any]] = publish,
+                   log: Callable[[str], None] = print) -> dict[str, Any]:
+    """Attempt one queued mirror, recording bounded retry state.
+
+    This function is intended for a separate timer/worker. It is never called
+    from ``publish_staged`` or the IndexJob's synchronous local publish path.
+    ``publisher`` and ``client`` are injectable so unit tests can exercise the
+    state machine without a network.
+    """
+    mirror_id = _mirror_safe_component(record.get("mirrorJobId"), "mirror job id")
+    store = MirrorJobStore(state_root)
+    # Re-read the durable record so a worker acting on a stale queue listing
+    # cannot overwrite a newer retry or success state.
+    current = store.get(mirror_id)
+    if current.get("phase") in {"succeeded", "blocked"}:
+        return current
+    attempts = int(current.get("attempts") or 0) + 1
+    current = store.event(mirror_id, "running", {"attempts": attempts, "lastError": None})
+    try:
+        grant_epoch = str(current.get("grantEpoch") or "").strip()
+        if not grant_epoch:
+            raise GbrainPublishError("grant_epoch missing from mirror queue record")
+        result = publisher(
+            current["knowledgeRoot"],
+            str(current["projectId"]),
+            str(current["knowledgeVersion"]),
+            grant_epoch,
+            dry_run=False,
+            base_url=base_url,
+            creds=creds,
+            client=client,
+            published_at=current.get("publishedAt"),
+            source_epoch=current.get("sourceEpoch"),
+            log=log,
+        )
+        if result.get("failed") or not result.get("manifestWritten"):
+            raise GbrainRejectedError(
+                "put_page", str(result.get("manifestSlug") or "__manifest__"),
+                str((result.get("failed") or {}).get("reason") or "manifest_not_written"))
+        return store.event(mirror_id, "succeeded", {
+            "attempts": attempts,
+            "lastError": None,
+            "result": {
+                "entries": result.get("entries"),
+                "bytes": result.get("bytes"),
+                "manifestSlug": result.get("manifestSlug"),
+            },
+        })
+    except GbrainPublishError as exc:
+        # Missing endpoint/credentials are configuration blockers, not a
+        # reason to hammer a timer every minute. A later explicit run can
+        # retry once provisioning has been corrected.
+        return store.event(mirror_id, "blocked", {
+            "attempts": attempts,
+            "lastError": _mirror_error(exc),
+        })
+    except (GbrainRejectedError, OSError, urllib.error.URLError, TimeoutError, ValueError) as exc:
+        error = _mirror_error(exc)
+        max_attempts = int(current.get("maxAttempts") or MIRROR_MAX_ATTEMPTS)
+        if attempts < max_attempts:
+            return store.event(mirror_id, "retry_wait", {
+                "attempts": attempts,
+                "lastError": error,
+                "nextAttemptAt": _mirror_retry_at(attempts),
+            })
+        return store.event(mirror_id, "failed", {
+            "attempts": attempts,
+            "lastError": error,
+            "nextAttemptAt": None,
+        })
+
+
+def run_pending_mirrors(state_root: str | os.PathLike[str], *, max_jobs: int = 1,
+                        base_url: str | None = None, creds: Any = None,
+                        client: McpServeClient | None = None,
+                        publisher: Callable[..., dict[str, Any]] = publish,
+                        now: datetime | None = None,
+                        log: Callable[[str], None] = print) -> dict[str, Any]:
+    """Run due mirror records once; suitable for a timer or systemd worker."""
+    store = MirrorJobStore(state_root)
+    stamp = now or datetime.now(timezone.utc)
+    due = [record for record in store.list()
+           if _mirror_due(record, stamp) and str(record.get("phase")) in {"queued", "retry_wait"}]
+    selected = due[:max(0, int(max_jobs))]
+    results = [run_mirror_job(record, state_root=state_root, base_url=base_url,
+                              creds=creds, client=client, publisher=publisher, log=log)
+               for record in selected]
+    return {
+        "ok": True,
+        "scheduled": len(results),
+        "skipped": max(0, len(due) - len(results)),
+        "jobs": [mirror_projection(record) for record in results],
+    }
 
 
 def revoke(project_id: str, grant_epoch: str, *,
@@ -688,6 +1000,7 @@ def main() -> None:
     put.add_argument("--project-id", required=True)
     put.add_argument("--version", required=True, help="KnowledgeVersion being mirrored")
     put.add_argument("--grant-epoch", required=True, help="HomeHub grant epoch (revocation key)")
+    put.add_argument("--source-epoch", help="Connector manifest epoch for evidence lineage")
     drop = sub.add_parser("revoke", help="invalidate one grant epoch's published pages")
     drop.add_argument("--project-id", required=True)
     drop.add_argument("--grant-epoch", required=True)
@@ -699,7 +1012,8 @@ def main() -> None:
     if args.action == "publish":
         result = publish(args.knowledge_root, args.project_id, args.version,
                          args.grant_epoch, dry_run=not args.apply,
-                         base_url=args.url, creds=args.creds)
+                         base_url=args.url, creds=args.creds,
+                         source_epoch=args.source_epoch)
     elif args.action == "revoke":
         slugs = [part.strip() for part in args.slugs.split(",") if part.strip()] if args.slugs else None
         result = revoke(args.project_id, args.grant_epoch,
