@@ -64,8 +64,14 @@ These are explicit blockers, not UI placeholders that can be marked passed:
    parallel thread on the Jetson side, and HomeHub has not yet issued the
    formal group context projection (members + sharing scope) — that is folded
    into P1b.
-3. HomeHub has not issued a group device delegation containing explicit device
-   and action scopes. UYP cannot execute a group live action or mint that grant.
+3. Group device delegation is now live: HomeHub issues signed
+   `homehub-group-device-context-v1` grants with explicit
+   `device_ids`/`action_ids` (`/api/uyp/group-device-grants`, ledger + epoch +
+   audit), and the UYP adapter executed the full five-step loop on the real
+   kitchen light (2026-10-16): dry_run plan → live turn_on → independent
+   readback → revoke (epoch 65→66) → same request denied
+   (`group_context_invalid: revoked`). HomeHub `1bac144`/`49ced75`, UYP
+   `644450a`.
 4. NandaTown P7 (two independently authorized Jarvis nodes, attributed query,
    bounded device action, revocation denial, and audit chain) is not accepted.
 5. UA graph coverage is broader than searchable KnowledgeItems; the gBrain
