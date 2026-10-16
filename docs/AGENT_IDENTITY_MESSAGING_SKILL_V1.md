@@ -112,6 +112,12 @@ locally before retrieval or dispatch.
 
 Supported kinds are `agent.ask`, `agent.reply`, `contact.invite`,
 `contact.accept`, `group.invite`, `group.accept`, and `group.message`.
+During migration, receivers must dual-read the legacy top-level `type` field
+and the canonical `kind` field. If both are present they must match; a
+normalized envelope exposes both aliases with the same value. New senders
+should dual-write both fields until the HomeHub and Miku compatibility suites
+have removed the legacy reader. The aliases are only message discriminators;
+HomeHub still resolves the sender, delegation, grant, and revocation state.
 `scope.sharePolicy` is either `summary_only` or
 `summary_and_evidence_refs`; project/source scopes are opaque capability IDs.
 The body is bounded to 64 KiB and cannot contain raw source bytes, arbitrary
@@ -157,8 +163,10 @@ group membership, grant, or identity card. The receiver performs
 - `validate_agent_card(card, audience=...)` for the non-authoritative shape,
   expiry, revocation marker, and audience checks;
 - `validate_agent_message(envelope)` for required routing identifiers,
-  conversation binding, share policy, expiry, size, and forbidden-field
-  checks.
+  conversation binding, `kind`/legacy `type` compatibility, share policy,
+  expiry, size, and forbidden-field checks. It returns a normalized envelope
+  containing both `kind` and `type` aliases; it does not sign, authorize, or
+  dispatch the message.
 
 Tests in `services/indexer/tests/test_homehub_federation_contracts.py` cover
 legacy discovery cards, wrong audiences, revocation, missing conversation

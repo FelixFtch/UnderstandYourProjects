@@ -126,24 +126,37 @@ def validate_agent_message(value: Mapping[str, Any], *, now: datetime | None = N
     """
     if not isinstance(value, Mapping):
         raise FederationProtocolError("agent message must be an object")
+    # During the Miku/HomeHub migration old edges may still call the
+    # discriminator ``type`` while new envelopes use ``kind``.  Accept either
+    # spelling, require them to agree when both are present, and always emit
+    # both aliases from the normalized projection so the next edge can
+    # dual-write without inventing a second runtime contract.
     required = {
-        "schemaVersion", "messageId", "kind", "requestId", "senderNodeId",
+        "schemaVersion", "messageId", "requestId", "senderNodeId",
         "receiverNodeId", "nonce", "issuedAt", "expiresAt", "audience",
         "authorizationRef", "scope", "body",
     }
     missing = required.difference(value.keys())
     if missing:
         raise FederationProtocolError("missing agent message fields: " + ", ".join(sorted(missing)))
+    raw_kind = value.get("kind")
+    raw_type = value.get("type")
+    if raw_kind is None and raw_type is None:
+        raise FederationProtocolError("missing agent message fields: kind or type")
+    kind = _text(raw_kind, "kind") if raw_kind is not None else _text(raw_type, "type")
+    if raw_type is not None and _text(raw_type, "type") != kind:
+        raise FederationProtocolError("agent message kind/type mismatch")
+    if kind not in AGENT_MESSAGE_KINDS:
+        raise FederationProtocolError("unsupported agent message kind")
     if value["schemaVersion"] != AGENT_IDENTITY_VERSION:
         raise FederationProtocolError("unsupported agent identity protocol")
-    if value["kind"] not in AGENT_MESSAGE_KINDS:
-        raise FederationProtocolError("unsupported agent message kind")
     if _AGENT_FORBIDDEN.intersection(value.keys()):
         raise FederationProtocolError("agent message contains authority or private source material")
     result = {
         "schemaVersion": AGENT_IDENTITY_VERSION,
         "messageId": _text(value["messageId"], "messageId"),
-        "kind": _text(value["kind"], "kind"),
+        "kind": kind,
+        "type": kind,
         "requestId": _text(value["requestId"], "requestId"),
         "senderNodeId": _text(value["senderNodeId"], "senderNodeId"),
         "receiverNodeId": _text(value["receiverNodeId"], "receiverNodeId"),
@@ -183,11 +196,11 @@ def validate_agent_message(value: Mapping[str, Any], *, now: datetime | None = N
     for key in ("groupId", "contactId", "sessionId", "delegationRef"):
         if key in value and value[key] is not None:
             result[key] = _text(value[key], key)
-    if value["kind"].startswith("group.") and not result.get("groupId"):
+    if kind.startswith("group.") and not result.get("groupId"):
         raise FederationProtocolError("group messages require groupId")
-    if value["kind"].startswith("contact.") and not result.get("contactId"):
+    if kind.startswith("contact.") and not result.get("contactId"):
         raise FederationProtocolError("contact messages require contactId")
-    if value["kind"].startswith("agent.") and not (result.get("contactId") or result.get("groupId")):
+    if kind.startswith("agent.") and not (result.get("contactId") or result.get("groupId")):
         raise FederationProtocolError("agent messages require contactId or groupId")
     return result
 

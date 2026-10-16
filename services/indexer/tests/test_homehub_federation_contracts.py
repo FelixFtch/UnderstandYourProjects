@@ -124,6 +124,29 @@ class AgentIdentityMessagingTests(unittest.TestCase):
         with self.assertRaises(FederationProtocolError):
             validate_agent_message(expired)
 
+    def test_message_dual_reads_legacy_type_and_normalizes_both_aliases(self):
+        legacy = self.message()
+        del legacy["kind"]
+        legacy["type"] = "agent.ask"
+        normalized = validate_agent_message(legacy)
+        self.assertEqual(normalized["kind"], "agent.ask")
+        self.assertEqual(normalized["type"], "agent.ask")
+
+        dual = self.message()
+        dual["type"] = dual["kind"]
+        normalized = validate_agent_message(dual)
+        self.assertEqual(normalized["kind"], normalized["type"])
+
+    def test_message_rejects_conflicting_kind_and_type(self):
+        conflicting = self.message()
+        conflicting["type"] = "group.message"
+        with self.assertRaisesRegex(FederationProtocolError, "kind/type mismatch"):
+            validate_agent_message(conflicting)
+        missing = self.message()
+        del missing["kind"]
+        with self.assertRaisesRegex(FederationProtocolError, "kind or type"):
+            validate_agent_message(missing)
+
 
 class HomeHubContextTests(unittest.TestCase):
     def context(self):
