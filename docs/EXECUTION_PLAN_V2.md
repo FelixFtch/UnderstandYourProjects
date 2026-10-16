@@ -1,8 +1,8 @@
 # UnderstandYourProjects execution plan v2
 
 **Status:** active plan; implementation is staged, not a production-complete claim
-**Updated:** 2026-10-15
-**Current UYP head:** `7168898` (`fix(uyp): pin mirror jobs to source scopes`)
+**Updated:** 2026-10-16
+**Current UYP head:** `9e3585e` (`fix(uyp): enforce project scoped retrieval`)
 
 This plan turns `TARGET_ARCHITECTURE_V2.md` into bounded work packages. It
 assumes the existing Connector, UA bridge, KnowledgeItem store, Query API,
@@ -160,6 +160,38 @@ Verified after deployment:
 
 This proves deployment and safe scheduling only. It does not prove a remote
 gBrain publish, device mutation, or revoke acceptance.
+
+#### 6.2 Production acceptance evidence (2026-10-16)
+
+The first real authorized acceptance run used the existing Mac Connector grant
+and the already-enrolled Jetson; it did not change pairing or add a new QR
+flow. Durable job `accept-202610160025` reached `published` after the existing
+UA bridge analyzed `jarvis-memory-live` locally. The published projection
+contained 120 KnowledgeItems, a 634-node/829-edge graph, four layers, source
+epoch `56668491db5fd2163c71f7bf2d6e1214`, and HomeHub grant epoch `52`.
+
+The dedicated gBrain writer check passed against the existing
+`project_knowledge` serve on Jetson `:3142` (the family brain and read-only
+`:8790` were not used). The mirror record reached `succeeded`; its manifest
+reported 120 entries, `uyp_revoked=false`, and the same KnowledgeVersion and
+grant epoch. A scoped UYP search returned three citations, all from
+`project:jarvis-memory-live`, with a HomeHub audit id.
+
+The revoke path was then exercised through the real HomeHub route. HomeHub
+revoked the project grant and advanced the context epoch to `53`; the mirror
+worker fail-closed with `homehub_grant_epoch_mismatch`. The gBrain revoke
+operation deleted the epoch-52 pages and wrote a manifest with
+`uyp_revoked=true`, `uyp_entry_count=0`, and `KnowledgeVersion: revoked`.
+The same scoped UYP search returned `Not in the indexed projects.` with zero
+citations. A fresh HomeHub grant was issued afterward (epoch `54`), the
+renewal keep-list backup was restored, and the project search recovered with
+three in-scope citations.
+
+This closes the real Connector -> IndexJob -> UA -> KnowledgeItem -> gBrain ->
+scoped search -> HomeHub revoke/tombstone loop. The remaining acceptance gates
+are the same-action-route proof for group device control and the second-party
+NandaTown P7 federation; the current voice/Studio/iPhone route audit is
+documented separately and no light mutation was performed in this run.
 
 ## Parallel ownership and sequencing
 
