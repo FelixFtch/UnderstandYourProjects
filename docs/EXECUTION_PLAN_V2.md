@@ -2,7 +2,7 @@
 
 **Status:** active plan; implementation is staged, not a production-complete claim
 **Updated:** 2026-10-15
-**Current UYP head:** `c47174e` (`feat(uyp): connect understanding and gbrain mirror lanes`)
+**Current UYP head:** `7168898` (`fix(uyp): pin mirror jobs to source scopes`)
 
 This plan turns `TARGET_ARCHITECTURE_V2.md` into bounded work packages. It
 assumes the existing Connector, UA bridge, KnowledgeItem store, Query API,
@@ -39,8 +39,11 @@ live-execution authority.
   - source epoch and evidence-anchor metadata in mirror pages and safe Query
     API status projection.
 
-These changes are local and tested. They do not claim a live HomeHub session,
-Jetson deployment, or successful gBrain network mirror.
+These changes are tested. The HomeHub runtime Intent Gate is deployed to the
+Jetson voice/studio runtime at commit `720388c`, and the UYP mirror worker is
+deployed at commit `7168898` with a user-level timer. A live gBrain network
+publication is still not claimed until a dedicated project brain accepts a
+scoped item and manifest.
 
 ### 1. Intent Gate and fast paths — HomeHub runtime owner
 
@@ -138,6 +141,25 @@ The acceptance record must include commit, Jetson service status, HomeHub
 grant/session epoch, source epoch, KnowledgeVersion, request IDs, read-back,
 and revoke evidence. A localhost demo, stale Studio card, or queue record does
 not substitute for this gate.
+
+#### 6.1 Deployment evidence (2026-10-15)
+
+The Jetson deployment used the existing Cloudflare SSH alias and preserved a
+rollback snapshot at:
+
+`/home/jetson/dev/uyp/backups/mirror-worker-20261015-201616`
+
+Verified after deployment:
+
+- `uyp-query-api.service`: active;
+- `uyp-gbrain-mirror.timer`: active and enabled;
+- Query API health: `ok=true`, AccessContext projection available;
+- Connector registry: 3 connectors and 4 active grants;
+- Knowledge projection: 4,218 items;
+- mirror worker: exited successfully with an empty queue.
+
+This proves deployment and safe scheduling only. It does not prove a remote
+gBrain publish, device mutation, or revoke acceptance.
 
 ## Parallel ownership and sequencing
 
