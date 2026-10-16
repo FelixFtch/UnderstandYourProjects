@@ -449,7 +449,11 @@ class ToolRunner:
             result["backend"] = "http"
             return result
         context = self._local_context()
-        allowed_items = _scoped_items(context)
+        # Keep direct MCP retrieval identical to the HTTP Query API: the
+        # caller's HomeHub scopes are applied first, then an explicit project
+        # selector narrows that already-authorized set.  A project id is
+        # never a grant and must not widen the search.
+        allowed_items = query_api.scoped_items(context, project_key)
         result = query_api.search_answer(question, allowed_items)
         result.update({
             "ok": True,
@@ -808,7 +812,7 @@ TOOLS = [
             "properties": {
                 "query": {"type": "string", "description": "Natural-language question about the indexed projects.",
                           "maxLength": MAX_QUERY_CHARS},
-                "project_id": {"type": "string", "description": "Optional project capability id (echoed by the API)."},
+                "project_id": {"type": "string", "description": "Optional project capability id that narrows retrieval to one authorized project."},
             },
             "required": ["query"],
         },

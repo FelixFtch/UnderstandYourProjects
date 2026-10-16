@@ -74,6 +74,12 @@ class QueryApiProjectionTests(unittest.TestCase):
         item = {"file": "src/main.py", "_out_path": "/tmp/output/other-project/file.knowledge.json"}
         self.assertFalse(query_api.scope_allows(context, item))
 
+    def test_project_selector_narrows_after_homehub_scope(self):
+        context = query_api.load_access_context()
+        self.assertEqual(len(query_api.scoped_items(context, "project:demo-project")), 1)
+        self.assertEqual(query_api.scoped_items(context, "other-project"), [])
+        self.assertEqual(query_api.scoped_items(context, "../demo-project"), [])
+
     def test_source_scope_is_a_capability_id(self):
         context = query_api.load_access_context()
         context["sourceScopes"] = ["connector:demo-project"]
