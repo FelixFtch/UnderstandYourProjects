@@ -340,6 +340,11 @@ def entry_slug(project_id: str, grant_epoch: Any, relpath: str) -> str:
     parts = [NAMESPACE, _slug_segment(project_id, "project id"), _slug_segment(grant_epoch, "grant epoch")]
     parts.extend(_slug_segment(segment, "relpath segment") for segment in str(relpath).split("/"))
     slug = "/".join(parts)
+    # gbrain >= 0.60 stores pages at <slug>.md and rejects slugs that already
+    # end in .md/.mdx (invalid_params). Drop the source extension; revocation
+    # derives slugs through this same function, so the mapping stays 1:1.
+    if slug.lower().endswith((".md", ".mdx")):
+        slug = slug.rsplit(".", 1)[0]
     if len(slug) > SLUG_MAX:
         raise GbrainPublishError(f"slug exceeds gbrain's {SLUG_MAX}-char limit ({len(slug)} chars): {slug[:80]}...")
     return slug

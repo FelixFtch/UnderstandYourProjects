@@ -199,8 +199,10 @@ class GbrainPublisherTests(unittest.TestCase):
         self.assertNotEqual(gp.entry_slug("demo", "g1", "src/main.py"),
                             gp.entry_slug("demo", "g2", "src/main.py"))
         # Unsafe characters are sanitized deterministically on every level.
+        # gbrain >= 0.60 rejects slugs ending in .md/.mdx (the serve adds the
+        # extension itself), so the source extension is dropped on purpose.
         self.assertEqual(gp.entry_slug("my proj", "g:1", "docs/a b.md"),
-                         "project_knowledge/my_proj/g_1/docs/a_b.md")
+                         "project_knowledge/my_proj/g_1/docs/a_b")
         with self.assertRaises(gp.GbrainPublishError):
             gp.entry_slug("demo", "g1", "x/" + "y" * gp.SLUG_MAX)
 
@@ -599,3 +601,14 @@ class FreshRetryTests(unittest.TestCase):
         with self.assertRaises(GbrainRejectedError):
             _put_page_with_fresh_retry(AlwaysQuota(), {"slug": "s/1", "content": "hello"})
         self.assertEqual(len(calls), 1)
+
+
+class SlugExtensionTests(unittest.TestCase):
+    def test_md_extension_is_dropped(self):
+        from gbrain_publisher import entry_slug
+        self.assertEqual(entry_slug("p", "68", "docs/README.md"),
+                         "project_knowledge/p/68/docs/README")
+        self.assertEqual(entry_slug("p", "68", "a/b.mdx"),
+                         "project_knowledge/p/68/a/b")
+        self.assertEqual(entry_slug("p", "68", "src/app.py"),
+                         "project_knowledge/p/68/src/app.py")
