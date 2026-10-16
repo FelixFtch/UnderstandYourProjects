@@ -494,6 +494,32 @@ def _request_id(kind: str, slug: str, content: str = "") -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"uyp/{kind}/{slug}/{digest}"))
 
 
+def _put_page_with_fresh_retry(active: Any, entry: dict[str, Any]) -> None:
+    """put_page one plan entry; a burned request_id gets one fresh retry.
+
+    The deterministic request_id is correct for transport replays of a
+    committed write, but a request_id that was previously REJECTED (e.g.
+    during the 0.59 quota outage) is burned on the serve and replays as
+    invalid_params forever. Retry once with a salted id; a genuinely invalid
+    request still fails on the second attempt.
+    """
+    payload = {
+        "slug": entry["slug"],
+        "content": entry["content"],
+        "force": True,
+        "ingested_via": INGESTED_VIA,
+        "request_id": _request_id("put", entry["slug"], entry["content"]),
+    }
+    try:
+        active.call("put_page", payload)
+    except GbrainRejectedError as exc:
+        if "invalid_params" not in str(exc.reason):
+            raise
+        payload["request_id"] = str(uuid.uuid5(
+            uuid.NAMESPACE_URL, payload["request_id"] + "/retry"))
+        active.call("put_page", payload)
+
+
 class McpServeClient:
     """Minimal MCP streamable-HTTP client for one gbrain serve.
 
@@ -662,13 +688,7 @@ def publish(knowledge_root: str | os.PathLike[str], project_id: str, version: st
     for index, entry in enumerate(plan):
         is_manifest = index == len(plan) - 1
         try:
-            active.call("put_page", {
-                "slug": entry["slug"],
-                "content": entry["content"],
-                "force": True,
-                "ingested_via": INGESTED_VIA,
-                "request_id": _request_id("put", entry["slug"], entry["content"]),
-            })
+            _put_page_with_fresh_retry(active, entry)
         except GbrainRejectedError as exc:
             # Fail fast: without a complete item set the manifest stays
             # unwritten, so no reader can mistake this for a full version.
@@ -944,13 +964,7 @@ def revoke(project_id: str, grant_epoch: str, *,
         "endpoint": active.base,
     }
     try:
-        active.call("put_page", {
-            "slug": tombstone["slug"],
-            "content": tombstone["content"],
-            "force": True,
-            "ingested_via": INGESTED_VIA,
-            "request_id": _request_id("put", tombstone["slug"], tombstone["content"]),
-        })
+        _put_page_with_fresh_retry(active, tombstone)
         summary["tombstoneWritten"] = True
     except GbrainRejectedError as exc:
         summary["failed"] = {"slug": exc.slug, "reason": exc.reason}

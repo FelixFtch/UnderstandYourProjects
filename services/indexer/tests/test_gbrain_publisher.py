@@ -563,3 +563,39 @@ class GbrainPublisherTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FreshRetryTests(unittest.TestCase):
+    def test_burned_request_id_retries_once_with_fresh_id(self):
+        from gbrain_publisher import _put_page_with_fresh_retry, GbrainRejectedError
+
+        calls = []
+
+        class FlakyOnce:
+            base = "http://unit"
+
+            def call(self, tool, payload):
+                calls.append(payload["request_id"])
+                if len(calls) == 1:
+                    raise GbrainRejectedError("put_page", payload["slug"], "invalid_params")
+                return {"ok": True}
+
+        _put_page_with_fresh_retry(FlakyOnce(), {"slug": "s/1", "content": "hello"})
+        self.assertEqual(len(calls), 2)
+        self.assertNotEqual(calls[0], calls[1])
+
+    def test_non_invalid_params_rejection_does_not_retry(self):
+        from gbrain_publisher import _put_page_with_fresh_retry, GbrainRejectedError
+
+        calls = []
+
+        class AlwaysQuota:
+            base = "http://unit"
+
+            def call(self, tool, payload):
+                calls.append(payload["request_id"])
+                raise GbrainRejectedError("put_page", payload["slug"], "queue_capacity")
+
+        with self.assertRaises(GbrainRejectedError):
+            _put_page_with_fresh_retry(AlwaysQuota(), {"slug": "s/1", "content": "hello"})
+        self.assertEqual(len(calls), 1)
