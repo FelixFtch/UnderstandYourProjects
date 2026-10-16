@@ -8,15 +8,24 @@ which device and which curated action.  This module validates the small
 request envelope needed to bridge a HomeHub-issued group context to the
 existing provider-neutral HomeHub device route.
 
-The adapter intentionally implements only a dry-run proposal today.  It
-returns the exact envelope a future HomeHub group-action adapter must forward
-to ``/api/studio/home-devices/<id>/actions``.  Live execution is rejected
-until HomeHub supplies a group delegation endpoint; there is no safe way for
-UYP to turn a text message or a local group record into an owner grant.
+P1b: the context must be a signed ``homehub-group-device-context-v1`` grant
+(cardId/keyFingerprint/signature present; the cryptographic check itself is
+HomeHub's).  A dry-run proposal stays offline.  Before any LIVE execution the
+adapter calls back HomeHub's ``/internal/studio/group-device/verify`` machine
+hook (revocation/epoch/expiry are online state, never trust the presented
+copy), then forwards the provider-neutral envelope to the existing device
+route with the caller's HomeHub bearer, and independently reads the device
+state back before reporting ``executed``.
 """
 from __future__ import annotations
 
+import ipaddress
+import json
+import os
 import re
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 from typing import Any, Mapping
 
@@ -28,6 +37,17 @@ HOME_DEVICE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}$")
 REQUEST_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 MAX_SCOPE_IDS = 64
 MAX_PARAMETERS = 32
+READBACK_ACTION_ID = "home.device.read_state"
+# Loopback machine hooks on the same box by default; deployment may point
+# this at the Jetson's private LAN address (the value is administrator
+# configuration, never request input).
+INTERNAL_URL_ENV = "UYP_HOMEHUB_INTERNAL_URL"
+DEFAULT_INTERNAL_URL = "http://127.0.0.1:5120"
+VERIFY_PATH = "/internal/studio/group-device/verify"
+# HomeHub's loopback machine guard (routes/studio_internal.py) requires this
+# machine-to-machine marker on every internal call.
+MACHINE_HEADER = {"X-Task-Source": "agent-gateway"}
+HTTP_TIMEOUT_SECONDS = 5
 
 
 class GroupDeviceActionError(ValueError):
@@ -68,12 +88,181 @@ def _allows(scope: list[str], value: str) -> bool:
 def _context_scopes(context: Mapping[str, Any], field: str) -> list[str]:
     """Read optional capability scopes without inventing them.
 
-    HomeHub's existing group context schema has no device/action scopes yet.
-    Missing fields are deliberately rejected by this adapter.  That makes a
-    group text grant unusable for device control until HomeHub explicitly
-    issues the stronger delegation.
+    Device/action scopes exist only on the signed
+    ``homehub-group-device-context-v1`` grant.  Missing fields are
+    deliberately rejected by this adapter: a knowledge-only group context is
+    unusable for device control.
     """
     return _scopes(context.get(field), field)
+
+
+def _require_signature_fields(context: Mapping[str, Any]) -> None:
+    """Presence check for the signed-grant fields (fail-closed).
+
+    UYP never holds HomeHub's signing key, so the cryptographic check is
+    HomeHub's online verify hook; what UYP can and must do locally is refuse
+    any context that does not even CARRY the signature material.  This applies
+    to dry-run as well: an unsigned context is not a device grant at all.
+    """
+    for field in ("signature", "cardId"):
+        value = context.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise GroupDeviceActionError(
+                "group_device_signature_missing",
+                "The group device context must be a signed HomeHub grant (cardId + signature).",
+            )
+
+
+def _internal_base_url() -> str:
+    """Return the configured HomeHub internal URL after the loopback
+    whitelist check (same discipline as companion-api's studio_homehub
+    bridge): http/https only, no credentials/query/fragment, and the host
+    must be loopback, RFC1918/link-local, localhost or *.local."""
+    value = str(os.environ.get(INTERNAL_URL_ENV) or "").strip() or DEFAULT_INTERNAL_URL
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise GroupDeviceActionError("group_device_action_unavailable", "HomeHub internal URL is misconfigured.")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise GroupDeviceActionError("group_device_action_unavailable", "HomeHub internal URL is misconfigured.")
+    host = str(parsed.hostname).lower().rstrip(".")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        if host not in {"localhost"} and not host.endswith(".local"):
+            raise GroupDeviceActionError(
+                "group_device_action_unavailable", "HomeHub internal URL host is not an approved local endpoint.")
+    else:
+        if not (address.is_loopback or address.is_private or address.is_link_local):
+            raise GroupDeviceActionError(
+                "group_device_action_unavailable", "HomeHub internal URL host is not an approved local endpoint.")
+    return value.rstrip("/")
+
+
+def _resolve_bearer(homehub_token: str | None) -> str:
+    """Caller-presented HomeHub bearer first, then the service token file
+    (the same credential resolution homehub_adapter._load_url uses)."""
+    if homehub_token and homehub_token.strip():
+        return homehub_token.strip()
+    token_file = os.environ.get("UYP_HOMEHUB_TOKEN_FILE")
+    if token_file:
+        try:
+            with open(os.path.expanduser(token_file), encoding="utf-8") as handle:
+                token = handle.read().strip()
+        except OSError:
+            token = ""
+        if token:
+            return token
+    raise GroupDeviceActionError(
+        "group_device_action_unavailable",
+        "No HomeHub bearer is available for live execution.",
+    )
+
+
+def _post_json(path: str, body: Mapping[str, Any], *, token: str | None) -> dict[str, Any]:
+    """POST one JSON body to the approved HomeHub internal endpoint.
+
+    Any transport failure or non-2xx status is fail-closed and raises
+    ``group_device_action_unavailable``; the caller never sees a partial
+    outcome as success.
+    """
+    url = _internal_base_url() + path
+    headers = {"Accept": "application/json", "Content-Type": "application/json", **MACHINE_HEADER}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(
+        url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_SECONDS) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, ValueError) as exc:
+        raise GroupDeviceActionError(
+            "group_device_action_unavailable",
+            "HomeHub did not answer the group device call.",
+        ) from exc
+    if not isinstance(payload, dict):
+        raise GroupDeviceActionError(
+            "group_device_action_unavailable", "HomeHub returned a malformed response.")
+    return payload
+
+
+def _verify_context_online(context: Mapping[str, Any]) -> None:
+    """Online re-verification before live execution: signature, ledger
+    revocation, grant epoch and expiry are HomeHub online state, so the
+    presented copy is never trusted on its own.  Any refusal or transport
+    failure is fail-closed."""
+    try:
+        result = _post_json(VERIFY_PATH, {"context": dict(context)}, token=None)
+    except GroupDeviceActionError as exc:
+        raise GroupDeviceActionError(
+            "group_context_invalid",
+            "HomeHub group-device verify is unreachable; refusing live execution.",
+        ) from exc
+    if result.get("ok") is not True:
+        reason = str(result.get("reason") or "unknown")
+        raise GroupDeviceActionError(
+            "group_context_invalid",
+            f"HomeHub refused the group device context ({reason}).",
+        )
+
+
+def _execute_live(
+    normalized_context: Mapping[str, Any],
+    *,
+    device_id: str,
+    action_id: str,
+    parameters: Mapping[str, Any],
+    request_id: str,
+    forward_route: str,
+    homehub_token: str | None,
+) -> dict[str, Any]:
+    """Forward the provider-neutral envelope to HomeHub's existing device
+    route with execution_mode=live, then independently read the state back.
+
+    The response auditRef anchors the receipt.  ``executed`` is true only
+    when HomeHub reported execution AND the independent readback state
+    matches the state the execution claimed; a mismatch fails closed with
+    ``group_device_readback_mismatch`` and never reports executed.
+    """
+    token = _resolve_bearer(homehub_token)
+    envelope = {
+        "schema_version": "homehub-device-action-request-v1",
+        "home_device_id": device_id,
+        "action_id": action_id,
+        "parameters": dict(parameters),
+        "request_id": request_id,
+        "execution_mode": "live",
+    }
+    result = _post_json(forward_route, envelope, token=token)
+    expected_state = result.get("state") if isinstance(result.get("state"), Mapping) else {}
+    executed = bool(result.get("executed")) and bool(result.get("allowed", True))
+    audit_ref = str(result.get("auditRef") or result.get("audit_ref") or "")
+    if executed:
+        # Independent readback through the same governed route: the action's
+        # own 2xx is not proof the physical state changed.
+        readback = _post_json(
+            forward_route,
+            {
+                "schema_version": "homehub-device-action-request-v1",
+                "home_device_id": device_id,
+                "action_id": READBACK_ACTION_ID,
+                "parameters": {},
+                "request_id": f"{request_id}-readback",
+                "execution_mode": "live",
+            },
+            token=token,
+        )
+        observed_state = readback.get("state") if isinstance(readback.get("state"), Mapping) else {}
+        if dict(expected_state) != dict(observed_state):
+            raise GroupDeviceActionError(
+                "group_device_readback_mismatch",
+                "The post-action readback state does not match the executed result.",
+            )
+    return {
+        "executed": executed,
+        "auditRef": audit_ref,
+        "state": dict(expected_state),
+        "reasonCode": str(result.get("reasonCode") or result.get("reason_code") or ""),
+    }
 
 
 def validate_group_device_action(
@@ -81,14 +270,15 @@ def validate_group_device_action(
     payload: Mapping[str, Any],
     *,
     now=None,
+    homehub_token: str | None = None,
 ) -> dict[str, Any]:
-    """Validate a group action and return a provider-neutral dry-run plan.
+    """Validate a group action and return a provider-neutral plan.
 
-    ``context`` must be the HomeHub-issued group context projection.  The
-    optional ``device_ids`` and ``action_ids`` fields are the capability
-    scopes that a future HomeHub group-delegation endpoint must add.  UYP
-    never widens either scope, resolves provider references, or executes a
-    live action here.
+    ``context`` must be the signed HomeHub group device grant
+    (``homehub-group-device-context-v1``).  Dry-run stays an offline plan;
+    live execution verifies the context online with HomeHub first, forwards
+    the envelope with the presented bearer, and confirms by readback.  UYP
+    never widens either scope or resolves provider references.
     """
     try:
         normalized_context = validate_group_context(context, now=now)
@@ -138,26 +328,23 @@ def validate_group_device_action(
         raise GroupDeviceActionError("group_device_not_granted", "HomeHub did not grant this group access to the device.")
     if not _allows(action_scope, action_id):
         raise GroupDeviceActionError("group_action_not_granted", "HomeHub did not grant this group access to the action.")
-    if mode == "live":
-        raise GroupDeviceActionError(
-            "group_device_action_pending",
-            "HomeHub has not issued a group device-action delegation; live execution is disabled.",
-        )
-    return {
-        "status": "dry_run",
+    # Scope checks first (they name the caller's own mistake); only then the
+    # grant-authenticity gate, which applies to dry-run and live alike.
+    _require_signature_fields(normalized_context)
+    resolved_request_id = request_id or f"group-{mode.replace('_', '-')}-{uuid.uuid4().hex}"
+    forward_route = f"/api/studio/home-devices/{device_id}/actions"
+    plan = {
         "schema_version": "homehub-group-device-action-plan-v1",
         "groupId": normalized_context["group_id"],
         "memberId": normalized_context["member_id"],
         "homeDeviceId": device_id,
         "actionId": action_id,
         "parameters": dict(parameters),
-        "executionMode": "dry_run",
-        "executed": False,
         "allowed": True,
-        "requestId": request_id or f"group-dry-run-{uuid.uuid4().hex}",
+        "requestId": resolved_request_id,
         "grantEpoch": normalized_context["grant_epoch"],
         "auditId": normalized_context["audit_id"],
-        "forwardRoute": f"/api/studio/home-devices/{device_id}/actions",
+        "forwardRoute": forward_route,
         "forwardEnvelope": {
             "schema_version": "homehub-device-action-request-v1",
             "home_device_id": device_id,
@@ -166,6 +353,30 @@ def validate_group_device_action(
             "execution_mode": "dry_run",
         },
     }
+    if mode == "live":
+        _verify_context_online(normalized_context)
+        live = _execute_live(
+            normalized_context,
+            device_id=device_id,
+            action_id=action_id,
+            parameters=parameters,
+            request_id=resolved_request_id,
+            forward_route=forward_route,
+            homehub_token=homehub_token,
+        )
+        plan.update(
+            {
+                "status": "live",
+                "executionMode": "live",
+                "executed": live["executed"],
+                "state": live["state"],
+                "reasonCode": live["reasonCode"],
+                "auditRef": live["auditRef"],
+            }
+        )
+        return plan
+    plan.update({"status": "dry_run", "executionMode": "dry_run", "executed": False})
+    return plan
 
 
 __all__ = ["GroupDeviceActionError", "validate_group_device_action"]
