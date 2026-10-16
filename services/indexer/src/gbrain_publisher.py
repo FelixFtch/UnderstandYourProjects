@@ -516,7 +516,7 @@ def _put_page_with_fresh_retry(active: Any, entry: dict[str, Any]) -> None:
         if "invalid_params" not in str(exc.reason):
             raise
         payload["request_id"] = str(uuid.uuid5(
-            uuid.NAMESPACE_URL, payload["request_id"] + "/retry"))
+            uuid.NAMESPACE_URL, payload["request_id"] + "/retry/" + uuid.uuid4().hex))
         active.call("put_page", payload)
 
 
