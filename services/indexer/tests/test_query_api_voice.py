@@ -257,6 +257,20 @@ class QueryApiVoiceHandshakeTests(unittest.TestCase):
         self.assertNotIn("member=", homehub.seen_requests[0]["path"])
         self.assertEqual(homehub.seen_requests[0]["authorization"], "Bearer box-token")
 
+    def test_project_selector_cannot_search_another_project(self):
+        homehub = self._start_homehub()
+        self._configure_box_token()
+        status, body = self._post_search({
+            "query": "哪里实现了委托签名",
+            "projectId": "project:other-project",
+        })
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["sources"], [])
+        self.assertEqual(self.search_calls[0]["items"], [])
+        self.assertEqual(body["citations"], [])
+        self.assertEqual(body["projectId"], "project:other-project")
+
     def test_no_bearer_no_header_fails_closed_503(self):
         # No Bearer, no member header, nothing configured: today's
         # fail-closed 503, unchanged.

@@ -330,6 +330,33 @@ class McpDirectModeTests(unittest.TestCase):
             self.assertFalse(citation["allowedToShare"])
         self.assertEqual(payload["access"]["grantEpoch"], "epoch-ly")
 
+    def test_search_project_selector_narrows_direct_mode(self):
+        payload, is_error = self.call(
+            "project.search",
+            {"query": "哪里实现了委托签名", "project_id": "project:other-project"},
+        )
+        self.assertFalse(is_error)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["sources"], [])
+        self.assertEqual(payload["citations"], [])
+        self.assertEqual(self.search_calls[0]["items"], [])
+
+    def test_search_project_selector_narrows_with_multiple_authorized_projects(self):
+        payload, is_error = self.call(
+            "project.search",
+            {"query": "哪里实现了委托签名", "project_id": "project:other-project"},
+            member="boss",
+        )
+        self.assertFalse(is_error)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(
+            [item["file"] for item in self.search_calls[-1]["items"]],
+            ["lib/other.py"],
+        )
+        self.assertTrue(payload["citations"])
+        self.assertTrue(all(citation["projectId"] == "project:other-project"
+                             for citation in payload["citations"]))
+
     def test_search_denied_for_member_homehub_cannot_resolve(self):
         payload, is_error = self.call("project.search", {"query": "anything"}, member="stranger")
         self.assertTrue(is_error)

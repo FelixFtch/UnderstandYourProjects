@@ -806,17 +806,28 @@ def scope_allows(context: dict, item: dict) -> bool:
     return project_allowed and source_allowed
 
 
-def scoped_items(context: dict | None) -> list[dict]:
+def scoped_items(context: dict | None, project_id: str | None = None) -> list[dict]:
     """Apply the search scope filter; fail closed without an AccessContext.
 
     ``/api/knowledge/search`` and ``/api/health`` must never disagree about
     how much knowledge is visible, so both go through this one helper.  A
     missing, revoked, or narrowed context yields the same empty set here that
-    search would query (P7 acceptance finding 1).
+    search would query (P7 acceptance finding 1).  When a caller supplies a
+    project id, the result is narrowed to that project after HomeHub scope
+    filtering.  The project id is a selector, never an authorization grant.
     """
     if context is None:
         return []
-    return [item for values in grouped_items().values() for item in values if scope_allows(context, item)]
+    requested = str(project_id or "").strip().removeprefix("project:")
+    if requested and ("/" in requested or "\\" in requested or requested in {".", ".."}):
+        return []
+    return [
+        item
+        for values in grouped_items().values()
+        for item in values
+        if scope_allows(context, item)
+        and (not requested or item_root(str(item.get("_out_path", ""))) == requested)
+    ]
 
 
 def search_citations(result_sources: list | None, scoped: list[dict], context: dict) -> list[dict]:
@@ -1368,7 +1379,10 @@ class QueryHandler(BaseHTTPRequestHandler):
         if not question:
             self.json_response({"ok": False, "error": "query_required"}, 400, audit)
             return
-        allowed_items = scoped_items(context)
+        # A request-level project selector must narrow the already validated
+        # HomeHub context.  It must never be treated as a grant or allowed to
+        # widen retrieval to another authorized project implicitly.
+        allowed_items = scoped_items(context, payload.get("projectId"))
         # Slow-answer hint (root-cause fix, 2026-10-10): lexical retrieval is
         # instant, but a retrieval HIT means qwen synthesis - 5-15s plus
         # queue wait when the GPU is busy indexing.  For hinted-slow answers
