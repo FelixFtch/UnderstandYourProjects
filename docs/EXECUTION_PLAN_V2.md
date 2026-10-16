@@ -191,7 +191,12 @@ This closes the real Connector -> IndexJob -> UA -> KnowledgeItem -> gBrain ->
 scoped search -> HomeHub revoke/tombstone loop. The remaining acceptance gates
 are the same-action-route proof for group device control and the second-party
 NandaTown P7 federation; the current voice/Studio/iPhone route audit is
-documented separately and no light mutation was performed in this run.
+documented separately. The Studio companion BFF also accepted non-mutating
+`home.light.turn_on` and `home.light.turn_off` dry-runs for both registered
+`homeDeviceId` values through the governed local fallback. No physical light
+mutation was performed in this run. Group device control and NandaTown P7
+remain explicitly unaccepted until a real group context and a second signed
+Jarvis participant are available.
 
 ## Parallel ownership and sequencing
 
