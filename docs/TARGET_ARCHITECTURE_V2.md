@@ -128,11 +128,14 @@ Recommended routing:
 - `chat` -> Persona directly, without a gbrain preflight;
 - `clarify` -> ask one bounded follow-up question.
 
-Laya is the preferred implementation for the local Intent Gate only if it is
-resident, measurable, and faster than the current Qwen route. It must not be
-allowed to manufacture identities, bypass HomeHub, or call arbitrary tools.
-The current `jarvis-homehub` main branch documents a Laya port but does not
-contain an active Laya runtime adapter; that integration remains work to do.
+Laya is the resident implementation of the local Intent Gate on Jetson. The
+production `voice-agent-runtime.service` calls the local `/v1/systemone`
+endpoint with a bounded score question and maps the returned legend to these
+eight domains in one forward pass. It must not manufacture identities, bypass
+HomeHub, or call arbitrary tools. High-confidence deterministic phrases still
+use the explicit fast lane; every other request fails closed with a retry
+message when Laya is unavailable or below the confidence threshold. The
+adapter and service wiring are tracked in `jarvis-homehub` commit `3a02969`.
 
 ## 5. RAG and project understanding decision
 
