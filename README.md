@@ -6,7 +6,7 @@ It connects user-authorized computers, NAS storage, GitHub repositories, and dev
 
 It also lets independent Jarvis boxes join groups and communicate. Each Jarvis searches its own local project knowledge and shares only the information permitted by its owner and the group. This creates a privacy-aware project knowledge network without requiring participants to merge their complete databases or expose their original files.
 
-> **Project status:** This is an active engineering prototype. The single-node P7 slice has passed a bounded Jetson acceptance (IndexJob publish, Understand Anything graph, cited query, and revocation lockdown). Full-project coverage, durable GBrain integration, automatic pairing/discovery, and multi-Jarvis federation are still in progress.
+> **Project status (2026-10-15):** This is an active engineering prototype. The bounded single-node indexing/query/revocation rehearsal is historical evidence, not full product acceptance. The current implementation has a Jetson Laya gate, governed local device actions, UA/UYP graph and evidence projections, Studio/group transport, and an offline HomeHub Agent Identity & Messaging contract. The signed HomeHub identity-card adapter, Miku migration, group device delegation, durable gBrain mirror completion, and two-node NandaTown P7 are still pending. Start with [`docs/CURRENT_STATE.md`](docs/CURRENT_STATE.md) and the [P7/group handoff](docs/HANDOFF_GROUP_DEVICE_ACTION_P7_20261015.md).
 
 ## The problem
 
@@ -180,6 +180,7 @@ The existing Jarvis HomeHub voice, identity, pairing, policy, audit, scheduling,
 
 The detailed review documents are:
 
+- [Current State](docs/CURRENT_STATE.md) — the canonical contributor status, file map, and explicit production blockers.
 - [Execution Plan](docs/EXECUTION_PLAN.md) — staged delivery, gates, evidence, collaboration, and release boundaries.
 - [AgentFlow Architecture](docs/AGENTFLOW_ARCHITECTURE.md) — voiceprint, HomeHub policy, project knowledge, Studio, Coding Agent, and Jarvis Group integration.
 - [Target Architecture v2](docs/TARGET_ARCHITECTURE_V2.md) — accepted target for Langflow visualization, Studio/Jarvis conversations, Agent Groups, hybrid UA/UYP/gbrain retrieval, and shared Agent identity messaging.
@@ -207,7 +208,7 @@ The repository contains working code slices for the single-node path, plus the f
 - preemptive yield across voice, query, and indexing workloads (voice > query > index), including satellite turns;
 - incremental indexing driven by a one-minute reconcile timer, crash-resilient `systemd-run` indexing, and grant auto-renewal (24-hour TTL design, three-hour renewal cadence).
 
-The single-node P7 acceptance is recorded in [P7 Acceptance](docs/P7_ACCEPTANCE_2026-10-10.md): one project published 118/120 bounded items with a 766-node/963-edge UA graph, cited query results, and revoke/re-grant lockdown. A bounded 150-item second-project run and the read-only G6 MCP surface have also been exercised. The following are still integration work and must not be inferred from the UI alone:
+The dated single-node rehearsal is recorded in [P7 Acceptance](docs/P7_ACCEPTANCE_2026-10-10.md): one project published 118/120 bounded items with a 766-node/963-edge UA graph, cited query results, and revoke/re-grant lockdown. A bounded 150-item second-project run and the read-only G6 MCP surface have also been exercised. Read that file as dated evidence, not as proof that the current two-node/product P7 is complete. The following are still integration work and must not be inferred from the UI alone:
 
 - full-project indexing and durable resume after transport/model failures;
 - production coding-agent onboarding and a full-project MCP acceptance beyond the bounded G6 rehearsal;
@@ -215,7 +216,9 @@ The single-node P7 acceptance is recorded in [P7 Acceptance](docs/P7_ACCEPTANCE_
 - source-epoch lineage and final UA-first enrichment ordering;
 - a second Connector and persistent multi-Connector registration;
 - LAN/mDNS or Cloudflare pairing and automatic discovery;
-- P9 multi-box federation — NandaTown invites and federation beyond the verified clinic–home messaging pair.
+- signed HomeHub Agent Identity & Messaging cards and verification for Miku and other Jarvis nodes;
+- HomeHub group membership/device delegation and a live Group device-action route;
+- P7 multi-box federation — NandaTown invites, attributed queries, revocation, and audit beyond the verified clinic–home messaging pair.
 
 In the current development topology, HomeHub is local to Jetson on `:5120`, the UYP `query_api` is on `:8787`, Jarvis Studio is served on `:4173`, the gBrain project brain is on `:3142`, the existing GBrain service is on `:8790`, and satellite boxes connect on `:8765` through the voice-p1 speech backend. The Mac Connector may be reached through an SSH reverse tunnel on Jetson `127.0.0.1:7121`; the reverse tunnel is a development transport, not the final pairing design.
 
