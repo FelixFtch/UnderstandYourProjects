@@ -1781,15 +1781,16 @@ class QueryHandler(BaseHTTPRequestHandler):
         }, 201, audit)
 
     def _post_group_device_action(self, group_id: str, payload: dict, audit: str) -> None:
-        """Validate a HomeHub-authorized group device action (dry-run only).
+        """Validate a HomeHub-authorized group device action (P1b).
 
         Group text transport is intentionally not an action authority.  This
-        endpoint requires a HomeHub-issued ``X-Group-Context`` projection and
-        the stronger ``device_ids``/``action_ids`` capability scopes.  A
-        context that only authorizes project knowledge or NandaTown messages
-        is rejected.  Valid requests produce a provider-neutral dry-run plan
-        for HomeHub's existing device route; live execution remains disabled
-        until HomeHub supplies a group delegation endpoint.
+        endpoint requires a signed HomeHub group device context in
+        ``X-Group-Context`` plus the stronger ``device_ids``/``action_ids``
+        capability scopes.  A context that only authorizes project knowledge
+        or NandaTown messages is rejected, as is any context missing the
+        signature material.  Dry-run returns a provider-neutral plan; live
+        execution re-verifies the context with HomeHub online, forwards the
+        envelope with the caller's bearer, and confirms by state readback.
         """
         projection = self.headers.get("X-Group-Context")
         if projection is None:
@@ -1822,8 +1823,10 @@ class QueryHandler(BaseHTTPRequestHandler):
         # the local registry.  This prevents a caller who merely obtained a
         # different member's projection from submitting an action as them.
         auth = str(self.headers.get("Authorization") or "")
+        caller_bearer = ""
         if auth[:7].lower() == "bearer " and auth[7:].strip():
-            caller = load_homehub_context_for_token(auth[7:].strip())
+            caller_bearer = auth[7:].strip()
+            caller = load_homehub_context_for_token(caller_bearer)
             if caller is None:
                 self.json_response({"ok": False, "error": "invalid_credentials",
                                     "message": "The presented bearer could not be resolved by HomeHub."}, 401, audit)
@@ -1852,16 +1855,24 @@ class QueryHandler(BaseHTTPRequestHandler):
                                 "message": "Only a HomeHub-authorized group member can request a device action."}, 403, audit)
             return
         try:
-            plan = validate_group_device_action(context, payload)
+            # The caller's HomeHub bearer is forwarded for live execution; on
+            # the loopback voice path it is empty and the adapter falls back
+            # to the service token file.
+            plan = validate_group_device_action(
+                context, payload, homehub_token=caller_bearer or None)
         except GroupDeviceActionError as exc:
             status = 409 if exc.code in {
-                "group_device_action_pending", "group_device_scope_missing",
-                "group_device_not_granted", "group_action_not_granted",
-            } else 400
+                "group_device_scope_missing", "group_device_not_granted",
+                "group_action_not_granted", "group_device_readback_mismatch",
+            } else 403 if exc.code in {
+                "group_device_signature_missing", "group_context_invalid",
+            } else 503 if exc.code == "group_device_action_unavailable" else 400
             self.json_response({"ok": False, "error": exc.code, "message": exc.message}, status, audit)
             return
         plan["ok"] = True
-        plan["auditId"] = audit
+        # auditId stays the HomeHub grant's audit anchor from the signed
+        # context; the local request audit id rides along as uypAuditId.
+        plan["uypAuditId"] = audit
         self.json_response(plan, audit=audit)
 
     def _get_group_messages(self, group_id: str, query: dict, audit: str) -> None:
