@@ -48,9 +48,14 @@ projection; a graph hit therefore does not prove that a gBrain page exists.
 
 These are explicit blockers, not UI placeholders that can be marked passed:
 
-1. HomeHub does not yet issue or verify a live `uyp-agent-identity-v1` signed
-   card. `/api/studio/me`, `/internal/studio/card`, and `contacts.my_card()`
-   still return the legacy unsigned display/number/urn/town card.
+1. HomeHub can now issue and verify `uyp-agent-identity-v1` signed cards
+   (HomeHub commit `13766e4`, `/internal/studio/identity/describe|verify|revoke`,
+   loopback machine guard, ledger-backed revocation, audited verify). Deployed
+   and live-verified on the Mac companion (mint/accept/tamper-deny/
+   wrong-audience-deny/revoke-deny + UYP validator dual-read). Jetson
+   deployment is staged and pending the owner restart. `/api/studio/me` and
+   `contacts.my_card()` still return the legacy unsigned card for discovery
+   UIs; Miku is not migrated yet (that is P1).
 2. Miku is not yet a verified skill-card participant in a HomeHub-approved
    group/Town session. Its current auth is ADR-0028 HMAC delegation.
 3. HomeHub has not issued a group device delegation containing explicit device
