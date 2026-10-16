@@ -124,5 +124,124 @@ class SynthesisPromptTests(unittest.TestCase):
         self.assertFalse(knowledge_search.will_synthesize("哪里实现了委托签名", []))
 
 
+class FreshnessAnswerTests(unittest.TestCase):
+    """Time/freshness questions route to the temporal path (2026-10 incident:
+    group search confidently invented 'no changes today' because synthesis
+    never saw time metadata).  Fresh data -> ordered, timestamped synthesis;
+    stale or undated index -> an honest fallback, never a fabrication."""
+
+    def dated_items(self, now: float) -> list[dict]:
+        return [
+            {
+                "file": "services/homehub/src/api.py",
+                "version": {"mtime": now - 3600, "size": 100},
+                "analyzed_at": "2026-10-16T21:00:00",
+                "derived": {"purpose": "HomeHub HTTP API surface.",
+                            "key_points": ["member endpoints"]},
+            },
+            {
+                "file": "services/homehub/src/policy.py",
+                "version": {"mtime": now - 2 * 86400, "size": 100},
+                "derived": {"purpose": "HomeHub policy engine."},
+            },
+            {
+                "file": "services/indexer/src/groups.py",
+                "version": {"mtime": now - 10 * 86400, "size": 100},
+                "derived": {"purpose": "Group scoped retrieval."},
+            },
+        ]
+
+    def answer_with_fake_model(self, question, items, content="最近的改动在 services/homehub/src/api.py。"):
+        curl = FakeCurl(content)
+        with patch.object(knowledge_search.subprocess, "run", curl):
+            result = knowledge_search.answer(question, items)
+        prompt = ""
+        if curl.calls:
+            argv = curl.calls[0]
+            prompt = json.loads(argv[argv.index("-d") + 1])["messages"][0]["content"]
+        return result, curl, prompt
+
+    def test_temporal_question_detection_zh_and_en(self):
+        for q in ("今天 homehub 仓改了什么", "最近有什么变更", "昨天索引更新了吗",
+                  "what changed today", "latest commits yesterday", "this week updates"):
+            self.assertTrue(knowledge_search.is_temporal_question(q), q)
+        for q in ("哪里实现了委托签名", "how does HMAC signing work", "什么是知识图谱"):
+            self.assertFalse(knowledge_search.is_temporal_question(q), q)
+
+    def test_fresh_data_answers_with_timestamps_newest_first(self):
+        now = __import__("time").time()
+        result, curl, prompt = self.answer_with_fake_model(
+            "今天 homehub 仓改了什么", self.dated_items(now))
+        self.assertEqual(len(curl.calls), 1)
+        # Only the topically matched (homehub) dated items enter the prompt,
+        # each carrying its own MODIFIED timestamp, newest first.
+        self.assertIn("MODIFIED: ", prompt)
+        self.assertLess(prompt.index("api.py"), prompt.index("policy.py"))
+        self.assertNotIn("groups.py", prompt)
+        self.assertIn("index snapshot is as of", prompt)
+        self.assertEqual(result["sources"][0]["file"], "services/homehub/src/api.py")
+        self.assertIn("ts", result["sources"][0])
+        self.assertTrue(result["index_as_of"])
+
+    def test_stale_index_answers_honestly_without_model_call(self):
+        now = __import__("time").time()
+        old = now - 3 * 86400
+        items = [
+            {"file": "services/homehub/src/api.py",
+             "version": {"mtime": old, "size": 100},
+             "derived": {"purpose": "HomeHub HTTP API surface."}},
+            {"file": "services/homehub/src/policy.py",
+             "version": {"mtime": old - 86400, "size": 100},
+             "derived": {"purpose": "HomeHub policy engine."}},
+        ]
+        result, curl, _prompt = self.answer_with_fake_model("今天 homehub 仓改了什么", items)
+        self.assertEqual(curl.calls, [], "stale index must not reach synthesis")
+        self.assertIn("索引最新内容止于", result["answer"])
+        self.assertIn("无法据索引回答", result["answer"])
+        self.assertNotIn("无改动", result["answer"])
+        self.assertEqual(result["sources"][0]["file"], "services/homehub/src/api.py")
+        self.assertEqual(result["confidence"], "medium")
+        self.assertTrue(result["index_as_of"])
+
+    def test_stale_index_honest_fallback_english(self):
+        now = __import__("time").time()
+        items = [{"file": "src/api.py", "version": {"mtime": now - 5 * 86400, "size": 1}}]
+        result, curl, _prompt = self.answer_with_fake_model("what changed today", items)
+        self.assertEqual(curl.calls, [])
+        self.assertIn("newest content stops at", result["answer"])
+        self.assertIn("not indexed", result["answer"])
+
+    def test_undated_index_says_so_without_model_call(self):
+        items = [{"file": "src/api.py", "derived": {"purpose": "No timestamps here."}}]
+        result, curl, _prompt = self.answer_with_fake_model("最近改了什么", items)
+        self.assertEqual(curl.calls, [])
+        self.assertIn("没有时间元数据", result["answer"])
+        self.assertEqual(result["confidence"], "none")
+        self.assertIsNone(result["index_as_of"])
+
+    def test_yesterday_window_passes_when_data_is_from_yesterday(self):
+        now = __import__("time").time()
+        items = [{"file": "src/api.py", "version": {"mtime": now - 86400 - 60, "size": 1},
+                  "derived": {"purpose": "Changed yesterday."}}]
+        _result, curl, _prompt = self.answer_with_fake_model("昨天改了什么", items)
+        self.assertEqual(len(curl.calls), 1, "yesterday data satisfies the yesterday window")
+
+    def test_non_temporal_questions_keep_the_old_path(self):
+        now = __import__("time").time()
+        items = fixture_items()
+        items[0]["version"] = {"mtime": now, "size": 100}
+        curl = FakeCurl()
+        with patch.object(knowledge_search.subprocess, "run", curl):
+            result = knowledge_search.answer("哪里实现了委托签名", items)
+        self.assertEqual(result["answer"], "委托签名在 src/delegation.py；它构造并签署 HMAC 载荷。")
+        self.assertEqual(result["sources"][0]["file"], "src/delegation.py")
+        self.assertIn("match", result["sources"][0])  # lexical scoring untouched
+        self.assertTrue(result["index_as_of"])        # snapshot stamp rides along
+        # Canonical miss is unchanged for non-temporal questions.
+        with patch.object(knowledge_search.subprocess, "run", curl):
+            miss = knowledge_search.answer("量子退火算法在哪里实现", items)
+        self.assertEqual(miss["answer"], "Not in the indexed projects.")
+
+
 if __name__ == "__main__":
     unittest.main()
