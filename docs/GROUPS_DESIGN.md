@@ -218,6 +218,14 @@ is always stale; a cache that cannot be proven fresh is never served.
   the same pre-issuance local bridge as group search (registry record +
   requesting member), so HomeHub revocation of a messaging grant cannot be
   expressed yet.
+- **Group device actions** — `POST /api/groups/{id}/device-actions` now
+  validates a stronger HomeHub group projection when one is available. The
+  projection must explicitly carry `device_ids` and `action_ids` capability
+  scopes; a knowledge or NandaTown messaging context is insufficient. The
+  UYP adapter currently returns only a provider-neutral `dry_run` plan for
+  HomeHub's existing `/api/studio/home-devices/<id>/actions` route. Live
+  execution stays fail-closed until HomeHub issues a group device-action
+  delegation and records the corresponding audit event.
 - **Voice-originated sends** — the voice chain's `group_knowledge` seam is
   read-only (list + search).  A spoken send would need a POST turn there;
   the API side already accepts the loopback `X-Agent-Member` tier.
