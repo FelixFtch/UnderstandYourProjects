@@ -185,7 +185,11 @@ operation deleted the epoch-52 pages and wrote a manifest with
 The same scoped UYP search returned `Not in the indexed projects.` with zero
 citations. A fresh HomeHub grant was issued afterward (epoch `54`), the
 renewal keep-list backup was restored, and the project search recovered with
-three in-scope citations.
+three in-scope citations. A post-regrant IndexJob
+`job-cddaad5f78e54e83bdc144c58499dc15` then reached `published` with
+KnowledgeVersion/source epoch `47fe1cc96493f770fdb7dd377df4a81f`; its mirror
+`mirror-33dd5e38b6b252099cff3bd2cb0f9ccf` succeeded and the epoch-54 manifest
+reported `uyp_revoked=false` with 121 entries.
 
 This closes the real Connector -> IndexJob -> UA -> KnowledgeItem -> gBrain ->
 scoped search -> HomeHub revoke/tombstone loop. The remaining acceptance gates
