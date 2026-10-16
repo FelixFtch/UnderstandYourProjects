@@ -1,0 +1,17 @@
+[Unit]
+Description=UnderstandYourProjects gBrain mirror pass (HomeHub-gated)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/dev/uyp/indexer
+Environment=UYP_STATE_ROOT=%h/dev/uyp/state
+Environment=UYP_HOMEHUB_ACCESS_CONTEXT_URL=http://127.0.0.1:5120/api/uyp/access-context
+Environment=UYP_HOMEHUB_TOKEN_FILE=%h/.config/uyp/homehub.token
+Environment=UYP_GBRAIN_CREDS=%h/.config/uyp/project-knowledge-writer.json
+EnvironmentFile=-%h/.config/uyp/gbrain-mirror.env
+ExecStart=/usr/bin/python3 %h/dev/uyp/indexer/gbrain_mirror_worker.py --state-root %h/dev/uyp/state --access-context %h/.config/uyp/access-context.json --max-jobs 1
+NoNewPrivileges=true
+PrivateTmp=true
+
