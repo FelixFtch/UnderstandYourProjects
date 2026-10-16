@@ -56,8 +56,14 @@ These are explicit blockers, not UI placeholders that can be marked passed:
    wrong-audience-deny/revoke-deny + UYP validator dual-read). `/api/studio/me` and
    `contacts.my_card()` still return the legacy unsigned card for discovery
    UIs; Miku is not migrated yet (that is P1).
-2. Miku is not yet a verified skill-card participant in a HomeHub-approved
-   group/Town session. Its current auth is ADR-0028 HMAC delegation.
+2. Miku joined the HomeHub-created test group `t_4f4bca886db3f3bc` and the
+   Town run as a dedicated participant; a bidirectional identity handshake is
+   evidenced over both the contracts path and NandaTown, and Miku's
+   group.accept carried a P0 signed card (2026-10-16, HomeHub `c3ffc15` +
+   `ae0da1e`). Still open: Miku's Town-ingress messages self-heal into a
+   parallel thread on the Jetson side, and HomeHub has not yet issued the
+   formal group context projection (members + sharing scope) — that is folded
+   into P1b.
 3. HomeHub has not issued a group device delegation containing explicit device
    and action scopes. UYP cannot execute a group live action or mint that grant.
 4. NandaTown P7 (two independently authorized Jarvis nodes, attributed query,
