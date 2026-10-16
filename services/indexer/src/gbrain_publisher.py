@@ -239,6 +239,7 @@ class MirrorJobStore:
         return record
 
     def enqueue(self, *, index_job_id: str, project_id: str, knowledge_root: str,
+                source_id: str | None = None,
                 version: str, source_epoch: str | None, grant_epoch: str | None,
                 published_at: str | None = None, mirror_id: str | None = None) -> dict[str, Any]:
         """Create or refresh one queued mirror record idempotently.
@@ -259,6 +260,10 @@ class MirrorJobStore:
             "mirrorJobId": mirror_id,
             "indexJobId": _mirror_safe_component(index_job_id, "index job id"),
             "projectId": str(project_id),
+            # Source capability is retained so a worker can re-check both
+            # HomeHub project and connector scopes after a revoke.  It is an
+            # opaque ID, never a source path or token.
+            "sourceId": str(source_id).strip() if source_id is not None and str(source_id).strip() else None,
             # Needed by the worker, but never copied into Studio's public
             # projection. This is a local path, not a source-byte payload.
             "knowledgeRoot": str(Path(os.path.expanduser(str(knowledge_root))).resolve()),
@@ -283,11 +288,13 @@ class MirrorJobStore:
 
 def enqueue_mirror(*, state_root: str | os.PathLike[str], index_job_id: str,
                    project_id: str, knowledge_root: str, version: str,
+                   source_id: str | None = None,
                    source_epoch: str | None, grant_epoch: str | None,
                    published_at: str | None = None) -> dict[str, Any]:
     """Queue a post-publish mirror without doing network I/O."""
     return MirrorJobStore(state_root).enqueue(
         index_job_id=index_job_id, project_id=project_id, knowledge_root=knowledge_root,
+        source_id=source_id,
         version=version, source_epoch=source_epoch, grant_epoch=grant_epoch,
         published_at=published_at)
 
@@ -295,7 +302,7 @@ def enqueue_mirror(*, state_root: str | os.PathLike[str], index_job_id: str,
 def mirror_projection(record: dict[str, Any]) -> dict[str, Any]:
     """Return a Studio-safe status projection (no local paths or credentials)."""
     result: dict[str, Any] = {}
-    for key in ("mirrorJobId", "indexJobId", "projectId", "knowledgeVersion",
+    for key in ("mirrorJobId", "indexJobId", "projectId", "sourceId", "knowledgeVersion",
                 "sourceEpoch", "grantEpoch", "publishedAt", "phase",
                 "attempts", "maxAttempts", "nextAttemptAt", "lastError",
                 "createdAt", "updatedAt"):
@@ -709,6 +716,15 @@ def _mirror_access_denial(record: dict[str, Any], context: dict[str, Any] | None
     scopes = {str(value) for value in checked.get("projectScopes", [])}
     if project_id not in scopes and f"project:{project_id}" not in scopes and "*" not in scopes:
         return "homehub_scope_denied"
+    source_id = str(record.get("sourceId") or "").strip()
+    if not source_id:
+        # Records written before source capability pinning cannot be safely
+        # mirrored after a policy change.  They remain inspectable and can be
+        # re-enqueued by a fresh IndexJob with sourceId attached.
+        return "source_scope_missing"
+    source_scopes = {str(value) for value in checked.get("sourceScopes", [])}
+    if source_id not in source_scopes and f"connector:{source_id}" not in source_scopes and "*" not in source_scopes:
+        return "homehub_source_scope_denied"
     return None
 
 
