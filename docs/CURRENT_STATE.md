@@ -72,8 +72,11 @@ These are explicit blockers, not UI placeholders that can be marked passed:
    readback → revoke (epoch 65→66) → same request denied
    (`group_context_invalid: revoked`). HomeHub `1bac144`/`49ced75`, UYP
    `644450a`.
-4. NandaTown P7 (two independently authorized Jarvis nodes, attributed query,
-   bounded device action, revocation denial, and audit chain) is not accepted.
+4. NandaTown P7 was accepted 2026-10-16 on the home↔miku mesh: two signed node
+   cards, bounded group scope, bidirectional attributed Town delivery, scoped
+   evidence-backed answer, group device dry_run/live/read-back/revoke/deny, and
+   the audit chain are evidenced in `docs/P7_ACCEPTANCE_2026-10-16.md` (read the
+   deviation notes: live expiry coverage and per-action auditRef remain open).
 5. UA graph coverage is broader than searchable KnowledgeItems; the gBrain
    mirror queue still needs durable drain/retry/invalidations.
 
