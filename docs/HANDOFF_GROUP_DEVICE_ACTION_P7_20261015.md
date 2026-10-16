@@ -1,8 +1,8 @@
 # Group device-action / Miku / NandaTown handoff
 
-Date: 2026-10-15  
-Repository: `FelixFtch/UnderstandYourProjects`  
-UYP HEAD at handoff: `58bd41a docs: record deployed laya intent gate`  
+Date: 2026-10-15
+Repository: `FelixFtch/UnderstandYourProjects`
+UYP HEAD at handoff: `58bd41a docs: record deployed laya intent gate`
 HomeHub HEAD observed: `3a02969 fix(agent-runtime): use laya score domain contract`
 
 This document is the handoff boundary for the next agent. It records what is

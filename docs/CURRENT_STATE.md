@@ -1,8 +1,8 @@
 # UnderstandYourProjects current state
 
-Date: 2026-10-15  
-Canonical repository: `FelixFtch/UnderstandYourProjects`  
-Canonical UYP commit: `58bd41a docs: record deployed laya intent gate`  
+Date: 2026-10-15
+Canonical repository: `FelixFtch/UnderstandYourProjects`
+Canonical UYP commit: `58bd41a docs: record deployed laya intent gate`
 Related HomeHub commit observed: `3a02969 fix(agent-runtime): use laya score domain contract`
 
 This is the short status page for contributors. Start here before reading
