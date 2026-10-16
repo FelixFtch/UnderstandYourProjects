@@ -680,11 +680,45 @@ def _mirror_error(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc}"[:300]
 
 
+def _mirror_access_denial(record: dict[str, Any], context: dict[str, Any] | None) -> str | None:
+    """Return a HomeHub denial reason for one mirror record, if any.
+
+    A mirror is a *projection* of a previously authorized local publication;
+    it must not outlive the grant that authorized that publication.  The
+    worker supplies a fresh AccessContext issued by HomeHub.  We compare only
+    opaque grant/project identifiers here and never mint or extend a grant.
+    ``None`` means the record is allowed to proceed.
+    """
+    if context is None:
+        return "homehub_access_context_unavailable"
+    try:
+        from homehub_adapter import validate_context
+
+        checked = validate_context(context)
+    except Exception:
+        # An invalid, expired, or explicitly revoked projection is a hard
+        # safety boundary.  Treat it uniformly so callers cannot accidentally
+        # distinguish a stale grant from an unavailable policy plane.
+        return "homehub_access_context_unavailable"
+    grant_epoch = str(record.get("grantEpoch") or "").strip()
+    if not grant_epoch:
+        return "grant_epoch_missing"
+    if grant_epoch != str(checked.get("grantEpoch") or ""):
+        return "homehub_grant_epoch_mismatch"
+    project_id = str(record.get("projectId") or "").strip()
+    scopes = {str(value) for value in checked.get("projectScopes", [])}
+    if project_id not in scopes and f"project:{project_id}" not in scopes and "*" not in scopes:
+        return "homehub_scope_denied"
+    return None
+
+
 def run_mirror_job(record: dict[str, Any], *, state_root: str | os.PathLike[str],
                    base_url: str | None = None, creds: Any = None,
                    client: McpServeClient | None = None,
                    publisher: Callable[..., dict[str, Any]] = publish,
-                   log: Callable[[str], None] = print) -> dict[str, Any]:
+                   log: Callable[[str], None] = print,
+                   access_context: dict[str, Any] | None = None,
+                   enforce_access_context: bool = False) -> dict[str, Any]:
     """Attempt one queued mirror, recording bounded retry state.
 
     This function is intended for a separate timer/worker. It is never called
@@ -699,6 +733,13 @@ def run_mirror_job(record: dict[str, Any], *, state_root: str | os.PathLike[str]
     current = store.get(mirror_id)
     if current.get("phase") in {"succeeded", "blocked"}:
         return current
+    if enforce_access_context or access_context is not None:
+        denial = _mirror_access_denial(current, access_context)
+        if denial:
+            return store.event(mirror_id, "blocked", {
+                "lastError": denial,
+                "blockedBy": "homehub",
+            })
     attempts = int(current.get("attempts") or 0) + 1
     current = store.event(mirror_id, "running", {"attempts": attempts, "lastError": None})
     try:
@@ -760,15 +801,49 @@ def run_pending_mirrors(state_root: str | os.PathLike[str], *, max_jobs: int = 1
                         client: McpServeClient | None = None,
                         publisher: Callable[..., dict[str, Any]] = publish,
                         now: datetime | None = None,
-                        log: Callable[[str], None] = print) -> dict[str, Any]:
+                        log: Callable[[str], None] = print,
+                        access_context: dict[str, Any] | None = None,
+                        enforce_access_context: bool = False) -> dict[str, Any]:
     """Run due mirror records once; suitable for a timer or systemd worker."""
     store = MirrorJobStore(state_root)
     stamp = now or datetime.now(timezone.utc)
     due = [record for record in store.list()
            if _mirror_due(record, stamp) and str(record.get("phase")) in {"queued", "retry_wait"}]
+    if enforce_access_context and access_context is None:
+        # Do not convert a temporary HomeHub transport failure into a
+        # permanent mirror failure.  The next timer tick can retry after the
+        # policy plane returns; importantly, no remote write is attempted.
+        return {
+            "ok": True,
+            "scheduled": 0,
+            "skipped": len(due),
+            "jobs": [],
+            "reason": "homehub_access_context_unavailable",
+        }
+    if enforce_access_context or access_context is not None:
+        # Revoke/epoch changes are handled before applying max_jobs so stale
+        # records cannot occupy the one worker slot forever.  This is a local
+        # state transition only; deleting/tombstoning remote pages remains an
+        # explicit HomeHub-authorized revoke operation.
+        allowed: list[dict[str, Any]] = []
+        for record in due:
+            denial = _mirror_access_denial(record, access_context)
+            if denial:
+                try:
+                    store.event(str(record["mirrorJobId"]), "blocked", {
+                        "lastError": denial,
+                        "blockedBy": "homehub",
+                    })
+                except (KeyError, GbrainPublishError):
+                    pass
+            else:
+                allowed.append(record)
+        due = allowed
     selected = due[:max(0, int(max_jobs))]
     results = [run_mirror_job(record, state_root=state_root, base_url=base_url,
-                              creds=creds, client=client, publisher=publisher, log=log)
+                              creds=creds, client=client, publisher=publisher, log=log,
+                              access_context=access_context,
+                              enforce_access_context=enforce_access_context)
                for record in selected]
     return {
         "ok": True,

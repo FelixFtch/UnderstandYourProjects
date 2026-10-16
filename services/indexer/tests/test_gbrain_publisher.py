@@ -282,6 +282,58 @@ class GbrainPublisherTests(unittest.TestCase):
         self.assertEqual(result["jobs"][0]["phase"], "succeeded")
         self.assertEqual(len(calls), 2)
 
+    def test_mirror_worker_blocks_after_homehub_grant_epoch_changes(self):
+        state = self.root / "state"
+        gp.enqueue_mirror(
+            state_root=state, index_job_id="job-revoked", project_id="demo",
+            knowledge_root=self.root / "output" / "demo", version="v1",
+            source_epoch="source-1", grant_epoch="grant-old")
+        calls = []
+
+        def fake_publish(*args, **kwargs):
+            calls.append(args)
+            return {"manifestWritten": True, "entries": 1}
+
+        context = {
+            "principalId": "felix",
+            "sessionId": "session-1",
+            "jarvisNodeId": "node-1",
+            "projectScopes": ["demo"],
+            "sourceScopes": ["connector:demo"],
+            "grantEpoch": "grant-new",
+            "policyDigest": "sha256:test",
+            "expiresAt": "2099-01-01T00:00:00Z",
+            "auditId": "audit-1",
+        }
+        result = gp.run_pending_mirrors(
+            state, access_context=context, enforce_access_context=True,
+            publisher=fake_publish, log=lambda line: None)
+        self.assertEqual(result["scheduled"], 0)
+        self.assertEqual(calls, [])
+        record = gp.MirrorJobStore(state).list()[0]
+        self.assertEqual(record["phase"], "blocked")
+        self.assertEqual(record["lastError"], "homehub_grant_epoch_mismatch")
+
+    def test_mirror_worker_leaves_queue_when_homehub_unavailable(self):
+        state = self.root / "state"
+        gp.enqueue_mirror(
+            state_root=state, index_job_id="job-offline", project_id="demo",
+            knowledge_root=self.root / "output" / "demo", version="v1",
+            source_epoch="source-1", grant_epoch="grant-1")
+        calls = []
+
+        def fake_publish(*args, **kwargs):
+            calls.append(args)
+            return {"manifestWritten": True, "entries": 1}
+
+        result = gp.run_pending_mirrors(
+            state, enforce_access_context=True, publisher=fake_publish,
+            log=lambda line: None)
+        self.assertEqual(result["reason"], "homehub_access_context_unavailable")
+        self.assertEqual(result["scheduled"], 0)
+        self.assertEqual(calls, [])
+        self.assertEqual(gp.MirrorJobStore(state).list()[0]["phase"], "queued")
+
     def test_sanitized_slug_collision_fails_closed(self):
         out = make_knowledge_root(self.root)
         (out / "collide.knowledge.json").write_text(json.dumps(quick_item("a b.py")), encoding="utf-8")

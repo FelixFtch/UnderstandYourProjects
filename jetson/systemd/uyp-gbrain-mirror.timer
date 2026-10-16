@@ -1,0 +1,11 @@
+[Unit]
+Description=Run UnderstandYourProjects gBrain mirror queue
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=2min
+Persistent=true
+Unit=uyp-gbrain-mirror.service
+
+[Install]
+WantedBy=timers.target
