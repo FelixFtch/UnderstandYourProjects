@@ -46,6 +46,7 @@ from groups import (
     source_overlap,
     validate_group_context,
 )
+from group_device_actions import GroupDeviceActionError, validate_group_device_action
 from homehub_adapter import (
     load_context as load_homehub_context,
     load_context_for_member as load_homehub_context_for_member,
@@ -1351,6 +1352,10 @@ class QueryHandler(BaseHTTPRequestHandler):
                 and parts[2] == "groups" and parts[3] and parts[4] == "messages"):
             self._post_group_message(parts[3], payload, audit)
             return
+        if (len(parts) == 5 and parts[0] == "" and parts[1] == "api"
+                and parts[2] == "groups" and parts[3] and parts[4] == "device-actions"):
+            self._post_group_device_action(parts[3], payload, audit)
+            return
         self.json_response({"ok": False, "error": "not_found"}, 404, audit)
 
     def _post_knowledge_search(self, payload: dict, audit: str) -> None:
@@ -1774,6 +1779,90 @@ class QueryHandler(BaseHTTPRequestHandler):
             "delivery": results,
             "deliveredTo": [entry.get("to") for entry in delivered],
         }, 201, audit)
+
+    def _post_group_device_action(self, group_id: str, payload: dict, audit: str) -> None:
+        """Validate a HomeHub-authorized group device action (dry-run only).
+
+        Group text transport is intentionally not an action authority.  This
+        endpoint requires a HomeHub-issued ``X-Group-Context`` projection and
+        the stronger ``device_ids``/``action_ids`` capability scopes.  A
+        context that only authorizes project knowledge or NandaTown messages
+        is rejected.  Valid requests produce a provider-neutral dry-run plan
+        for HomeHub's existing device route; live execution remains disabled
+        until HomeHub supplies a group delegation endpoint.
+        """
+        projection = self.headers.get("X-Group-Context")
+        if projection is None:
+            self.json_response({
+                "ok": False,
+                "error": "group_device_context_required",
+                "message": "HomeHub must issue a group device-action context before this route can be used.",
+            }, 403, audit)
+            return
+        try:
+            context = json.loads(projection)
+        except json.JSONDecodeError:
+            self.json_response({
+                "ok": False,
+                "error": "group_context_invalid",
+                "message": "The presented group context is malformed, expired, or revoked.",
+            }, 403, audit)
+            return
+        if not isinstance(context, dict) or context.get("group_id") != group_id:
+            self.json_response({
+                "ok": False,
+                "error": "group_context_mismatch",
+                "message": "The presented group context speaks for a different group.",
+            }, 400, audit)
+            return
+        member_id = str(context.get("member_id") or "").strip()
+        # A request-carried group projection is not itself a caller
+        # credential.  Bind it to the same HomeHub bearer or loopback voice
+        # member used by the other protected query routes before inspecting
+        # the local registry.  This prevents a caller who merely obtained a
+        # different member's projection from submitting an action as them.
+        auth = str(self.headers.get("Authorization") or "")
+        if auth[:7].lower() == "bearer " and auth[7:].strip():
+            caller = load_homehub_context_for_token(auth[7:].strip())
+            if caller is None:
+                self.json_response({"ok": False, "error": "invalid_credentials",
+                                    "message": "The presented bearer could not be resolved by HomeHub."}, 401, audit)
+                return
+            if not _same_member(caller.get("principalId"), member_id):
+                self.json_response({"ok": False, "error": "member_mismatch",
+                                    "message": "The group context member must match the authenticated member."}, 403, audit)
+                return
+        else:
+            voice_member = str(self.headers.get("X-Agent-Member") or "").strip()
+            if not (voice_member and getattr(self.server, "loopback_voice", False)):
+                self.json_response({"ok": False, "error": "group_device_credentials_required",
+                                    "message": "A HomeHub bearer or loopback member credential is required."}, 401, audit)
+                return
+            if not _same_member(voice_member, member_id):
+                self.json_response({"ok": False, "error": "member_mismatch",
+                                    "message": "The group context member must match the speaking member."}, 403, audit)
+                return
+        record = group_registry().get(group_id)
+        if record is None:
+            self.json_response({"ok": False, "error": "group_not_found",
+                                "message": "This group is not registered locally or has been dissolved."}, 404, audit)
+            return
+        if not member_id or not group_allows_member(record, member_id):
+            self.json_response({"ok": False, "error": "not_a_member",
+                                "message": "Only a HomeHub-authorized group member can request a device action."}, 403, audit)
+            return
+        try:
+            plan = validate_group_device_action(context, payload)
+        except GroupDeviceActionError as exc:
+            status = 409 if exc.code in {
+                "group_device_action_pending", "group_device_scope_missing",
+                "group_device_not_granted", "group_action_not_granted",
+            } else 400
+            self.json_response({"ok": False, "error": exc.code, "message": exc.message}, status, audit)
+            return
+        plan["ok"] = True
+        plan["auditId"] = audit
+        self.json_response(plan, audit=audit)
 
     def _get_group_messages(self, group_id: str, query: dict, audit: str) -> None:
         """GET /api/groups/{id}/messages?limit= - the member-scoped local log.

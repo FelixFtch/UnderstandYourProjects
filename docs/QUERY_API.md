@@ -56,6 +56,7 @@ development session. The Studio build variable is `VITE_STUDIO_API_URL`.
 | `POST /api/groups/{id}/search` | group-scoped knowledge search ("不同群看到不同知识") | `X-Group-Context` projection or registry+member; `scoped_retrieval` filters before synthesis; out-of-view citations are refused with the canonical miss sentence |
 | `POST /api/groups/{id}/messages` | a member sends a group message over NandaTown | member-scoped like group search (non-member 403); per-recipient fan-out with distinct message_ids; a transport failure is an honest 503 carrying `error_code` and persists no echo — delivery is never faked |
 | `GET /api/groups/{id}/messages?limit=` | a group's local message log (chat history) | member-scoped; the append-only record of this box's sends (echo) and receives (poll loop) under `UYP_STATE_ROOT/groups/<id>/messages.jsonl` |
+| `POST /api/groups/{id}/device-actions` | HomeHub-authorized group device-action dry-run | requires `X-Group-Context` with explicit `device_ids` and `action_ids` capability scopes; returns a provider-neutral plan for HomeHub's existing `/api/studio/home-devices/<id>/actions` route; live execution is rejected until HomeHub issues a group delegation |
 | `DELETE /api/groups/{id}` | dissolve a group | owner only; the registry forgets the group, later searches are denied |
 
 `POST /api/knowledge/search` accepts `{ "query": "...", "projectId": "..." }`.
@@ -151,6 +152,24 @@ directory/health, never a group-routing decision.  Per-group run
 CREATION automation (town admin API) is future work; this is mapping
 only — the town admin provisions runs and join tokens, the registry
 records which run serves which group.
+
+### Group device-action adapter (dry-run only)
+
+`POST /api/groups/{id}/device-actions` is the deliberately narrow seam for
+future group device control. It is **not** an additional executor and it does
+not treat NandaTown text as authorization. The caller must present a
+HomeHub-issued `X-Group-Context` for the same group, and that projection must
+explicitly include non-empty `device_ids` and `action_ids` capability scopes.
+The current group context shape does not include those fields yet, so current
+requests fail closed with `group_device_scope_missing` until HomeHub adds the
+group device delegation.
+
+The only accepted execution mode at this stage is `dry_run`. A successful
+response has `executed: false` and contains a provider-neutral
+`forwardEnvelope` matching HomeHub's existing
+`/api/studio/home-devices/<homeDeviceId>/actions` contract. `live` returns
+`group_device_action_pending`; UYP cannot mint a group grant, call a provider,
+or bypass HomeHub's policy and audit route.
 
 Studio: the Groups workspace loads the live group list and history
 through these endpoints (plus `GET /api/groups` for the rail) and its
