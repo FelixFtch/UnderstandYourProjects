@@ -67,8 +67,9 @@ The Studio canvas contains the actual ADR-0031 chain, including:
 - `Compose reply (persona)`
 - `Record turn`
 
-The imported Studio flow has 18 nodes and 17 edges. A canvas execution replays
-the selected turn through Jetson's `/v1/agent/flow/turn` endpoint. It does not
+The current imported Studio flow has 21 nodes and 20 edges; the Voice flow has
+20 nodes and 19 edges. A canvas execution replays the selected turn through
+Jetson's `/v1/agent/flow/turn` endpoint. It does not
 grant access to project files and it cannot bypass HomeHub `AccessContext`.
 
 ## Native alternative
