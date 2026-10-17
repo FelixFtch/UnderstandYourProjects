@@ -16,6 +16,6 @@
   (mirroring the index-side skip/structure/summary/deep contract), so the mirror
   store does not grow unbounded after the 0.60 quota true-up. Forget actions go
   through the publisher's revoke path, never direct deletes. Design before code.
-- Manifest page publish fails on gbrain 0.60 with invalid_params (observed
-  2026-10-16, record mirror-1a5c…): align the manifest put_page params with the
-  0.60 contract; item pages publish fine.
+- SOLVED 2026-10-16 (d5879f6): 0.60 rejects slugs ending in .md/.mdx; the
+  publisher now drops the source extension. The manifest invalid_params errors
+  were item-page failures misreported under the manifest slug.
