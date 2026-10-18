@@ -5,6 +5,7 @@ const ICONS = {
     understanding: "brain",
     data: "data",
     flow: "flow",
+    receipts: "activity",
 };
 export function sectionIcon(section) {
     return ICONS[section] ?? "sparkle";

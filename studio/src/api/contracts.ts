@@ -576,3 +576,70 @@ export interface UaModeUpdate {
   provider?: string;
   model?: string;
 }
+
+// ── §6f Studio receipts (Phase 0 Connector contract view, 2026-10-18) ──────
+// Read-only projection of the receipt picture that exists on the hub today:
+// the persisted capability-lifecycle audit ledger (issue / verify / revoke)
+// merged with the volatile governed-action feed.  The frozen Phase 0 rule
+// shows through the shapes: `ack` without `read_back` is never `completed`,
+// and simulated executions carry execution_mode "simulated" /
+// real_device false so they can never read as a real device finishing.
+export type ReceiptSourceKind = "studio" | "voice" | "town" | "unknown" | (string & {});
+
+export interface ReceiptAck {
+  received: boolean;
+  connector?: string | null;
+}
+
+export interface StudioReceipt {
+  receipt_id: string;
+  kind: "capability_lifecycle" | "device_action" | (string & {});
+  requested_at: string; // ISO, second-resolution UTC "…Z"
+  source: ReceiptSourceKind;
+  principal: string;
+  auth_level: string | null; // role of the acting member, when known
+  room: string | null; // not recorded by either source yet
+  capability: string; // action id or capability family
+  risk: string | null; // as recorded (e.g. "low"); never invented as R-levels
+  status: string; // received/awaiting_*/denied/dispatched/accepted/completed/failed/queued/expired/cancelled/dry_run
+  confirmation: string | null; // "ack_only" | "read_back" | "simulated_read_back" | "ledger_entry"
+  ack: ReceiptAck | null;
+  read_back: Record<string, unknown> | null;
+  execution_mode: "live" | "dry_run" | "simulated" | (string & {}) | null;
+  real_device: boolean | null;
+  error: string | null;
+  audit_ref: string;
+  request_id: string | null;
+  remote_receipt_id: string | null; // remote chain arrives with the full Connector migration
+  expires_at: string | null;
+  detail: Record<string, unknown>;
+}
+
+export interface ReceiptSourceInfo {
+  id: "audit_ledger" | "device_action_feed" | (string & {});
+  available: boolean;
+  persisted: boolean;
+  label: string;
+}
+
+/** GET /api/studio/receipts */
+export interface StudioReceiptList {
+  status: string;
+  schema_version: string;
+  read_only: boolean;
+  sources: ReceiptSourceInfo[];
+  receipts: StudioReceipt[];
+  count: number;
+  next_before: string | null;
+  filters_applied: Record<string, unknown>;
+}
+
+export interface ReceiptsQuery {
+  limit?: number;
+  before?: string;
+  principal?: string;
+  capability?: string;
+  status?: string;
+  source?: string;
+  include_context_reads?: boolean;
+}
