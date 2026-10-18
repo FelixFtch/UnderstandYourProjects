@@ -210,4 +210,23 @@ export const api = {
     putVoiceProfiles: (update, s) => send("PUT", "/api/settings/voice-profiles", update, s),
     uaMode: (s) => get("/api/settings/ua-mode", s),
     putUaMode: (update, s) => send("PUT", "/api/settings/ua-mode", update, s),
+    // §6f receipts (Phase 0 Connector contract view, read-only)
+    receipts: (opts = {}, s) => {
+        const q = new URLSearchParams();
+        if (opts.limit)
+            q.set("limit", String(opts.limit));
+        if (opts.before)
+            q.set("before", opts.before);
+        if (opts.principal)
+            q.set("principal", opts.principal);
+        if (opts.capability)
+            q.set("capability", opts.capability);
+        if (opts.status)
+            q.set("status", opts.status);
+        if (opts.source)
+            q.set("source", opts.source);
+        if (opts.include_context_reads)
+            q.set("include_context_reads", "true");
+        return get(`/api/studio/receipts?${q}`, s);
+    },
 };

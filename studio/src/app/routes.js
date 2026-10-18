@@ -8,4 +8,5 @@ export const ROUTES = [
     { section: "understanding", label: "Understand", hint: "What Understand Anything learned from your folders", page: lazy(() => import("../features/understanding/UnderstandingPage")) },
     { section: "data", label: "Data", hint: "Privacy rings, Home Assistant, scheduling", page: lazy(() => import("../features/data/DataPage")) },
     { section: "flow", label: "Flow", hint: "How Jarvis thinks: the agent flow", page: lazy(() => import("../features/flow/FlowPage")) },
+    { section: "receipts", label: "Receipts", hint: "Receipt timeline: what was asked of connectors and what actually happened", page: lazy(() => import("../features/receipts/ReceiptsPage")) },
 ];

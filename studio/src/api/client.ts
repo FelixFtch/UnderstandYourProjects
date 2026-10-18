@@ -6,8 +6,8 @@ import type {
   HomeDeviceActionResult, HomeDeviceProjection, LlmProvidersResult, LlmProvidersSettings, LlmProvidersUpdate,
   MarkReadRequest, ModelModeResult, ModelModeSettings, ModelModeUpdate, NotificationList,
   PairResponse, PolicyDoc, PolicyDomain, PolicyTree,
-  ProjectAnswer, ProjectDigest, ProjectGraph, ProjectList, SendResult, SensorDeviceList, SensorHistory,
-  SensorStateRow, ShareCard, ShareCardUpdate, Thread,
+  ProjectAnswer, ProjectDigest, ProjectGraph, ProjectList, ReceiptsQuery, SendResult, SensorDeviceList,
+  SensorHistory, SensorStateRow, ShareCard, ShareCardUpdate, StudioReceiptList, Thread,
   UaModeResult, UaModeSettings, UaModeUpdate, VoiceProfilesResult, VoiceProfilesSettings, VoiceProfilesUpdate,
 } from "./contracts";
 
@@ -226,4 +226,17 @@ export const api = {
   putVoiceProfiles: (update: VoiceProfilesUpdate, s?: AbortSignal) => send<VoiceProfilesResult>("PUT", "/api/settings/voice-profiles", update, s),
   uaMode: (s?: AbortSignal) => get<UaModeSettings>("/api/settings/ua-mode", s),
   putUaMode: (update: UaModeUpdate, s?: AbortSignal) => send<UaModeResult>("PUT", "/api/settings/ua-mode", update, s),
+
+  // §6f receipts (Phase 0 Connector contract view, read-only)
+  receipts: (opts: ReceiptsQuery = {}, s?: AbortSignal) => {
+    const q = new URLSearchParams();
+    if (opts.limit) q.set("limit", String(opts.limit));
+    if (opts.before) q.set("before", opts.before);
+    if (opts.principal) q.set("principal", opts.principal);
+    if (opts.capability) q.set("capability", opts.capability);
+    if (opts.status) q.set("status", opts.status);
+    if (opts.source) q.set("source", opts.source);
+    if (opts.include_context_reads) q.set("include_context_reads", "true");
+    return get<StudioReceiptList>(`/api/studio/receipts?${q}`, s);
+  },
 };

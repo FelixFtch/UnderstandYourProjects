@@ -7,6 +7,7 @@ const ICONS: Record<string, IconName> = {
   understanding: "brain",
   data: "data",
   flow: "flow",
+  receipts: "activity",
 };
 
 export function sectionIcon(section: string): IconName {
