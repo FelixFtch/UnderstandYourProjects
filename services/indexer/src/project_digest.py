@@ -182,28 +182,47 @@ def areas_from(items: list[dict]) -> list[dict]:
     return areas
 
 
-def _live_manifest(record: dict, ttl: float = 300.0) -> list[dict] | None:
-    """Current connector manifest (relpath, mtime), cached; None if unavailable."""
+def _live_manifest(record: dict, ttl: float = 300.0) -> tuple[list[dict] | None, str | None]:
+    """(current connector manifest, degraded reason), cached.
+
+    The manifest is the Connector's live file list (relpath, mtime).  The
+    degraded reason is a short code set ONLY when a live manifest was
+    expected for this record (grant + configured connector) but could not
+    be read - the caller must then present index-derived activity as
+    stale-with-as-of instead of asserting "no changes" (freshness audit
+    2026-10-18).  Deliberately-unlive setups (UYP_PROJECT_LIVE_ACTIVITY=0,
+    no grant, unconfigured connector) keep the silent index fallback.
+    """
     if os.environ.get("UYP_PROJECT_LIVE_ACTIVITY", "1").strip().lower() in {"0", "off", "false", "no"}:
-        return None
+        return None, None
     grant = record.get("grant_id")
     client = P.ConnectorClient(timeout=5.0)
     if not grant or not client.configured:
-        return None
+        return None, None
     key = (record["project_id"], grant)
     now = time.monotonic()
     with _MANIFEST_LOCK:
         cached = _MANIFEST_CACHE.get(key)
         if cached and now < cached[0]:
-            return cached[1]
+            return cached[1], cached[2]
+    degraded = None
     try:
         files = [{"file": str(f.get("relpath")), "mtime": P.parse_time(f.get("mtime"))}
                  for f in client.manifest(grant).get("files", []) if f.get("kind") == "file" and f.get("relpath")]
-    except (P.ConnectorError, RuntimeError, ValueError, TypeError, OSError):
+    except (P.ConnectorError, RuntimeError, ValueError, TypeError, OSError) as exc:
         files = None
+        degraded = str(getattr(exc, "code", "") or type(exc).__name__)
     with _MANIFEST_LOCK:
-        _MANIFEST_CACHE[key] = (now + (ttl if files is not None else 60.0), files)
-    return files
+        _MANIFEST_CACHE[key] = (now + (ttl if files is not None else 60.0), files, degraded)
+    return files, degraded
+
+
+def _stale_freshness(record: dict, degraded: str) -> dict:
+    """Offline source with an index on disk = 'stale', always with an as-of
+    time (the C-line freshness rule).  The reason stays a short connector
+    error code; never a path or endpoint."""
+    as_of = str(record.get("analyzed_at") or "").strip() or None
+    return {"state": "stale", "asOf": as_of, "detail": f"live source unavailable ({degraded})"}
 
 
 def changed_between(record: dict, items: list[dict], since: float, until: float,
@@ -217,7 +236,8 @@ def changed_between(record: dict, items: list[dict], since: float, until: float,
     return [{"file": rel, "mtime": P.iso_from_epoch(mtime), "purpose": purposes.get(rel, "")} for mtime, rel in rows]
 
 
-def activity_section(record: dict, items: list[dict], now: float, manifest=None) -> dict:
+def activity_section(record: dict, items: list[dict], now: float, manifest=None,
+                     degraded: str | None = None) -> dict:
     since = now - 7 * 86400
     changed = changed_between(record, items, since, now, manifest)
     today = datetime.fromtimestamp(now).date()
@@ -227,8 +247,11 @@ def activity_section(record: dict, items: list[dict], now: float, manifest=None)
         day = datetime.fromtimestamp(P.parse_time(row["mtime"])).date().isoformat()
         if day in counts:
             counts[day] += 1
-    return {"window": "7d", "changed": changed[:DIGEST_CHANGED_LIMIT],
-            "by_day": [{"date": day, "count": count} for day, count in counts.items()]}
+    section = {"window": "7d", "changed": changed[:DIGEST_CHANGED_LIMIT],
+               "by_day": [{"date": day, "count": count} for day, count in counts.items()]}
+    if degraded:
+        section["freshness"] = _stale_freshness(record, degraded)
+    return section
 
 
 def digest(context: dict, project_id: str, *, now: float | None = None) -> dict | None:
@@ -251,12 +274,13 @@ def digest(context: dict, project_id: str, *, now: float | None = None) -> dict 
         siblings = [public(by_id[c]) for c in parent.get("children", [])
                     if c in ids and c != project_id and c in by_id]
     graph = meta.get("graph") or {}
+    manifest, degraded = _live_manifest(record)
     return {
         "project": public(record),
         "overview": overview_from(record, items),
         "key_files": key_files_from(items),
         "areas": areas_from(items),
-        "activity": activity_section(record, items, now, _live_manifest(record)),
+        "activity": activity_section(record, items, now, manifest, degraded),
         "graph": {"layers": list(graph.get("layers") or []), "top_nodes": list(graph.get("top_nodes") or [])},
         "related": {
             "parent": public(parent) if parent is not None else None,
@@ -273,7 +297,15 @@ def activity(context: dict, project_id: str, since: float, until: float) -> dict
         return None
     _, record, jobs, _ = resolved
     _, items = P.project_items(record, active=(jobs.get(project_id) or {}).get("status") in {"queued", "running"})
-    return {"changed": changed_between(record, items, since, until, _live_manifest(record))[:ACTIVITY_LIMIT]}
+    manifest, degraded = _live_manifest(record)
+    # Additive contract: while the live source answers, the body stays
+    # exactly {"changed": [...]}; only a degraded read grows a freshness
+    # block so honest clients can say stale-with-as-of instead of "no
+    # changes" (docs/STUDIO_V2.md §6.2).
+    result = {"changed": changed_between(record, items, since, until, manifest)[:ACTIVITY_LIMIT]}
+    if degraded:
+        result["freshness"] = _stale_freshness(record, degraded)
+    return result
 
 
 # ------------------------------------------------------------------ ask ----

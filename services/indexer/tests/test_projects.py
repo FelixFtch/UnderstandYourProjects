@@ -444,6 +444,31 @@ class DigestTests(FixtureMixin, unittest.TestCase):
         self.assertEqual(result["changed"][0]["purpose"], "SQLite persistence layer for tasks.")
         self.assertEqual(result["changed"][1]["purpose"], "")
 
+    def test_activity_offline_connector_is_stale_with_as_of(self):
+        # Freshness audit 2026-10-18: an unreachable connector must degrade
+        # to stale-with-as-of, never to a bare "no changes" body.
+        connector = ConnectorMixin.start_connector(self)
+        connector.manifests["g_ct"] = [
+            {"relpath": "src/db.py", "mtime": int(NOW - 3600), "size": 1, "kind": "file"}]
+        online = project_digest.activity(self.ctx, "commontasks", NOW - 86400, NOW)
+        self.assertEqual(set(online), {"changed"})  # online body stays minimal
+        connector.shutdown()  # the source goes dark
+        project_digest._MANIFEST_CACHE.clear()
+        degraded = project_digest.activity(self.ctx, "commontasks", NOW - 86400, NOW)
+        self.assertEqual(set(degraded), {"changed", "freshness"})
+        self.assertEqual(degraded["freshness"]["state"], "stale")
+        self.assertTrue(degraded["freshness"]["asOf"])  # index time, always present here
+        self.assertIn("connector_unavailable", degraded["freshness"]["detail"])
+        # The listed files are the INDEX's view again (README.md etc.), not
+        # the manifest's src/db.py - that is exactly why the as-of matters.
+        degraded_files = [c["file"] for c in degraded["changed"]]
+        self.assertIn("README.md", degraded_files)
+        self.assertNotIn("src/db.py", degraded_files)
+        # The digest's activity section carries the same honesty block.
+        section = project_digest.digest(self.ctx, "commontasks", now=NOW)["activity"]
+        self.assertEqual(section["freshness"]["state"], "stale")
+        self.assertEqual(section["freshness"]["asOf"], degraded["freshness"]["asOf"])
+
     def test_digest_is_absent_outside_scope(self):
         self.assertIsNone(project_digest.digest(context_for("other"), "commontasks"))
         self.assertIsNone(project_digest.digest(self.ctx, "../etc"))

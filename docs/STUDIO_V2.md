@@ -290,6 +290,12 @@ loopback `X-Agent-Member` path (b)); companion proxies `/api/studio/projects*` �
   `/api/studio/projects/{id}/graph` forwards the caller's bearer to this
   endpoint.
 - `GET /api/projects/{id}/activity?since=ISO&until=ISO` → `{"changed":[{"file","mtime","purpose"}]}`
+  Additive freshness contract (2026-10-18): when the live source is expected but
+  unreachable (connector fetch failed), the response and the digest's
+  `activity` section additionally carry
+  `"freshness":{"state":"stale","asOf":ISO|null,"detail":str}` - offline with
+  an index on disk is stale-with-as-of, never a bare "no changes" assertion.
+  While the connector answers, the body stays exactly `{"changed":[…]}`.
 - `POST /api/projects/{id}/ask {question}` → `{"answer","sources":[{"file"}],"confidence"}`
   (UA knowledge items + gbrain synthesis; same model env as knowledge_search).
 - `POST /api/projects/analyze {path, device_id?}` (owner) → 202

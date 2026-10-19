@@ -69,6 +69,40 @@ class QueryApiProjectionTests(unittest.TestCase):
         self.assertIn("graph", snapshot)
         self.assertEqual(len(snapshot["graph"]["nodes"]), 2)
 
+    def test_snapshot_source_epoch_is_manifest_epoch_not_a_timestamp(self):
+        # Freshness audit 2026-10-18: sourceEpoch used to be filled with
+        # max(analyzed_at) - same name as the manifest content epoch, different
+        # meaning.  It must now be the registry/job manifest epoch (null when
+        # unknown); analyzedAt carries the timestamp semantics.
+        snapshot = query_api.project_snapshot()
+        self.assertIsNone(snapshot["project"]["sourceEpoch"])
+        self.assertIsNone(snapshot["health"]["sourceEpoch"])
+        self.assertEqual(snapshot["project"]["analyzedAt"], snapshot["project"]["updatedAt"])
+        self.assertTrue(str(snapshot["project"]["analyzedAt"]).startswith("2026-"))
+
+        registry_file = Path(self.tmp.name) / "registry.json"
+        registry_file.write_text(json.dumps({
+            "schemaVersion": "uyp.connector-registry.v1",
+            "connectors": [{
+                "connectorId": "connector:demo-project", "nodeId": "jetson-test", "kind": "local",
+                "label": "demo", "state": "current", "manifestState": "ready",
+                "sourceIds": ["connector:demo-project"], "sourceEpoch": "sha256:1a2b3c",
+            }],
+        }), encoding="utf-8")
+        old_registry = os.environ.get("UYP_CONNECTOR_REGISTRY_FILE")
+        os.environ["UYP_CONNECTOR_REGISTRY_FILE"] = str(registry_file)
+        try:
+            snapshot = query_api.project_snapshot()
+        finally:
+            if old_registry is None:
+                os.environ.pop("UYP_CONNECTOR_REGISTRY_FILE", None)
+            else:
+                os.environ["UYP_CONNECTOR_REGISTRY_FILE"] = old_registry
+        self.assertEqual(snapshot["project"]["sourceEpoch"], "sha256:1a2b3c")
+        self.assertEqual(snapshot["health"]["sourceEpoch"], "sha256:1a2b3c")
+        self.assertEqual(snapshot["project"]["analyzedAt"], snapshot["project"]["updatedAt"])
+        self.assertNotEqual(snapshot["project"]["sourceEpoch"], snapshot["project"]["analyzedAt"])
+
     def test_scope_filter_rejects_other_project(self):
         context = query_api.load_access_context()
         item = {"file": "src/main.py", "_out_path": "/tmp/output/other-project/file.knowledge.json"}
