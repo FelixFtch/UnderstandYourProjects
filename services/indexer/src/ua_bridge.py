@@ -233,6 +233,21 @@ def run(
     scan_path = intermediate / "scan-result.json"
     batches_path = intermediate / "batches.json"
     run_checked(["node", f"{ua_env['UYP_UA_ROOT']}/skills/understand/scan-project.mjs", str(staging), str(scan_path), "--exclude-analysis-data"], env=ua_env)
+    # scan-project deliberately emits no importMap (the interactive skill's
+    # scanner agent merges Step C itself); compute-batches reads
+    # scan.importMap, so without this stage batchImportData is all-empty and
+    # the built graph has zero imports edges -- dependency/impact questions
+    # lose their graph and Louvain module batching degenerates to singletons.
+    scan = json.loads(scan_path.read_text(encoding="utf-8"))
+    import_input_path = intermediate / "import-input.json"
+    import_map_path = intermediate / "import-map.json"
+    import_input_path.write_text(json.dumps({
+        "projectRoot": str(staging),
+        "files": scan.get("files", []),
+    }, ensure_ascii=False), encoding="utf-8")
+    run_checked(["node", f"{ua_env['UYP_UA_ROOT']}/skills/understand/extract-import-map.mjs", str(import_input_path), str(import_map_path)], env=ua_env)
+    scan["importMap"] = json.loads(import_map_path.read_text(encoding="utf-8")).get("importMap", {})
+    scan_path.write_text(json.dumps(scan, ensure_ascii=False), encoding="utf-8")
     run_checked(["node", f"{ua_env['UYP_UA_ROOT']}/skills/understand/compute-batches.mjs", str(staging), f"--scan-result={scan_path}", f"--output={batches_path}"], env=ua_env)
     batches = json.loads(batches_path.read_text(encoding="utf-8"))
     all_results: list[dict] = []
@@ -292,6 +307,7 @@ def run(
         "graphPath": str(project_state / "knowledge-graph.json"),
         "nodes": len(graph.get("nodes", [])),
         "edges": len(graph.get("edges", [])),
+        "importEdges": sum(1 for edge in graph.get("edges", []) if edge.get("type") == "imports"),
         "languages": graph.get("project", {}).get("languages", []),
     }
     # Merge the enrichment worker's UA-mode flags (cloud_enrich_broken) so the
