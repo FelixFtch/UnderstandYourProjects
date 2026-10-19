@@ -170,6 +170,11 @@ class RunEndToEndTests(unittest.TestCase):
         name = Path(command[1]).name
         if name == "scan-project.mjs":
             Path(command[3]).write_text(json.dumps({"contentDigest": "d1"}), encoding="utf-8")
+        elif name == "extract-import-map.mjs":
+            Path(command[3]).write_text(json.dumps({
+                "scriptCompleted": True,
+                "importMap": {"src/main.py": []},
+            }), encoding="utf-8")
         elif name == "compute-batches.mjs":
             for arg in command:
                 if arg.startswith("--output="):
