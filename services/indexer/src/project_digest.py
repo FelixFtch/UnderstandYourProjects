@@ -30,6 +30,7 @@ from datetime import datetime, timedelta, timezone
 import project_jobs as J
 import projects as P
 import ua_llm_client as ua_llm  # UA 云端/本地分析模式 (2026-10-15): ask 综合段可切云端
+import knowledge_evidence
 from knowledge_search import INTERACTIVE_LOCK, score as lexical_score, tokenize
 
 TIER_ORDER = {"A": 0, "B": 1, "C": 2, "gate": 3}
@@ -418,7 +419,7 @@ def rank_hits(items: list[dict], question: str, names: set[str]) -> list[tuple[f
 
 def _miss(name: str) -> dict:
     return {"answer": f"I don't have enough information about that in the analyzed knowledge of {name}.",
-            "sources": [], "confidence": "none"}
+            "sources": [], "confidence": "none", "evidence": []}
 
 
 def ask(context: dict, project_id: str, question: str, *, member: str | None = None, role: str | None = None,
@@ -471,6 +472,13 @@ def ask(context: dict, project_id: str, question: str, *, member: str | None = N
         "Answer in the question's language.\n\nQUESTION: " + question + "\n\n" + "\n---\n".join(context_blocks))
     ordered = [entry["file"] for entry in key_entries] + [item["file"] for _, item in hits]
     sources = [{"file": f} for f in dict.fromkeys(ordered)]
+    # KnowledgeEvidence producer (2026-10-18): one frozen-contract
+    # record per cited file.  ``items`` here are the visible project's
+    # own compact items - _resolve already gated the project through
+    # projects.visible(context, record) - so permission_checked=true
+    # is earned by that gate, never merely asserted.
+    evidence = knowledge_evidence.build_evidence(
+        sources, items, default_root=project_id)
     mine = _yield_then_mark()
     try:
         reply = (llm or ollama_chat)(prompt)
@@ -478,8 +486,9 @@ def ask(context: dict, project_id: str, question: str, *, member: str | None = N
         _release(mine)
     if reply is None:
         return {"answer": "The local model is not available right now; the most relevant files are listed as sources.",
-                "sources": sources, "confidence": "unavailable"}
+                "sources": sources, "confidence": "unavailable", "evidence": evidence}
     if reply.strip().upper().startswith(NOT_ENOUGH):
         return _miss(name)
     confidence = "high" if hits and hits[0][0] >= 4 else ("medium" if hits else "low")
-    return {"answer": reply.strip(), "sources": sources, "confidence": confidence}
+    return {"answer": reply.strip(), "sources": sources, "confidence": confidence,
+            "evidence": evidence}

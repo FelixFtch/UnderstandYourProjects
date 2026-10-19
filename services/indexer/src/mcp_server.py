@@ -455,6 +455,8 @@ class ToolRunner:
         # never a grant and must not widen the search.
         allowed_items = query_api.scoped_items(context, project_key)
         result = query_api.search_answer(question, allowed_items)
+        # Producer-internal cross-record statements stay internal.
+        result.pop("inferred_statements", None)
         result.update({
             "ok": True,
             "projectId": project_key,
