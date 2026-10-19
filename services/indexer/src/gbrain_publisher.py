@@ -100,7 +100,17 @@ TOKEN_MARGIN_SECONDS = 120.0
 # records live below the UYP state root and contain no bearer credentials or
 # HomeHub context.
 MIRROR_SCHEMA_VERSION = "1.0"
-MIRROR_PHASES = {"queued", "running", "retry_wait", "succeeded", "failed", "blocked"}
+MIRROR_PHASES = {"queued", "running", "retry_wait", "succeeded", "failed",
+                 "blocked", "terminal_expired"}
+# ADR (docs/ADR_MIRROR_EPOCH.md, adopted 2026-10-19): a
+# ``homehub_grant_epoch_mismatch`` denial is EXPECTED grant-epoch
+# rotation noise (the global epoch advances on every create/revoke
+# across all projects, ~12-14/day), not a policy problem.  Such records
+# move to ``terminal_expired`` - audit chain preserved (record file,
+# events, lastError), never retried, never re-enqueued.  The REAL
+# policy denials (scope narrowed / never granted / missing epoch) stay
+# ``blocked`` so operators still see them.
+MISMATCH_DENIAL = "homehub_grant_epoch_mismatch"
 MIRROR_MAX_ATTEMPTS = 3
 MIRROR_RETRY_BACKOFF_SECONDS = 60
 
@@ -772,15 +782,20 @@ def run_mirror_job(record: dict[str, Any], *, state_root: str | os.PathLike[str]
     # Re-read the durable record so a worker acting on a stale queue listing
     # cannot overwrite a newer retry or success state.
     current = store.get(mirror_id)
-    if current.get("phase") in {"succeeded", "blocked"}:
+    if current.get("phase") in {"succeeded", "blocked", "terminal_expired"}:
         return current
     if enforce_access_context or access_context is not None:
         denial = _mirror_access_denial(current, access_context)
         if denial:
-            return store.event(mirror_id, "blocked", {
-                "lastError": denial,
-                "blockedBy": "homehub",
-            })
+            return store.event(
+                mirror_id,
+                "terminal_expired" if denial == MISMATCH_DENIAL else "blocked",
+                {
+                    "lastError": denial,
+                    "blockedBy": "homehub",
+                    **({"expiredBy": "grant_epoch_rotation"}
+                       if denial == MISMATCH_DENIAL else {}),
+                })
     attempts = int(current.get("attempts") or 0) + 1
     current = store.event(mirror_id, "running", {"attempts": attempts, "lastError": None})
     try:
@@ -871,10 +886,15 @@ def run_pending_mirrors(state_root: str | os.PathLike[str], *, max_jobs: int = 1
             denial = _mirror_access_denial(record, access_context)
             if denial:
                 try:
-                    store.event(str(record["mirrorJobId"]), "blocked", {
-                        "lastError": denial,
-                        "blockedBy": "homehub",
-                    })
+                    store.event(
+                        str(record["mirrorJobId"]),
+                        "terminal_expired" if denial == MISMATCH_DENIAL else "blocked",
+                        {
+                            "lastError": denial,
+                            "blockedBy": "homehub",
+                            **({"expiredBy": "grant_epoch_rotation"}
+                               if denial == MISMATCH_DENIAL else {}),
+                        })
                 except (KeyError, GbrainPublishError):
                     pass
             else:
