@@ -36,6 +36,7 @@ from knowledge_search import (
     load_items,
     will_synthesize as search_will_synthesize,
 )
+import knowledge_evidence
 from connector_registry import load_registry, public_projection, registry_health
 from groups import (
     GroupRegistry,
@@ -107,6 +108,41 @@ def load_ua_graph(project: str) -> dict | None:
         return value if isinstance(value, dict) and isinstance(value.get("nodes"), list) else None
     except (OSError, json.JSONDecodeError):
         return None
+
+
+_graph_index_lock = threading.Lock()
+# root -> ((mtime, size), GraphIndex | None); the Jetson graph JSON is
+# ~25 MB, so it is parsed once per edition, never once per request.
+_graph_index_cache: dict[str, tuple[tuple[float, int], object]] = {}
+
+
+def _graph_index_for(root: str):
+    """Cached GraphIndex over a project's published UA graph.
+
+    Graph refs on KnowledgeEvidence records are optional: any failure
+    (missing graph, bad JSON, path escape) yields None and the query
+    path continues without them.
+    """
+    component = safe_state_project(root)
+    if component is None:
+        return None
+    try:
+        base = os.path.realpath(state_root())
+        candidate = os.path.realpath(os.path.join(base, component, "ua", "knowledge-graph.json"))
+        if os.path.commonpath([base, candidate]) != base:
+            return None
+        stat = os.stat(candidate)
+        key = (stat.st_mtime, stat.st_size)
+    except OSError:
+        return None
+    with _graph_index_lock:
+        cached = _graph_index_cache.get(component)
+        if cached and cached[0] == key:
+            return cached[1]
+    index = knowledge_evidence.GraphIndex(load_ua_graph(component)) if component else None
+    with _graph_index_lock:
+        _graph_index_cache[component] = (key, index)
+    return index
 
 
 def load_access_context() -> dict | None:
@@ -719,21 +755,36 @@ def project_snapshot(project_id: str | None = None, *, context: dict | None = No
     project_key = f"project:{root}" if visible_project else "project:unavailable"
     enriched = sum(1 for item in items if item.get("derived", {}).get("purpose"))
     layers = len(graph_layers) if ua_graph else (len({item.get("verdict", "unknown") for item in items}) if items else 0)
+    # Studio evidence panel entries are now PROJECTED from the same
+    # contract KnowledgeEvidence records the search API returns (one
+    # producer, one truth); the v3.2 entry shape is preserved so the
+    # Studio contract itself does not move.
+    snapshot_items = sorted(items, key=lambda value: value.get("file", ""))[:200]
+    # Reuse the graph already loaded for this snapshot instead of a
+    # second 25 MB parse; fall back to the cached loader when absent.
+    snapshot_graph = (knowledge_evidence.GraphIndex(ua_graph) if ua_graph
+                      else (_graph_index_for(root) if visible_project else None))
+    evidence_records = knowledge_evidence.build_evidence(
+        [{"file": item.get("file")} for item in snapshot_items],
+        snapshot_items,
+        gate=lambda item: scope_allows(context, item) if context else False,
+        default_root=root if visible_project else None,
+        graph_provider=(lambda project_root, _index=snapshot_graph:
+                        _index if _index and project_root == root else None),
+    )
+    anchor_by_file = {str(item.get("file") or ""): item.get("anchor_top") for item in snapshot_items}
     evidence = []
-    for index, item in enumerate(sorted(items, key=lambda value: value.get("file", ""))[:200]):
-        derived = item.get("derived") or {}
-        summary = str(derived.get("purpose") or "Structure metadata only")
-        kind = "inference" if derived.get("purpose") else "structure"
-        evidence.append({
-            "evidenceId": f"knowledge:{root}:{index}", "projectId": project_key, "sourceId": source_id,
-            "knowledgeVersion": str(item.get("version", {}).get("mtime", "")),
-            "locator": {"path": item.get("file")}, "kind": kind, "summary": summary,
+    for index, record in enumerate(evidence_records):
+        record_path = str(record.get("locator") or "").split("#", 1)[0]
+        evidence.append(knowledge_evidence.studio_entry_from_evidence(
+            record,
+            evidence_id=f"knowledge:{root}:{index}",
+            project_key=project_key,
             # v3.2 anchored-enrichment primary actor; the Studio evidence badge
             # (studio-contracts.ts EvidenceRef.anchorTop) renders from this.
-            "anchorTop": item.get("anchor_top"),
-            "freshness": "current", "visibility": "private", "producingJarvis": context.get("jarvisNodeId") if context else None,
-        })
-    evidence = [{k: v for k, v in entry.items() if v is not None} for entry in evidence]
+            anchor_top=anchor_by_file.get(record_path),
+            producing_jarvis=context.get("jarvisNodeId") if context else None,
+        ))
     state = "current" if items and connector["state"] == "current" else "partial" if items else "unsupported"
     reason = None if state == "current" else "Knowledge output exists, but connector freshness or HomeHub context is not attached."
     source = {"sourceId": source_id, "label": root if visible_project else "Authorized source pending", "kind": "local", "state": connector["state"] if context else "unsupported", "detail": connector["detail"] if context else "HomeHub AccessContext required before source metadata is published"}
@@ -839,35 +890,14 @@ def search_citations(result_sources: list | None, scoped: list[dict], context: d
     adapter.  ``scoped`` has already passed the HomeHub project/source filter;
     this function only joins returned source paths back to those authorized
     items and never widens the result set.
+
+    Since the KnowledgeEvidence producer landed, citations are DERIVED
+    from the same contract records (never rebuilt ad hoc from items):
+    the join happens once, in knowledge_evidence.build_evidence.
     """
-    by_file: dict[str, dict] = {}
-    for item in scoped:
-        by_file.setdefault(str(item.get("file") or ""), item)
-    citations = []
-    for source in result_sources or []:
-        if not isinstance(source, dict):
-            continue
-        path = str(source.get("file") or "")
-        item = by_file.get(path)
-        if item is None:
-            continue
-        root = item_root(str(item.get("_out_path", "")))
-        derived = item.get("derived") or {}
-        citations.append({
-            "projectId": f"project:{root}",
-            "sourceId": f"connector:{root}",
-            "file": path,
-            "match": source.get("match"),
-            "knowledgeVersion": str((item.get("version") or {}).get("mtime", "")),
-            "sourceEpoch": str((item.get("version") or {}).get("mtime", "")),
-            "evidenceLevel": "inference" if derived.get("purpose") else "structure",
-            "lineRange": None if not item.get("anchor_top") else item["anchor_top"],
-            "freshness": "current",
-            "producingJarvis": context.get("jarvisNodeId"),
-            # Reading access does not imply permission to reshare evidence.
-            "allowedToShare": False,
-        })
-    return citations
+    evidence = knowledge_evidence.build_evidence(
+        result_sources, scoped, gate=lambda item: scope_allows(context, item))
+    return knowledge_evidence.citations_from_evidence(evidence, context, result_sources)
 
 
 def health_payload() -> dict:
@@ -1405,12 +1435,33 @@ class QueryHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.flush()
         result = search_answer(question, allowed_items)
+        # KnowledgeEvidence producer (2026-10-18): the retrieval join
+        # happens ONCE here - legacy sources[], AGENTFLOW citations[],
+        # and the new contract evidence[] all derive from the same
+        # records (single source of truth).  knowledge_search may
+        # attach inferred_statements for cross-record facts (temporal
+        # staleness path); that key is producer-internal and never
+        # leaves the API response.
+        inferred_statements = result.pop("inferred_statements", None)
+        graph_provider = (_graph_index_for
+                          if os.environ.get("UYP_EVIDENCE_GRAPH_REFS", "1") != "0"
+                          else None)
+        evidence = knowledge_evidence.build_evidence(
+            result.get("sources"), allowed_items,
+            gate=lambda item: scope_allows(context, item),
+            graph_provider=graph_provider,
+            inferred_content=inferred_statements,
+        )
+        result["sources"] = knowledge_evidence.sources_from_evidence(
+            evidence, result.get("sources"))
         result.update({
             "ok": True,
             "auditId": audit,
             "projectId": payload.get("projectId"),
             "access": {"grantEpoch": context.get("grantEpoch"), "expiresAt": context.get("expiresAt")},
-            "citations": search_citations(result.get("sources"), allowed_items, context),
+            "citations": knowledge_evidence.citations_from_evidence(
+                evidence, context, result.get("sources")),
+            "evidence": evidence,
         })
         if slow:
             self.wfile.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
@@ -1609,6 +1660,9 @@ class QueryHandler(BaseHTTPRequestHandler):
         # window before synthesis so an indexing worker yields the GPU.
         _touch_interactive_lock()
         result = search_answer(question, allowed_items)
+        # Producer-internal cross-record statements never leave the API
+        # (this tier answers without contract evidence records).
+        result.pop("inferred_statements", None)
         overlap = source_overlap(result.get("sources"), view, all_items)
         if not overlap["clean"]:
             # A citation outside the view (or unresolvable) means the answer

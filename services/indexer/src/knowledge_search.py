@@ -173,7 +173,16 @@ def _temporal_answer(question: str, items: list[dict]) -> dict:
                 f"so I cannot answer for the asked window.")
         return {"answer": text,
                 "sources": [{"file": newest_item["file"], "ts": stamp}],
-                "confidence": "medium", "index_as_of": snapshot}
+                "confidence": "medium", "index_as_of": snapshot,
+                # Producer-internal (query_api pops it before
+                # responding): the staleness answer is a fact COMPUTED
+                # across index metadata, not a quote from any one
+                # item, so its evidence record is fact_type=inferred.
+                "inferred_statements": {
+                    newest_item["file"]:
+                    f"Index edition ends at {stamp} (newest item: "
+                    f"{newest_item['file']}); the asked time window is "
+                    "beyond the indexed edition."}}
     # Fresh enough: order by time, lexical hits first as the topical filter.
     tokens = tokenize(question)
     hits = [(e, i) for e, i in dated if score(i, tokens) > 0]
