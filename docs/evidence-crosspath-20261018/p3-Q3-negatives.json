@@ -1,0 +1,9 @@
+--- P3-Q3a ly on family group (loopback machine assertion, no credential) ---
+{"answer": "Not in the indexed projects.", "sources": [], "confidence": "none", "index_as_of": null, "ok": true, "auditId": "94e6ebf7-48bf-4cb4-aef5-c9f58a476303", "groupId": "family", "memberId": "ly"}
+HTTP 200
+--- P3-Q3b Bearer felix + forged member_id=ly ---
+{"ok": false, "error": "member_mismatch", "message": "member_id must match the authenticated member."}
+HTTP 403
+--- P3-Q3c no credential no member_id ---
+{"answer": "Delegation signing is implemented in three files: `jetson/services/companion-api/src/companion_api/miku_bridge/delegation.py`, `jetson/services/agent-gateway/src/agent_gateway/delegation_sig.py`, and `services/agent/delegation_sig.py`. These modules manage authentication keys, generate HMAC signatures using the agent_contracts.signing library, and handle host-specific trust-root verification for delegation contracts.", "sources": [{"file": "jetson/services/companion-api/src/companion_api/miku_bridge/delegation.py", "match": 21.3}, {"file": "jetson/services/agent-gateway/src/agent_gateway/delegation_sig.py", "match": 19.3}, {"file": "services/agent/delegation_sig.py", "match": 18.5}], "confidence": "high", "index_as_of": "2026-10-18 22:46:28", "ok": true, "auditId": "563d449c-9055-438e-9e59-b42a8d308010", "groupId": "family", "memberId": "felix"}
+HTTP 200
