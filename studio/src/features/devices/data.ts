@@ -1,6 +1,6 @@
 // Data source for Devices: companion-api, or offline fixtures (VITE_STUDIO_FIXTURES=true).
 import { api } from "../../api/client";
-import type { AnalyzeJob, AnalyzeResult, CloudUsage, Device, HomeDeviceActionResult, HomeDeviceProjection, ProjectAnswer, ProjectDigest, ProjectGraph, ProjectList } from "../../api/contracts";
+import type { AnalyzeJob, AnalyzeResult, CloudUsage, Device, HomeDeviceActionResult, HomeDeviceProjection, KnowledgeQueryResult, ProjectAnswer, ProjectDigest, ProjectGraph, ProjectList } from "../../api/contracts";
 
 const FIXTURES = import.meta.env.VITE_STUDIO_FIXTURES === "true";
 const fx = () => import("./fixtures");
@@ -14,6 +14,9 @@ export const devicesData = {
   project: (id: string, s?: AbortSignal): Promise<ProjectDigest> => (FIXTURES ? fx().then((f) => f.project(id)) : api.project(id, s)),
   projectGraph: (id: string, s?: AbortSignal): Promise<ProjectGraph> => (FIXTURES ? fx().then((f) => f.projectGraph(id)) : api.projectGraph(id, s)),
   ask: (id: string, q: string): Promise<ProjectAnswer> => (FIXTURES ? fx().then((f) => f.ask(id, q)) : api.askProject(id, q)),
+  // Evidence-chain knowledge search (B2): ONE retrieval + ONE synthesis,
+  // answer and its contract evidence arrive together.
+  knowledgeAsk: (id: string, q: string): Promise<KnowledgeQueryResult> => (FIXTURES ? fx().then((f) => f.knowledgeAsk(id, q)) : api.knowledgeQuery(q, id)),
   analyze: (path: string, deviceId?: string): Promise<AnalyzeResult> =>
     FIXTURES ? fx().then((f) => f.analyze(path, deviceId)) : api.analyzeFolder(path, deviceId),
   job: (jobId: string): Promise<AnalyzeJob> => (FIXTURES ? fx().then((f) => f.job(jobId)) : api.analyzeJob(jobId)),

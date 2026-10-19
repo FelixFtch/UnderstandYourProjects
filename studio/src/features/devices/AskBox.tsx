@@ -1,9 +1,10 @@
 import { useState, type FormEvent } from "react";
-import type { ProjectAnswer } from "../../api/contracts";
+import type { KnowledgeQueryResult, ProjectAnswer } from "../../api/contracts";
 import { Icon } from "../../design/icons";
 import { Markdown } from "../../design/Markdown";
 import { Button, Chip, ErrorState, inputClass, SkeletonText, type Tone } from "../../design/primitives";
 import { devicesData } from "./data";
+import { EvidencePanel } from "./EvidencePanel";
 
 const CONFIDENCE: Record<ProjectAnswer["confidence"], { tone: Tone; label: string }> = {
   high: { tone: "ok", label: "high confidence" },
@@ -15,7 +16,7 @@ const CONFIDENCE: Record<ProjectAnswer["confidence"], { tone: Tone; label: strin
 
 const SUGGESTIONS = ["What changed this week?", "Where is the entry point?", "What is still unfinished?"];
 
-interface Turn { q: string; a?: ProjectAnswer; error?: unknown }
+interface Turn { q: string; a?: KnowledgeQueryResult; error?: unknown }
 
 export function AskBox({ projectId, name }: { projectId: string; name: string }) {
   const [q, setQ] = useState("");
@@ -29,7 +30,10 @@ export function AskBox({ projectId, name }: { projectId: string; name: string })
     setQ("");
     setTurns((t) => [...t, { q: text }]);
     try {
-      const a = await devicesData.ask(projectId, text);
+      // ONE call: answer + its contract evidence chain arrive together
+      // (no second synthesis for the panel, no re-retrieval, no
+      // client-side identity — the bearer does all of that upstream).
+      const a = await devicesData.knowledgeAsk(projectId, text);
       setTurns((t) => t.map((x, i) => (i === t.length - 1 ? { ...x, a } : x)));
     } catch (error) {
       setTurns((t) => t.map((x, i) => (i === t.length - 1 ? { ...x, error } : x)));
@@ -55,9 +59,12 @@ export function AskBox({ projectId, name }: { projectId: string; name: string })
                   <>
                     <Markdown text={t.a.answer || "_No answer._"} className="text-[14px] text-ink-2" />
                     <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                      <Chip tone={CONFIDENCE[t.a.confidence]?.tone ?? "neutral"}>{CONFIDENCE[t.a.confidence]?.label ?? t.a.confidence}</Chip>
+                      <Chip tone={CONFIDENCE[t.a.confidence as ProjectAnswer["confidence"]]?.tone ?? "neutral"}>
+                        {CONFIDENCE[t.a.confidence as ProjectAnswer["confidence"]]?.label ?? t.a.confidence ?? "unknown confidence"}
+                      </Chip>
                       {t.a.sources.map((s) => <Chip key={s.file} icon="file" mono title={s.file} className="max-w-[240px]">{s.file}</Chip>)}
                     </div>
+                    <EvidencePanel result={t.a} />
                   </>
                 ) : t.error ? (
                   <ErrorState compact error={t.error} service="Project knowledge (UYP)" onRetry={() => { setTurns((x) => x.filter((_, j) => j !== i)); void ask(t.q); }} />

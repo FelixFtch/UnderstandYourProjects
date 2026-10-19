@@ -1,7 +1,7 @@
 // Offline fixtures for Devices (VITE_STUDIO_FIXTURES=true only).
 import { ApiError } from "../../api/client";
 import type {
-  AnalyzeJob, AnalyzeResult, CloudUsage, Device, ProjectAnswer, ProjectDigest, ProjectList, ProjectSummary, ProjectTreeNode,
+  AnalyzeJob, AnalyzeResult, CloudUsage, Device, KnowledgeEvidenceRecord, KnowledgeQueryResult, ProjectAnswer, ProjectDigest, ProjectList, ProjectSummary, ProjectTreeNode,
   HomeDeviceActionResult, HomeDeviceProjection, SensorDeviceList, SensorHistoryPoint, SensorStateRow,
 } from "../../api/contracts";
 import { basename } from "../../design/format";
@@ -175,6 +175,43 @@ export async function ask(id: string, question: string): Promise<ProjectAnswer> 
       : `From the knowledge Jarvis has for **${id}**: the entry point is \`src/main.py\` and the README describes setup. Ask something more specific for a sharper answer.`,
     sources: id === "commontasks" ? [{ file: "backend/app/scheduler.py" }, { file: "web/src/TaskBoard.tsx" }, { file: "docs/adr/0007-recurring-tasks.md" }] : [{ file: "README.md" }],
     confidence: id === "commontasks" ? "high" : "low",
+  };
+}
+
+export async function knowledgeAsk(id: string, question: string): Promise<KnowledgeQueryResult> {
+  const base = await ask(id, question);
+  const stamp = "2026-10-18T09:15:00Z";
+  const record = (file: string, fact_type: KnowledgeEvidenceRecord["fact_type"], extra: Partial<KnowledgeEvidenceRecord> = {}): KnowledgeEvidenceRecord => ({
+    schema_version: "harness-v1",
+    source_id: `connector:${id}`,
+    source_version: "mtime=1760775600;size=4821",
+    locator: file,
+    content: `Indexed summary for ${file}: what this file does, its key points, and the components it declares.`,
+    permission_checked: true,
+    retrieved_at: stamp,
+    index_as_of: "2026-10-18 09:40:00",
+    freshness: "fresh",
+    fact_type,
+    provider: "local",
+    model_id: "qwen3.5-route",
+    ...extra,
+  });
+  return {
+    ok: true,
+    answer: base.answer,
+    sources: base.sources.map((s, i) => ({ file: s.file, match: 6.5 - i })),
+    evidence: id === "commontasks"
+      ? [
+          record("backend/app/scheduler.py#L120-L164", "semantic", { node_ids: ["commontasks:scheduler", "commontasks:expand_rule"], graph_version: "g-2026-10-18" }),
+          record("web/src/TaskBoard.tsx#L40-L88", "semantic"),
+          record("docs/adr/0007-recurring-tasks.md", "structural", { freshness: "stale", index_as_of: "2026-10-02 11:03:00" }),
+        ]
+      : [record("README.md", "structural", { freshness: "unknown", index_as_of: null })],
+    confidence: base.confidence,
+    freshness: id === "commontasks" ? "fresh" : "unknown",
+    index_as_of: id === "commontasks" ? "2026-10-18 09:40:00" : null,
+    audit_id: "fixture-audit-0001",
+    project_id: id,
   };
 }
 

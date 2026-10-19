@@ -324,6 +324,41 @@ export interface ProjectAnswer {
   confidence: "high" | "medium" | "low" | "none" | "unavailable";
 }
 
+/** One frozen-contract KnowledgeEvidence record (six frozen fields +
+ *  the additive extensions), as returned by /api/studio/knowledge/query. */
+export interface KnowledgeEvidenceRecord {
+  schema_version?: string;
+  source_id: string;
+  source_version: string;
+  locator: string;
+  content: string;
+  permission_checked: boolean;
+  retrieved_at: string;
+  graph_version?: string | null;
+  node_ids?: string[] | null;
+  edge_ids?: string[] | null;
+  index_as_of?: string | null;
+  freshness?: "fresh" | "stale" | "unknown";
+  fact_type?: "structural" | "semantic" | "inferred" | "runtime";
+  provider?: string | null;
+  model_id?: string | null;
+}
+
+/** GET /api/studio/knowledge/query — one question, one retrieval, one
+ *  synthesis pass; the evidence chain of exactly that answer. */
+export interface KnowledgeQueryResult {
+  ok: boolean;
+  answer: string | null;
+  evidence: KnowledgeEvidenceRecord[];
+  sources: Array<{ file: string; match?: number; ts?: string }>;
+  confidence?: string | null;
+  freshness?: "fresh" | "stale" | "unknown";
+  index_as_of?: string | null;
+  audit_id?: string | null;
+  citations?: Array<Record<string, unknown>>;
+  project_id?: string | null;
+}
+
 export interface AnalyzeResult {
   job_id: string;
   project_id: string;

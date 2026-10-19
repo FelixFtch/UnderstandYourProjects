@@ -37,6 +37,7 @@ from knowledge_search import (
     will_synthesize as search_will_synthesize,
 )
 import knowledge_evidence
+import knowledge_core
 from connector_registry import load_registry, public_projection, registry_health
 from groups import (
     GroupRegistry,
@@ -208,20 +209,13 @@ def access_context_valid(context: dict) -> bool:
 
 
 def item_root(path: str) -> str:
-    return os.path.basename(os.path.dirname(path))
+    return knowledge_core.item_root(path)
 
 
 def grouped_items() -> dict[str, list[dict]]:
-    groups: dict[str, list[dict]] = {}
-    for path in glob.glob(os.path.join(output_root(), "*", "*.knowledge.json")):
-        try:
-            with open(path, encoding="utf-8") as fh:
-                item = json.load(fh)
-            item["_out_path"] = path
-        except (OSError, json.JSONDecodeError):
-            continue
-        groups.setdefault(item_root(path), []).append(item)
-    return groups
+    # Moved into the shared Knowledge Core so /api/knowledge/search and
+    # /api/health cannot drift on how the output store is read.
+    return knowledge_core.grouped_items()
 
 
 def _scope_allows_job(context: dict, job: dict) -> bool:
@@ -881,41 +875,54 @@ def project_snapshot(project_id: str | None = None, *, context: dict | None = No
     return snapshot
 
 
+def context_scope(context: dict | None) -> knowledge_core.ResolvedScope:
+    """A validated HomeHub projection -> the shared ResolvedScope.
+
+    The scope PARSING lives in the shared Knowledge Core now (one
+    implementation for :8787 and :8790); this helper only maps the
+    context's already-validated fields onto it.
+    """
+    if context is None:
+        return knowledge_core.scope_from_grants([], [], 0)
+    return knowledge_core.scope_from_grants(
+        [str(value) for value in context.get("projectScopes", [])],
+        [str(value) for value in context.get("sourceScopes", [])],
+        _grant_epoch_of(context),
+    )
+
+
+def _grant_epoch_of(context: dict) -> int:
+    """The context's grantEpoch (a string) as an int; 0 when opaque."""
+    try:
+        return int(str(context.get("grantEpoch") or "").strip())
+    except ValueError:
+        return 0
+
+
 def scope_allows(context: dict, item: dict) -> bool:
-    path = str(item.get("file", ""))
-    project = item_root(str(item.get("_out_path", "")))
-    projects = [str(value) for value in context.get("projectScopes", [])]
-    sources = [str(value) for value in context.get("sourceScopes", [])]
-    project_allowed = "*" in projects or project in projects or f"project:{project}" in projects
-    source_ids = {str(item.get("source", "")), f"connector:{project}"}
-    source_allowed = "*" in sources or bool(source_ids.intersection(sources))
-    # Source scopes are capability identifiers, never arbitrary paths. The
-    # Connector remains the only component allowed to resolve a path.
-    return project_allowed and source_allowed
+    # Scope parsing moved into the shared Knowledge Core; the semantics
+    # (project/source capability sets, ``*`` widening one dimension) are
+    # unchanged.  Source scopes stay capability identifiers, never
+    # arbitrary paths - the Connector remains the only component allowed
+    # to resolve a path.
+    return knowledge_core.scope_allows_item(context_scope(context), item)
 
 
 def scoped_items(context: dict | None, project_id: str | None = None) -> list[dict]:
     """Apply the search scope filter; fail closed without an AccessContext.
 
     ``/api/knowledge/search`` and ``/api/health`` must never disagree about
-    how much knowledge is visible, so both go through this one helper.  A
-    missing, revoked, or narrowed context yields the same empty set here that
-    search would query (P7 acceptance finding 1).  When a caller supplies a
-    project id, the result is narrowed to that project after HomeHub scope
-    filtering.  The project id is a selector, never an authorization grant.
+    how much knowledge is visible, so both go through this one helper
+    (now the Knowledge Core's ``scoped_items_for_scope``).  A missing,
+    revoked, or narrowed context yields the same empty set here that
+    search would query (P7 acceptance finding 1).  When a caller supplies
+    a project id, the result is narrowed to that project after HomeHub
+    scope filtering.  The project id is a selector, never an
+    authorization grant.
     """
     if context is None:
         return []
-    requested = str(project_id or "").strip().removeprefix("project:")
-    if requested and ("/" in requested or "\\" in requested or requested in {".", ".."}):
-        return []
-    return [
-        item
-        for values in grouped_items().values()
-        for item in values
-        if scope_allows(context, item)
-        and (not requested or item_root(str(item.get("_out_path", ""))) == requested)
-    ]
+    return knowledge_core.scoped_items_for_scope(context_scope(context), project_id)
 
 
 def search_citations(result_sources: list | None, scoped: list[dict], context: dict) -> list[dict]:
@@ -1450,60 +1457,85 @@ class QueryHandler(BaseHTTPRequestHandler):
         if not question:
             self.json_response({"ok": False, "error": "query_required"}, 400, audit)
             return
-        # A request-level project selector must narrow the already validated
-        # HomeHub context.  It must never be treated as a grant or allowed to
-        # widen retrieval to another authorized project implicitly.
-        allowed_items = scoped_items(context, payload.get("projectId"))
+        # Shared Knowledge Core (2026-10 extraction): this handler is now a
+        # thin adapter - construct the request from the ALREADY VALIDATED
+        # HomeHub projection, run the one authorized_search pipeline that
+        # :8790 also runs, and project the result back into this API's
+        # response shape.  The request-level project selector narrows the
+        # already validated context inside the core (never a grant, never a
+        # widening).  composer/will_synthesize are passed as late-bound
+        # module references so the seam the tests patch keeps working.
+        request = knowledge_core.KnowledgeQueryRequest(
+            request_id=audit,
+            session_id=str(context.get("sessionId") or ""),
+            principal_id=str(context.get("principalId") or ""),
+            auth_level=str(context.get("authLevel") or "second_factor_verified"),
+            grants=[str(value) for value in context.get("projectScopes", [])],
+            grant_epoch=_grant_epoch_of(context),
+            source_scope=[str(value) for value in context.get("sourceScopes", [])],
+            query=question,
+            project=payload.get("projectId") if payload.get("projectId") else None,
+        )
         # Slow-answer hint (root-cause fix, 2026-10-10): lexical retrieval is
         # instant, but a retrieval HIT means qwen synthesis - 5-15s plus
         # queue wait when the GPU is busy indexing.  For hinted-slow answers
         # the response HEADERS (X-UYP-Slow-Hint) are sent and flushed BEFORE
-        # the synthesis runs, and the body is framed by connection close
-        # instead of Content-Length, so a streaming voice caller can speak
-        # "Let me look that up..." while the answer is still computed.  A
-        # miss (instant canonical sentence) keeps the normal framing.
-        slow = search_will_synthesize(question, allowed_items)
-        if slow:
+        # the synthesis runs (the core fires before_synthesis at exactly
+        # that point), and the body is framed by connection close instead
+        # of Content-Length, so a streaming voice caller can speak "Let me
+        # look that up..." while the answer is still computed.  A miss
+        # (instant canonical sentence) keeps the normal framing.
+        streamed: list[bool] = []
+
+        def _stream_slow_headers() -> None:
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self._headers(audit)
             self.send_header("X-UYP-Slow-Hint", "true")
             self.end_headers()
             self.wfile.flush()
-        result = search_answer(question, allowed_items)
-        # KnowledgeEvidence producer (2026-10-18): the retrieval join
-        # happens ONCE here - legacy sources[], AGENTFLOW citations[],
-        # and the new contract evidence[] all derive from the same
-        # records (single source of truth).  knowledge_search may
-        # attach inferred_statements for cross-record facts (temporal
-        # staleness path); that key is producer-internal and never
-        # leaves the API response.
-        inferred_statements = result.pop("inferred_statements", None)
-        graph_provider = (_graph_index_for
-                          if os.environ.get("UYP_EVIDENCE_GRAPH_REFS", "1") != "0"
-                          else None)
-        evidence = knowledge_evidence.build_evidence(
-            result.get("sources"), allowed_items,
-            gate=lambda item: scope_allows(context, item),
-            graph_provider=graph_provider,
-            inferred_content=inferred_statements,
+            streamed.append(True)
+
+        result = knowledge_core.authorized_search(
+            request,
+            composer=lambda question_, items: search_answer(question_, items),
+            will_synthesize=lambda question_, items: search_will_synthesize(question_, items),
+            graph_provider=(_graph_index_for
+                            if os.environ.get("UYP_EVIDENCE_GRAPH_REFS", "1") != "0"
+                            else None),
+            before_synthesis=_stream_slow_headers,
         )
-        result["sources"] = knowledge_evidence.sources_from_evidence(
-            evidence, result.get("sources"))
-        result.update({
+        # KnowledgeEvidence producer (2026-10-18), now inside the core: the
+        # retrieval join happens ONCE - legacy sources[], AGENTFLOW
+        # citations[], and the contract evidence[] all derive from the same
+        # records (single source of truth).
+        sources = []
+        for summary in result.sources:
+            entry = {"file": summary.file}
+            if summary.match is not None:
+                entry["match"] = summary.match
+            if summary.ts is not None:
+                entry["ts"] = summary.ts
+            sources.append(entry)
+        body = {
+            "answer": result.answer,
+            "sources": sources,
+            "confidence": result.extras.get("confidence"),
+            "index_as_of": result.index_as_of,
+            "freshness": result.freshness,
             "ok": True,
             "auditId": audit,
             "projectId": payload.get("projectId"),
             "access": {"grantEpoch": context.get("grantEpoch"), "expiresAt": context.get("expiresAt")},
             "citations": knowledge_evidence.citations_from_evidence(
-                evidence, context, result.get("sources")),
-            "evidence": evidence,
-        })
-        if slow:
-            self.wfile.write(json.dumps(result, ensure_ascii=False).encode("utf-8"))
+                result.evidence, context, sources),
+            "evidence": result.evidence,
+        }
+        if streamed:
+            self.wfile.write(json.dumps(body, ensure_ascii=False).encode("utf-8"))
             self.wfile.flush()
             return
-        self.json_response(result, audit=audit)
+        self.json_response(body, audit=audit)
 
     # ---- Projects (Studio v2 §6.2) ------------------------------------------
 
