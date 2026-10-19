@@ -23,3 +23,18 @@ from .evidence import (  # noqa: F401
     freshness_from_date,
     freshness_of,
 )
+from .ua_query import (  # noqa: F401
+    OPERATIONS,
+    TIME_RANGES,
+    UAGraph,
+    UATarget,
+    UAQueryRequest,
+    UAQueryResult,
+    ResolvedTarget,
+    infer_operation,
+    load_graph,
+    resolve_target,
+    run_ua_query,
+    state_root,
+    window_bounds,
+)

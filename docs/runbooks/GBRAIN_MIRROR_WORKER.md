@@ -62,3 +62,49 @@ The repository contains no endpoint credential or HomeHub token.  The systemd
 unit is safe to install before provisioning: without a valid AccessContext it
 does a no-op, and without an explicit gBrain endpoint the records become a
 visible configuration block rather than writing to the family brain.
+
+## FAILED-queue governance (2026-10-19)
+
+Phases today also include `terminal_expired` (the ADR lane for
+grant-epoch rotation; never retried, never re-enqueued).  The `failed`
+lane is governed by `services/indexer/src/gbrain_mirror_requeue.py` —
+classify first, requeue only what is still CURRENT:
+
+```bash
+# dry-run triage (default; writes nothing)
+python3 services/indexer/src/gbrain_mirror_requeue.py \
+  --state-root ~/dev/uyp/state
+
+# actually requeue the retryable class (one operator requeue per job
+# lifetime; --max-requeue caps the batch; manifest under
+# <state_root>/gbrain-mirror-requeue/)
+python3 services/indexer/src/gbrain_mirror_requeue.py \
+  --state-root ~/dev/uyp/state --execute
+
+# undo the last execute (only jobs the worker has not already acted on)
+python3 services/indexer/src/gbrain_mirror_requeue.py \
+  --state-root ~/dev/uyp/state --rollback
+```
+
+Rules the tool enforces (all decided against LIVE state — the HomeHub
+access context plus `GET /api/uyp/grants`):
+
+- requeue ONLY `retryable`: transport-class failures (timeout /
+  connection / HTTP / serve rejection incl. `queue_capacity`) whose
+  grant epoch still equals the LIVE access context's epoch (the same
+  comparison the worker makes at run time), whose project and source
+  are still in scope (context AND active ledger row), whose
+  `knowledgeVersion` is still the project's newest, with no
+  succeeded/queued duplicate, and no prior operator requeue;
+- never requeue: old-epoch jobs (`terminal_expired`), superseded
+  versions/duplicates, revoked or scope-narrowed projects
+  (`policy_blocked`), publisher precondition failures
+  (`configuration_error` — fix provisioning instead), and anything
+  already operator-requeued once (`permanent_failed`: capacity failures
+  must not retry forever);
+- audit is append-only: `lastError` is preserved, the `events` counter
+  advances, and the rollback manifest snapshots prior
+  phase/attempts/nextAttemptAt;
+- the worker re-validates epoch and scope at run time, so even a
+  requeued job that outlives its grant moves straight back to
+  `terminal_expired` — revoked content can never flow back.
