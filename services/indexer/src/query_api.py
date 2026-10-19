@@ -38,6 +38,7 @@ from knowledge_search import (
 )
 import knowledge_evidence
 import knowledge_core
+from knowledge_core import ua_query as ua_core
 from connector_registry import load_registry, public_projection, registry_health
 from groups import (
     GroupRegistry,
@@ -144,6 +145,277 @@ def _graph_index_for(root: str):
     with _graph_index_lock:
         _graph_index_cache[component] = (key, index)
     return index
+
+
+# ---- Unified UA query (2026-10-19): one graph query door for every entry --
+#
+# knowledge_core.ua_query owns the deterministic target resolver and the
+# six operations; this adapter adds ONLY the credential model (the same
+# /api/projects caller tiers), the graph cache (a ~25 MB JSON parses once
+# per edition), the IndexJob/manifest-backed activity provider, and the
+# caller-visible project list. No LLM runs here: operation inference is
+# keyword-deterministic, answers/phrasing belong to the callers.
+
+_ua_graph_cache: dict[str, tuple[tuple[float, int], object]] = {}
+
+
+def _ua_graph_for(project: str):
+    """Cached ua_query.UAGraph per project graph edition; None = absent."""
+    component = safe_state_project(project)
+    if component is None:
+        return None
+    try:
+        base = os.path.realpath(state_root())
+        candidate = os.path.realpath(os.path.join(base, component, "ua", "knowledge-graph.json"))
+        if os.path.commonpath([base, candidate]) != base:
+            return None
+        stat = os.stat(candidate)
+        key = (stat.st_mtime, stat.st_size)
+    except OSError:
+        return None
+    with _graph_index_lock:
+        cached = _ua_graph_cache.get(component)
+        if cached and cached[0] == key:
+            return cached[1]
+    graph = ua_core.load_graph(component, root=state_root())
+    with _graph_index_lock:
+        _ua_graph_cache[component] = (key, graph)
+    return graph
+
+
+def _ua_project_ids(context: dict) -> list[str]:
+    """Caller-visible projects that actually have a UA graph, sorted."""
+    try:
+        listing = project_digest.list_projects(context)
+    except Exception:  # noqa: BLE001 - registry hiccups answer empty, honest
+        return []
+    ids = []
+    for record in listing.get("projects") or []:
+        project_id = str(record.get("project_id") or "")
+        if project_id and _ua_graph_for(project_id) is not None:
+            ids.append(project_id)
+    return sorted(set(ids))
+
+
+def _ua_activity(context: dict, project_id: str, since: float, until: float) -> list[dict]:
+    """Changed-file rows via the visible-project activity path."""
+    result = project_digest.activity(context, project_id, since, until)
+    if not isinstance(result, dict):
+        return []
+    return [row for row in (result.get("changed") or [])
+            if isinstance(row, dict) and row.get("file")]
+
+
+_TIME_RANGE_ALIASES = {
+    "day": "day", "today": "day",
+    "week": "week", "this_week": "week", "recently": "week",
+}
+
+
+def _ua_request_from_payload(payload: dict) -> tuple[object, str | None]:
+    """(UAQueryRequest, error). Operation defaults to the deterministic
+    keyword inference over the question text; every enum is validated."""
+    question = str(payload.get("question") or payload.get("query") or "").strip()
+    operation = str(payload.get("operation") or "").strip().lower()
+    if not operation:
+        if not question:
+            return None, "question_or_operation_required"
+        operation = ua_core.infer_operation(question)
+    if operation not in ua_core.OPERATIONS:
+        return None, "invalid_operation"
+    raw_range = str(payload.get("timeRange") or payload.get("time_range") or "").strip().lower()
+    time_range = _TIME_RANGE_ALIASES.get(raw_range) if raw_range else None
+    if raw_range and time_range is None:
+        return None, "invalid_time_range"
+    raw_target = payload.get("target")
+    target = None
+    if isinstance(raw_target, dict) and any(raw_target.get(k) for k in
+                                            ("type", "query", "path", "nodeId", "node_id")):
+        target = ua_core.UATarget(
+            type=str(raw_target.get("type") or "") or None,
+            query=str(raw_target.get("query") or "") or None,
+            path=str(raw_target.get("path") or "") or None,
+            node_id=str(raw_target.get("nodeId") or raw_target.get("node_id") or "") or None,
+        )
+    elif question:
+        target = ua_core.UATarget(query=question)
+    session_context = {
+        "active_node_id": str(payload.get("activeNodeId")
+                              or payload.get("active_node_id") or ""),
+        "last_target_id": str(payload.get("lastTargetId")
+                              or payload.get("last_target_id") or ""),
+    }
+    return ua_core.UAQueryRequest(
+        operation=operation,
+        project_id="",
+        target=target,
+        time_range=time_range,
+        session_context={k: v for k, v in session_context.items() if v},
+    ), None
+
+
+def _ua_run(context: dict, req, project_id: str) -> dict:
+    """Run one query against ONE visible project and frame the response."""
+    graph = _ua_graph_for(project_id)
+    request = ua_core.UAQueryRequest(
+        operation=req.operation, project_id=project_id, target=req.target,
+        time_range=req.time_range, session_context=req.session_context)
+    result = ua_core.run_ua_query(
+        request, graph=graph,
+        activity=(lambda pid, since, until: _ua_activity(context, pid, since, until))
+        if req.operation == "recent_changes" else None)
+    body = {
+        "ok": True,
+        "operation": result.operation,
+        "projectId": project_id,
+        "status": result.status,
+        "resolution": {
+            "nodeId": result.target.node_id,
+            "resolution": result.target.resolution,
+            "confidence": result.target.confidence,
+            "candidates": [dict(candidate, projectId=project_id)
+                           for candidate in result.target.candidates],
+        },
+        "note": result.note,
+        "evidence": result.evidence,
+        "indexAsOf": result.index_as_of,
+        "auditId": None,
+    }
+    if req.operation == "recent_changes":
+        job = project_jobs.jobs_by_project().get(project_id) or {}
+        body["indexJob"] = {
+            "phase": job.get("phase"), "status": job.get("status"),
+            "progress": job.get("progress"),
+        } if job.get("phase") else None
+    return body
+
+
+def _ua_respond(handler, payload: dict, audit: str) -> None:
+    """POST /api/ua/query: resolve + run one unified UA graph query.
+
+    Project selection is deterministic and honest: a NAMED project must
+    be caller-visible (404 otherwise, indistinguishable from absent);
+    an UNNAMED project runs the target resolution across every visible
+    graphed project - exactly one hit executes there, hits in several
+    projects clarify once with the candidates, and project-scoped
+    operations (summary / recent_changes) with several candidates
+    clarify which project. Zero matches answer not_found / no_graph,
+    never a chat downgrade (that rule belongs to the callers too).
+    """
+    caller = handler._project_caller(audit)
+    if caller is None:
+        return
+    context = caller["context"]
+    req, error = _ua_request_from_payload(payload)
+    if error is not None:
+        handler.json_response({"ok": False, "error": error}, 400, audit)
+        return
+    project = str(payload.get("project") or payload.get("projectId") or "").strip()
+    if project:
+        if project_digest._resolve(context, project) is None:
+            handler._project_not_found(audit)
+            return
+        graph = _ua_graph_for(project)
+        if graph is None:
+            body = {
+                "ok": True, "operation": req.operation, "projectId": project,
+                "status": "no_graph",
+                "resolution": {"nodeId": "", "resolution": "not_found",
+                               "confidence": 0.0, "candidates": []},
+                "note": f"No analyzed code graph for {project} yet.",
+                "evidence": [], "indexAsOf": None, "auditId": audit,
+            }
+        else:
+            body = _ua_run(context, req, project)
+            body["auditId"] = audit
+        handler.json_response(body, audit=audit)
+        return
+    candidates = _ua_project_ids(context)
+    if not candidates:
+        handler.json_response({
+            "ok": True, "operation": req.operation, "projectId": None,
+            "status": "no_graph",
+            "resolution": {"nodeId": "", "resolution": "not_found",
+                           "confidence": 0.0, "candidates": []},
+            "note": "No analyzed code graphs are available to you yet.",
+            "evidence": [], "indexAsOf": None, "auditId": audit,
+        }, audit=audit)
+        return
+    if len(candidates) == 1:
+        body = _ua_run(context, req, candidates[0])
+        body["auditId"] = audit
+        handler.json_response(body, audit=audit)
+        return
+    if req.operation in ("summary", "recent_changes"):
+        # Project-scoped: several visible projects is a one-shot clarify.
+        handler.json_response({
+            "ok": True, "operation": req.operation, "projectId": None,
+            "status": "ambiguous_project",
+            "resolution": {"nodeId": "", "resolution": "ambiguous",
+                           "confidence": 0.0, "candidates": [
+                               {"node_id": "", "name": p, "type": "project",
+                                "file": "", "projectId": p}
+                               for p in candidates]},
+            "note": "Several analyzed projects are available; ask which one.",
+            "evidence": [], "indexAsOf": None, "auditId": audit,
+        }, audit=audit)
+        return
+    # Target-based operations: resolve across every visible graph.
+    resolved_projects: list[tuple[str, object]] = []
+    ambiguous: list[dict] = []
+    negative = ("not_found", 0.0, [])
+    for project_id in candidates:
+        graph = _ua_graph_for(project_id)
+        if graph is None:
+            continue
+        verdict = ua_core.resolve_target(req.target, graph, req.session_context)
+        if verdict.resolved:
+            resolved_projects.append((project_id, graph))
+        elif verdict.resolution == "ambiguous":
+            ambiguous.extend(
+                dict(candidate, projectId=project_id)
+                for candidate in verdict.candidates)
+        elif negative[0] != "no_context" and verdict.resolution == "no_context":
+            negative = ("no_context", verdict.confidence, verdict.candidates)
+    if len(resolved_projects) == 1:
+        body = _ua_run(context, req, resolved_projects[0][0])
+        body["auditId"] = audit
+        handler.json_response(body, audit=audit)
+        return
+    if len(resolved_projects) > 1:
+        handler.json_response({
+            "ok": True, "operation": req.operation, "projectId": None,
+            "status": "ambiguous_project",
+            "resolution": {"nodeId": "", "resolution": "ambiguous",
+                           "confidence": 0.0, "candidates": [
+                               {"node_id": "", "name": p, "type": "project",
+                                "file": "", "projectId": p}
+                               for p, _g in resolved_projects]},
+            "note": "That matches several analyzed projects; ask which one.",
+            "evidence": [], "indexAsOf": None, "auditId": audit,
+        }, audit=audit)
+        return
+    if ambiguous:
+        handler.json_response({
+            "ok": True, "operation": req.operation, "projectId": None,
+            "status": "ambiguous",
+            "resolution": {"nodeId": "", "resolution": "ambiguous",
+                           "confidence": 0.0,
+                           "candidates": ambiguous[:ua_core.MAX_CANDIDATES]},
+            "note": "Several graph nodes match; ask which one.",
+            "evidence": [], "indexAsOf": None, "auditId": audit,
+        }, audit=audit)
+        return
+    note = ("Which file or symbol do you mean?" if negative[0] == "no_context"
+            else "I could not find that in the analyzed code graphs.")
+    handler.json_response({
+        "ok": True, "operation": req.operation, "projectId": None,
+        "status": negative[0],
+        "resolution": {"nodeId": "", "resolution": negative[0],
+                       "confidence": negative[1],
+                       "candidates": negative[2]},
+        "note": note, "evidence": [], "indexAsOf": None, "auditId": audit,
+    }, audit=audit)
 
 
 def load_access_context() -> dict | None:
@@ -1409,6 +1681,9 @@ class QueryHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/knowledge/search":
             self._post_knowledge_search(payload, audit)
+            return
+        if parsed.path == "/api/ua/query":
+            _ua_respond(self, payload, audit)
             return
         if parsed.path == "/api/groups":
             self._post_group_create(payload, audit)
