@@ -712,6 +712,36 @@ def start_nandatown_poller() -> bool:
     return True
 
 
+def manifest_source_epoch(root: str, *, context: dict | None = None,
+                          registry_connectors: list[dict] | None = None,
+                          jobs: list[dict] | None = None) -> str | None:
+    """The true manifest/source epoch (a content digest) for an authorized project.
+
+    ``sourceEpoch`` in the Studio contracts is the Connector manifest epoch
+    published by the index pipeline - NEVER a wall-clock timestamp (freshness
+    audit 2026-10-18: project_snapshot used to copy max(analyzed_at) into it,
+    which made two different notions share one name).  Origin preference:
+    the durable connector-registry record for ``connector:{root}``, then the
+    newest persisted index job that published one.  None when neither is
+    known (deployments without a paired connector) - callers must then omit
+    or null the field rather than substitute a timestamp.
+    """
+    source_id = f"connector:{root}"
+    connectors = registry_connectors if registry_connectors is not None else connector_registry_projection(context)
+    for record in connectors:
+        if record.get("connectorId") != source_id:
+            continue
+        epoch = str(record.get("sourceEpoch") or "").strip()
+        if epoch:
+            return epoch
+    job_list = jobs if jobs is not None else load_persisted_index_jobs(root, context)
+    for job in sorted(job_list, key=lambda value: str(value.get("updatedAt", "")), reverse=True):
+        epoch = str(job.get("sourceEpoch") or "").strip()
+        if epoch:
+            return epoch
+    return None
+
+
 def project_snapshot(project_id: str | None = None, *, context: dict | None = None) -> dict:
     """Build a snapshot from an already resolved HomeHub context.
 
@@ -798,6 +828,11 @@ def project_snapshot(project_id: str | None = None, *, context: dict | None = No
         registry_connectors.append(connector_projection)
     registry_nodes = registry_agent_nodes(context)
     persisted_jobs = load_persisted_index_jobs(root if visible_project else None, context)
+    # sourceEpoch is the manifest content epoch (or null when unknown);
+    # analyzedAt/updatedAt carry the timestamp semantics it used to borrow.
+    source_epoch = (manifest_source_epoch(root, context=context,
+                                          registry_connectors=registry_connectors, jobs=persisted_jobs)
+                    if visible_project else None)
     snapshot = {
         "project": {
             "projectId": project_key, "sourceId": source_id, "name": root if visible_project else "Project scope unavailable",
@@ -805,7 +840,8 @@ def project_snapshot(project_id: str | None = None, *, context: dict | None = No
             "languages": graph_project.get("languages", []) if visible_project else [], "frameworks": graph_project.get("frameworks", []) if visible_project else [],
             "counts": {"files": graph_files or len(items), "nodes": len(graph_nodes) or len(items), "relations": len(graph_edges), "layers": layers},
             "entryPoints": [item.get("file") for item in items[:4] if item.get("file")] if visible_project else [],
-            "knowledgeVersion": updated, "sourceEpoch": updated, "freshness": state, "updatedAt": updated,
+            "knowledgeVersion": updated, "analyzedAt": updated, "sourceEpoch": source_epoch,
+            "freshness": state, "updatedAt": updated,
             "schemaVersion": graph_project.get("graphVersion") or ua_graph.get("version") if ua_graph else None,
             "visibility": "private" if visible_project else None,
             "grantEpoch": context.get("grantEpoch") if context else None,
@@ -813,7 +849,7 @@ def project_snapshot(project_id: str | None = None, *, context: dict | None = No
             "auditId": context.get("auditId") if context else None,
         },
         "health": {
-            "state": state, "knowledgeVersion": updated, "sourceEpoch": updated,
+            "state": state, "knowledgeVersion": updated, "sourceEpoch": source_epoch,
             "coverage": {"filesIndexed": len(items)}, "lastSuccessfulAt": updated,
             "connectorStatus": connector["state"], "reason": reason,
         },

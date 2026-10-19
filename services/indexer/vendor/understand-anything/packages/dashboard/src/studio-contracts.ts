@@ -47,7 +47,14 @@ export interface ProjectSummary {
   /** Server-published knowledge epoch/version. The graph schema version is separate. */
   knowledgeVersion?: string;
   schemaVersion?: string;
-  sourceEpoch?: string;
+  /**
+   * Manifest content epoch published by the Connector/index pipeline.
+   * Null when no manifest epoch is known (no paired connector). Never a
+   * wall-clock time - for timestamps use analyzedAt/updatedAt.
+   */
+  sourceEpoch?: string | null;
+  /** When the project's knowledge output was last analyzed (timestamp). */
+  analyzedAt?: string;
   freshness: ConnectionState;
   updatedAt: string;
   /** Server-projected visibility; this is never a client-side permission check. */
@@ -60,7 +67,8 @@ export interface ProjectSummary {
 export interface KnowledgeHealth {
   state: ConnectionState;
   knowledgeVersion?: string;
-  sourceEpoch?: string;
+  /** Manifest content epoch (same semantics as ProjectSummary.sourceEpoch); null when unknown. */
+  sourceEpoch?: string | null;
   coverage: {
     filesIndexed: number;
     filesAuthorized?: number;

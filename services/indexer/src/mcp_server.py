@@ -516,7 +516,11 @@ class ToolRunner:
                 "counts": {"files": len(items), "nodes": len(nodes), "relations": len(edges)},
                 "entryPoints": [item.get("file") for item in items[:4] if item.get("file")],
                 "knowledgeVersion": updated,
-                "sourceEpoch": updated,
+                # Same contract fix as query_api.project_snapshot (freshness
+                # audit 2026-10-18): analyzedAt keeps the timestamp meaning,
+                # sourceEpoch carries the true manifest epoch or null.
+                "analyzedAt": updated,
+                "sourceEpoch": query_api.manifest_source_epoch(root, context=context, jobs=jobs),
                 "freshness": state,
                 "updatedAt": updated,
                 "grantEpoch": context.get("grantEpoch"),
