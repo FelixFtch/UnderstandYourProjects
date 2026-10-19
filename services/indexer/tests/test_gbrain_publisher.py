@@ -313,8 +313,121 @@ class GbrainPublisherTests(unittest.TestCase):
         self.assertEqual(result["scheduled"], 0)
         self.assertEqual(calls, [])
         record = gp.MirrorJobStore(state).list()[0]
-        self.assertEqual(record["phase"], "blocked")
+        # ADR docs/ADR_MIRROR_EPOCH.md (2026-10-19): an epoch mismatch is
+        # rotation noise, terminally expired with the audit chain kept -
+        # not "blocked", which stays reserved for real policy denials.
+        self.assertEqual(record["phase"], "terminal_expired")
         self.assertEqual(record["lastError"], "homehub_grant_epoch_mismatch")
+        self.assertEqual(record["blockedBy"], "homehub")
+        self.assertEqual(record["expiredBy"], "grant_epoch_rotation")
+
+    def test_mirror_scope_denial_stays_blocked(self):
+        state = self.root / "state"
+        gp.enqueue_mirror(
+            state_root=state, index_job_id="job-scope", project_id="other",
+            knowledge_root=self.root / "output" / "demo", version="v1",
+            source_epoch="source-1", grant_epoch="grant-1")
+
+        def fake_publish(*args, **kwargs):
+            return {"manifestWritten": True, "entries": 1}
+
+        context = {
+            "principalId": "felix", "sessionId": "session-1",
+            "jarvisNodeId": "node-1", "projectScopes": ["demo"],
+            "sourceScopes": ["connector:demo"], "grantEpoch": "grant-1",
+            "policyDigest": "sha256:test",
+            "expiresAt": "2099-01-01T00:00:00Z", "auditId": "audit-1",
+        }
+        result = gp.run_pending_mirrors(
+            state, access_context=context, enforce_access_context=True,
+            publisher=fake_publish, log=lambda line: None)
+        self.assertEqual(result["scheduled"], 0)
+        record = gp.MirrorJobStore(state).list()[0]
+        self.assertEqual(record["phase"], "blocked")
+        self.assertEqual(record["lastError"], "homehub_scope_denied")
+        self.assertNotIn("expiredBy", record)
+
+    def test_terminal_expired_records_are_never_rescheduled(self):
+        state = self.root / "state"
+        gp.enqueue_mirror(
+            state_root=state, index_job_id="job-expired", project_id="demo",
+            knowledge_root=self.root / "output" / "demo", version="v1",
+            source_epoch="source-1", grant_epoch="grant-old")
+        store = gp.MirrorJobStore(state)
+        store.event(store.list()[0]["mirrorJobId"], "terminal_expired",
+                    {"lastError": "homehub_grant_epoch_mismatch",
+                     "blockedBy": "homehub",
+                     "expiredBy": "grant_epoch_rotation"})
+
+        calls = []
+
+        def fake_publish(*args, **kwargs):
+            calls.append(args)
+            return {"manifestWritten": True, "entries": 1}
+
+        # run_pending_mirrors only ever selects queued/retry_wait, and a
+        # matching fresh context must not resurrect a terminal record.
+        context = {
+            "principalId": "felix", "sessionId": "session-1",
+            "jarvisNodeId": "node-1", "projectScopes": ["demo"],
+            "sourceScopes": ["connector:demo"], "grantEpoch": "grant-old",
+            "policyDigest": "sha256:test",
+            "expiresAt": "2099-01-01T00:00:00Z", "auditId": "audit-1",
+        }
+        result = gp.run_pending_mirrors(
+            state, access_context=context, enforce_access_context=True,
+            publisher=fake_publish, log=lambda line: None)
+        self.assertEqual(result["scheduled"], 0)
+        self.assertEqual(calls, [])
+        direct = gp.run_mirror_job(
+            gp.MirrorJobStore(state).list()[0], state_root=state,
+            publisher=fake_publish, log=lambda line: None,
+            access_context=context, enforce_access_context=True)
+        self.assertEqual(direct["phase"], "terminal_expired")
+        self.assertEqual(calls, [])
+
+    def test_terminal_expired_migration_is_idempotent(self):
+        import migrate_terminal_expired as mt
+        state = self.root / "state"
+        gp.enqueue_mirror(
+            state_root=state, index_job_id="job-a", project_id="demo",
+            knowledge_root=self.root / "output" / "demo", version="v1",
+            source_epoch="source-1", grant_epoch="grant-old")
+        gp.enqueue_mirror(
+            state_root=state, index_job_id="job-b", project_id="demo",
+            knowledge_root=self.root / "output" / "demo", version="v2",
+            source_epoch="source-1", grant_epoch="grant-older")
+        store = gp.MirrorJobStore(state)
+        for record in store.list():
+            store.event(record["mirrorJobId"], "blocked",
+                        {"lastError": "homehub_grant_epoch_mismatch",
+                         "blockedBy": "homehub"})
+        # one blocked record with a DIFFERENT reason must be left alone
+        gp.enqueue_mirror(
+            state_root=state, index_job_id="job-c", project_id="demo",
+            knowledge_root=self.root / "output" / "demo", version="v3",
+            source_epoch="source-1", grant_epoch="grant-x")
+        store.event(
+            [r for r in store.list() if r["indexJobId"] == "job-c"][0]["mirrorJobId"],
+            "blocked", {"lastError": "homehub_scope_denied",
+                        "blockedBy": "homehub"})
+
+        with patch("sys.stdout"):  # keep test output clean
+            self.assertEqual(mt.main(["--state-root", str(state), "--dry-run"]), 0)
+            self.assertEqual(
+                {r["phase"] for r in store.list()}, {"blocked"})
+            self.assertEqual(mt.main(["--state-root", str(state), "--apply"]), 0)
+        phases = {}
+        for record in store.list():
+            phases[record["indexJobId"]] = record["phase"]
+        self.assertEqual(phases["job-a"], "terminal_expired")
+        self.assertEqual(phases["job-b"], "terminal_expired")
+        self.assertEqual(phases["job-c"], "blocked")  # policy denial kept
+        # second apply is a no-op
+        with patch("sys.stdout"):
+            self.assertEqual(mt.main(["--state-root", str(state), "--apply"]), 0)
+        self.assertEqual(
+            sum(1 for r in store.list() if r["phase"] == "terminal_expired"), 2)
 
     def test_mirror_worker_leaves_queue_when_homehub_unavailable(self):
         state = self.root / "state"
