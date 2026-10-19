@@ -6,6 +6,7 @@ import type {
   HomeDeviceActionResult, HomeDeviceProjection, LlmProvidersResult, LlmProvidersSettings, LlmProvidersUpdate,
   MarkReadRequest, ModelModeResult, ModelModeSettings, ModelModeUpdate, NotificationList,
   PairResponse, PolicyDoc, PolicyDomain, PolicyTree,
+  KnowledgeQueryResult,
   ProjectAnswer, ProjectDigest, ProjectGraph, ProjectList, ReceiptsQuery, SendResult, SensorDeviceList,
   SensorHistory, SensorStateRow, ShareCard, ShareCardUpdate, StudioReceiptList, Thread,
   UaModeResult, UaModeSettings, UaModeUpdate, VoiceProfilesResult, VoiceProfilesSettings, VoiceProfilesUpdate,
@@ -200,6 +201,10 @@ export const api = {
   projectGraph: (id: string, s?: AbortSignal) => get<ProjectGraph>(`/api/studio/projects/${encodeURIComponent(id)}/graph`, s),
   askProject: (id: string, question: string) =>
     send<ProjectAnswer>("POST", `/api/studio/projects/${encodeURIComponent(id)}/ask`, { question }),
+  // Evidence-chain knowledge search: one question -> one retrieval -> one
+  // synthesis pass, returning the contract evidence of exactly that answer.
+  knowledgeQuery: (question: string, project?: string) =>
+    get<KnowledgeQueryResult>(`/api/studio/knowledge/query?q=${encodeURIComponent(question)}${project ? `&project=${encodeURIComponent(project)}` : ""}`),
   analyzeFolder: (path: string, device_id?: string) =>
     send<AnalyzeResult>("POST", "/api/studio/projects/analyze", { path, device_id }),
   analyzeJob: (job_id: string) => get<AnalyzeJob>(`/api/studio/projects/jobs/${encodeURIComponent(job_id)}`),
