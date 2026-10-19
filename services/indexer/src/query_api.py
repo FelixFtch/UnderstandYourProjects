@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import glob
+import re
 import threading
 import time
 import urllib.error
@@ -254,6 +255,80 @@ def _ua_request_from_payload(payload: dict) -> tuple[object, str | None]:
     ), None
 
 
+def _ua_impl_repo_indexed(rows: list) -> bool:
+    """Is the Understand-Anything IMPLEMENTATION repository itself among
+    the indexed sources? (Owner rule 2026-10-19: workspace answers must
+    distinguish 'not indexed' from 'nothing exists'.)"""
+    for row in rows:
+        blob = re.sub(r"[^a-z0-9]", "", str(row.get("root_name") or "") + str(
+            row.get("path") or "").lower())
+        if "understandanyprojects" in blob:
+            return True
+    return False
+
+
+def _ua_workspace_run(context: dict, req) -> dict:
+    """Run one query at WORKSPACE scope across every visible projection
+    (owner decision 2026-10-19). "Understand Anything" is the knowledge
+    workspace - never one source project - so workspace asks aggregate
+    instead of asking which folder; target-based operations honestly
+    redirect to a named source."""
+    try:
+        listing = project_digest.list_projects(context)
+    except Exception:  # noqa: BLE001 - registry hiccups answer empty
+        listing = {}
+    rows = [r for r in (listing.get("projects") or [])
+            if isinstance(r, dict) and r.get("project_id")]
+    graphs = {}
+    for row in rows:
+        graph = _ua_graph_for(str(row["project_id"]))
+        if graph is not None:
+            graphs[str(row["project_id"])] = graph
+    body = {
+        "ok": True, "operation": req.operation, "projectId": None,
+        "scopeType": "workspace", "workspaceId": ua_core.WORKSPACE_ID,
+        "status": "ok",
+        "resolution": {"nodeId": "", "resolution": "workspace",
+                       "confidence": 1.0, "candidates": []},
+        "note": "", "evidence": [], "indexAsOf": None, "auditId": None,
+    }
+    if not graphs:
+        body["status"] = "no_graph"
+        body["note"] = ("The " + ua_core.WORKSPACE_DISPLAY + " workspace is "
+                        "active, but no analyzed folders are available to "
+                        "you yet.")
+        return body
+    if req.operation == "recent_changes":
+        since, until = ua_core.window_bounds(req.time_range)
+        rows_by_project = {pid: _ua_activity(context, pid, since, until)
+                           for pid in graphs}
+        records, note = ua_core.workspace_changes_records(
+            rows_by_project, graphs, _ua_impl_repo_indexed(rows))
+        body["evidence"] = records
+        body["note"] = note
+        if records:
+            body["indexAsOf"] = records[0].get("index_as_of")
+        else:
+            body["status"] = "not_found"
+        return body
+    if req.operation in ("summary", "explain"):
+        records, note = ua_core.workspace_summary_records(rows, graphs)
+        body["evidence"] = records
+        body["note"] = note
+        body["indexAsOf"] = max(
+            (g.analyzed_at or "" for g in graphs.values()), default="") or None
+        return body
+    # Target-based operations: the workspace is a scope, not a target.
+    body["status"] = "ambiguous_project"
+    body["resolution"]["candidates"] = [
+        {"node_id": "", "name": pid, "type": "project", "file": "",
+         "projectId": pid} for pid in sorted(graphs)]
+    body["note"] = (ua_core.WORKSPACE_DISPLAY + " is the whole knowledge "
+                    "workspace; that operation needs one source folder or a "
+                    "file target - name one of the indexed folders.")
+    return body
+
+
 def _ua_run(context: dict, req, project_id: str) -> dict:
     """Run one query against ONE visible project and frame the response."""
     graph = _ua_graph_for(project_id)
@@ -311,6 +386,13 @@ def _ua_respond(handler, payload: dict, audit: str) -> None:
         handler.json_response({"ok": False, "error": error}, 400, audit)
         return
     project = str(payload.get("project") or payload.get("projectId") or "").strip()
+    workspace = ua_core.workspace_ref(
+        project, str(payload.get("question") or payload.get("query") or ""))
+    if workspace:
+        body = _ua_workspace_run(context, req)
+        body["auditId"] = audit
+        handler.json_response(body, audit=audit)
+        return
     if project:
         if project_digest._resolve(context, project) is None:
             handler._project_not_found(audit)

@@ -48,6 +48,10 @@ RESOLUTIONS = (
     # ... and the two honest negative outcomes (candidates fill on the
     # first one; the second means "ask the user which file").
     "ambiguous", "not_found", "no_context",
+    # ... and the scope resolution (owner 2026-10-19): the ask named the
+    # KNOWLEDGE WORKSPACE - the feature aggregating every authorized
+    # folder projection - which is not a target inside any one graph.
+    "workspace",
 )
 
 MAX_EVIDENCE = 8
@@ -886,6 +890,186 @@ def infer_operation(question: str) -> str:
     return "explain"
 
 
+# ── the knowledge workspace (a scope, never a source project) ──────────────
+
+WORKSPACE_ID = "understand-anything"
+WORKSPACE_DISPLAY = "Understand Anything"
+
+# Owner decision 2026-10-19: "Understand Anything" names the knowledge
+# WORKSPACE - the product feature aggregating every authorized folder
+# projection - never a source project id. An ask naming the workspace
+# runs at WORKSPACE scope across the caller's visible projections; only
+# an ask naming a source (or clearly targeting one folder) narrows to
+# project scope. No fake project_id is ever created for the workspace.
+WORKSPACE_ALIASES = (
+    "understand anything",
+    "understandanything",
+    "the understanding workspace",
+    "understanding workspace",
+    "what jarvis learned",
+    "what jarvis has learned",
+    "my project knowledge",
+    "the project knowledge workspace",
+)
+
+
+def _norm_phrase(text: str) -> str:
+    return " ".join(re.split(r"[^a-z0-9]+", str(text or "").lower())).strip()
+
+
+def workspace_ref(project_field: str, question: str) -> str:
+    """WORKSPACE_ID when the ask names the workspace, else "".
+
+    The project field matches by equality; the question matches when a
+    whole alias appears as its own token run ("explain the understand
+    anything workspace" hits; "understand the anything file" never
+    does). A non-alias project field is an explicit SOURCE ask and
+    always wins - no question-text scan then.
+    """
+    field = _norm_phrase(project_field)
+    if field:
+        return WORKSPACE_ID if field in WORKSPACE_ALIASES else ""
+    phrase = _norm_phrase(question)
+    if not phrase:
+        return ""
+    for alias in WORKSPACE_ALIASES:
+        if alias == phrase or f" {alias} " in f" {phrase} ":
+            return WORKSPACE_ID
+    return ""
+
+
+def _workspace_record(retrieved_at: str, locator: str, content: str, *,
+                      index_as_of: str | None = None) -> dict:
+    as_of = index_as_of
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "source_id": f"ua-workspace:{WORKSPACE_ID}",
+        "source_version": as_of or "unknown",
+        "locator": str(locator or ""),
+        "content": str(content or ""),
+        "permission_checked": True,
+        "retrieved_at": retrieved_at,
+        "index_as_of": as_of,
+        "freshness": freshness_of(as_of),
+        "fact_type": "structural",
+        "provider": "local",
+        "model_id": _model_id(),
+    }
+
+
+def workspace_summary_records(project_rows: list, graphs: dict,
+                              retrieved_at: str | None = None,
+                              ) -> tuple[list[dict], str]:
+    """Aggregate coverage records for the workspace scope.
+
+    ``project_rows`` are registry records (project_id + stats), ``graphs``
+    maps project_id -> UAGraph (entries may be missing). The head record
+    is the workspace digest; one record per projection follows with the
+    graph stats verbatim - never re-worded, never invented.
+    """
+    stamp = retrieved_at or now_iso()
+    rows = [r for r in project_rows or []
+            if isinstance(r, dict) and r.get("project_id")]
+    files = summarized = 0
+    for row in rows:
+        stats = row.get("stats") if isinstance(row.get("stats"), dict) else {}
+        files += int(stats.get("files") or 0)
+        summarized += int(stats.get("summarized") or 0)
+    nodes = edges = 0
+    newest = ""
+    per: list[dict] = []
+    for row in rows:
+        pid = str(row["project_id"])
+        graph = (graphs or {}).get(pid)
+        if graph is not None:
+            nodes += graph.node_count
+            edges += graph.edge_count
+            if graph.analyzed_at and graph.analyzed_at > newest:
+                newest = graph.analyzed_at
+            per.append(_record(
+                graph, f"ua:{pid}",
+                " ".join(filter(None, [
+                    f"{pid}: {len(graph.files)} indexed files, "
+                    f"{graph.node_count} nodes, {graph.edge_count} edges.",
+                    f"Analyzed {graph.analyzed_at}." if graph.analyzed_at else "",
+                ])),
+                fact_type="structural", retrieved_at=stamp))
+        else:
+            per.append(_workspace_record(
+                stamp, f"ua:{pid}",
+                f"{pid}: analyzed projection (graph not loaded).",
+                index_as_of=str(row.get("analyzed_at") or "") or None))
+    pids = [str(r["project_id"]) for r in rows]
+    head = _workspace_record(
+        stamp, f"ua:workspace/{WORKSPACE_ID}",
+        " ".join(filter(None, [
+            f"{WORKSPACE_DISPLAY} workspace: {len(pids)} authorized folder "
+            + ("projection: " if len(pids) == 1 else "projections: ")
+            + (", ".join(pids) if pids else "none") + ".",
+            (f"Together about {files} discovered files, {summarized} "
+             f"summarized, {nodes} graph nodes and {edges} relations.")
+            if pids else "",
+        ])),
+        index_as_of=newest or None)
+    if pids:
+        note = (f"{WORKSPACE_DISPLAY} currently knows {len(pids)} authorized "
+                + ("folder" if len(pids) == 1 else "folders") + ": "
+                + ", ".join(pids) + ".")
+    else:
+        note = "No analyzed folders are available to you yet."
+    return [head] + per[:MAX_EVIDENCE - 1], note
+
+
+def workspace_changes_records(rows_by_project: dict, graphs: dict,
+                              impl_indexed: bool,
+                              retrieved_at: str | None = None,
+                              ) -> tuple[list[dict], str]:
+    """Merged recent-changes records across every visible projection.
+
+    ``rows_by_project`` maps project_id -> activity rows (file / mtime /
+    purpose); rows merge newest-first, each attributed to its project.
+    ``impl_indexed`` False appends the honest line: the implementation
+    repository behind the workspace itself is not among the indexed
+    sources, so changes to the workspace's OWN code are not in this
+    list - the workspace is never reported as empty.
+    """
+    stamp = retrieved_at or now_iso()
+    merged: list[tuple[float, str, dict]] = []
+    for pid, rows in (rows_by_project or {}).items():
+        for row in rows or []:
+            if not isinstance(row, dict) or not row.get("file"):
+                continue
+            merged.append((_row_epoch(row.get("mtime")) or 0.0, str(pid), row))
+    merged.sort(key=lambda item: item[0], reverse=True)
+    records: list[dict] = []
+    newest = 0.0
+    for mtime, pid, row in merged[:MAX_EVIDENCE]:
+        newest = max(newest, mtime)
+        when = _iso(mtime)
+        content = " ".join(filter(None, [
+            f"[{pid}] {row['file']}" + (f" changed {when}." if when else "."),
+            _first_clause(str(row.get("purpose") or ""), 160),
+        ]))
+        graph = (graphs or {}).get(pid)
+        if graph is not None:
+            records.append(_record(graph, str(row["file"]), content,
+                                   fact_type="structural", retrieved_at=stamp,
+                                   index_as_of=when or None))
+        else:
+            records.append(_workspace_record(stamp, str(row["file"]), content,
+                                             index_as_of=when or None))
+    if records:
+        note = (f"{len(merged)} changed file(s) across your indexed folders "
+                f"in the window; showing the {len(records)} newest.")
+    else:
+        note = "No changed files in the window across your indexed folders."
+    if not impl_indexed:
+        note += (f" The {WORKSPACE_DISPLAY} implementation repository itself "
+                 "is not indexed, so changes to its own code are not in "
+                 "this list.")
+    return records, note
+
+
 __all__ = [
     "OPERATIONS",
     "TIME_RANGES",
@@ -896,10 +1080,16 @@ __all__ = [
     "UAQueryRequest",
     "UAQueryResult",
     "ResolvedTarget",
+    "WORKSPACE_ALIASES",
+    "WORKSPACE_DISPLAY",
+    "WORKSPACE_ID",
     "infer_operation",
     "load_graph",
     "resolve_target",
     "run_ua_query",
     "state_root",
     "window_bounds",
+    "workspace_changes_records",
+    "workspace_ref",
+    "workspace_summary_records",
 ]

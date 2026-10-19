@@ -317,5 +317,140 @@ class UaQueryEndpointTests(unittest.TestCase):
         self.assertEqual(body["status"], "ok")
 
 
+class UaWorkspaceScopeTests(unittest.TestCase):
+    """Workspace scope (owner decision 2026-10-19): "Understand Anything"
+    names the knowledge WORKSPACE aggregating every authorized folder
+    projection - never a source project. An ask naming it aggregates
+    instead of asking which folder; the implementation repository's
+    absence is stated explicitly, never reported as 'no data'."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        now = time.time()
+        self.pids = ["demo-project", "second-project"]
+        for pid, offset in zip(self.pids, (0.2, 1.5)):
+            output = root / "output" / pid
+            output.mkdir(parents=True)
+            (output / "src__sig_helper.py.knowledge.json").write_text(
+                json.dumps({
+                    "file": "src/sig_helper.py",
+                    "version": {"mtime": now - offset * 86400},
+                    "verdict": "quick-summary",
+                    "analyzed_at": "2026-10-18T00:00:00Z",
+                    "derived": {"purpose": f"Keys and signing ({pid})."},
+                }), encoding="utf-8")
+            graph = fixture_graph()
+            graph["project"]["name"] = pid
+            graph["project"]["analyzedAt"] = (
+                "2026-10-19T10:00:00.000Z" if pid == self.pids[0]
+                else "2026-10-19T11:00:00.000Z")
+            ua_dir = root / "state" / pid / "ua"
+            ua_dir.mkdir(parents=True)
+            (ua_dir / "knowledge-graph.json").write_text(
+                json.dumps(graph), encoding="utf-8")
+        self.env_old = {key: os.environ.get(key) for key in (
+            "UYP_OUTPUT_ROOT", "UYP_STATE_ROOT", "UYP_ACCESS_CONTEXT_FILE",
+            "UYP_HOMEHUB_ACCESS_CONTEXT_URL", "UYP_HOMEHUB_TOKEN_FILE")}
+        os.environ["UYP_OUTPUT_ROOT"] = str(root / "output")
+        os.environ["UYP_STATE_ROOT"] = str(root / "state")
+        os.environ.pop("UYP_ACCESS_CONTEXT_FILE", None)
+        os.environ.pop("UYP_HOMEHUB_ACCESS_CONTEXT_URL", None)
+        os.environ.pop("UYP_HOMEHUB_TOKEN_FILE", None)
+        query_api._ua_graph_cache.clear()
+        homehub = FakeHomeHub()
+        homehub.member_payloads["felix"] = member_context(
+            "felix", projects=self.pids)
+        threading.Thread(target=homehub.serve_forever, daemon=True).start()
+        self.addCleanup(homehub.server_close)
+        self.addCleanup(homehub.shutdown)
+        os.environ["UYP_HOMEHUB_ACCESS_CONTEXT_URL"] = (
+            "http://127.0.0.1:%d/api/uyp/access-context"
+            % homehub.server_address[1])
+        token_file = root / "homehub.token"
+        token_file.write_text("box-token\n", encoding="utf-8")
+        os.environ["UYP_HOMEHUB_TOKEN_FILE"] = str(token_file)
+        self.api = ThreadingHTTPServer(("127.0.0.1", 0), query_api.QueryHandler)
+        self.api.loopback_voice = True
+        threading.Thread(target=self.api.serve_forever, daemon=True).start()
+        self.addCleanup(self.api.server_close)
+        self.addCleanup(self.api.shutdown)
+
+    def tearDown(self):
+        for key, value in self.env_old.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        self.tmp.cleanup()
+
+    def _post(self, body, headers=None):
+        request = urllib.request.Request(
+            "http://127.0.0.1:%d/api/ua/query" % self.api.server_address[1],
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json", **(headers or {})},
+            method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                return response.status, json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read())
+
+    def test_workspace_alias_in_question_aggregates(self):
+        """The incident sentence: workspace scope, merged changes, and
+        the implementation repository's absence said explicitly."""
+        status, body = self._post(
+            {"question": "what did I add to Understand anything"},
+            headers={"X-Agent-Member": "felix"})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["scopeType"], "workspace")
+        self.assertEqual(body["resolution"]["resolution"], "workspace")
+        self.assertEqual(body["operation"], "recent_changes")
+        self.assertEqual(body["status"], "ok")
+        self.assertTrue(body["evidence"])
+        attributed = {e["content"].split("]")[0].lstrip("[")
+                      for e in body["evidence"]}
+        self.assertTrue(attributed & set(self.pids))
+        self.assertIn("implementation repository itself is not indexed",
+                      body["note"])
+
+    def test_workspace_summary_by_alias_project_field(self):
+        status, body = self._post(
+            {"operation": "summary", "project": "Understand Anything"},
+            headers={"X-Agent-Member": "felix"})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["scopeType"], "workspace")
+        head = body["evidence"][0]["content"]
+        self.assertIn("2 authorized folder projections", head)
+        for pid in self.pids:
+            self.assertIn(pid, head)
+        self.assertIn("authorized folder", body["note"])
+
+    def test_explicit_source_beats_alias_in_question(self):
+        """A named source folder is meaning-three (project scope): the
+        alias in the question must NOT hijack it."""
+        status, body = self._post(
+            {"question": "what did I add to Understand anything",
+             "project": "demo-project"},
+            headers={"X-Agent-Member": "felix"})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["projectId"], "demo-project")
+        self.assertNotIn("scopeType", body)
+
+    def test_workspace_target_op_redirects_to_a_source(self):
+        """Target-based operations honestly name the folders instead of
+        pretending the workspace is a target."""
+        status, body = self._post(
+            {"question": "where is the signing file in Understand Anything",
+             "operation": "locate"},
+            headers={"X-Agent-Member": "felix"})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["status"], "ambiguous_project")
+        candidate_ids = {c["projectId"]
+                         for c in body["resolution"]["candidates"]}
+        self.assertEqual(candidate_ids, set(self.pids))
+        self.assertIn("name one of the indexed folders", body["note"])
+
+
 if __name__ == "__main__":
     unittest.main()
