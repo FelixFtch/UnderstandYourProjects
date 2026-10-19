@@ -467,8 +467,11 @@ def ask(context: dict, project_id: str, question: str, *, member: str | None = N
     tokens = _question_tokens(question)  # also used below to filter gbrain blocks
     hits = rank_hits(items, question, names)
     key_question = any(word in lowered for word in KEY_FILE_WORDS)
+    # Naming the project only makes it an overview question when nothing
+    # specific matched ("tell me about commontasks"); "how does commontasks
+    # check evidence" must lead with the files that answer it.
     overview_question = (key_question or any(word in lowered for word in OVERVIEW_WORDS)
-                         or any(n and n in lowered for n in names))
+                         or (not hits and any(n and n in lowered for n in names)))
     blocks = []
     if member and role and gbrain is not False:
         wanted = [t for t in tokens if len(t) >= 3]

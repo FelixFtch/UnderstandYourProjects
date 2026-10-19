@@ -609,6 +609,17 @@ class AskTests(FixtureMixin, unittest.TestCase):
         self.assertNotIn("vendor/ua/UPSTREAM.md", files)
         self.assertIn("KEY FILE (A): src/app.py", self.prompts[0])
 
+    def test_specific_question_naming_the_project_leads_with_matching_files(self):
+        result = project_digest.ask(self.ctx, "commontasks", "How does commontasks persist tasks in SQLite?",
+                                    member="robin", role="owner", llm=self.llm("In src/db.py."),
+                                    gbrain=lambda q, m, r: [])
+        self.assertEqual(result["sources"][0], {"file": "src/db.py"})  # the answering file, not key files
+        self.assertNotIn("KEY FILE", self.prompts[0])
+        # with nothing specific to match, naming the project still gives the overview
+        project_digest.ask(self.ctx, "commontasks", "Tell me commontasks", member="robin", role="owner",
+                           llm=self.llm("ok"), gbrain=lambda q, m, r: [])
+        self.assertIn("KEY FILE (A): src/app.py", self.prompts[-1])
+
 
 class AnalyzeJobTests(FixtureMixin, ConnectorMixin, unittest.TestCase):
     def setUp(self):
