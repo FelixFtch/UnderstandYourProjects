@@ -31,6 +31,31 @@ from typing import Any
 from gbrain_publisher import MirrorJobStore, mirror_projection, run_pending_mirrors
 from homehub_adapter import load_context
 
+# Voice-priority yield (owner design 2026-10-10, 语音>查询>索引): the
+# IndexJob worker, the agent-runtime interactive-lock node and the
+# satellite yield watcher all touch this lock; the mirror pass honours
+# the same 30-second window - a fresh lock skips this pass cleanly (the
+# queue is durable, the next timer tick catches up). Field evidence
+# 2026-10-19: the mirror/gBrain embedding lane had NO yield and was the
+# box's top CPU feeder during satellite turns, starving ASR.
+INTERACTIVE_LOCK = "/tmp/uyp_interactive.lock"
+INTERACTIVE_HOLD_S = 30.0
+
+
+def voice_active(lock_path: str | os.PathLike[str] | None = None,
+                 *, now: float | None = None) -> bool:
+    """True while an interactive (voice/studio) turn holds the yield
+    lock within its freshness window. The default path resolves at call
+    time so tests (and operators) can repoint INTERACTIVE_LOCK."""
+    import time as _t
+    path = INTERACTIVE_LOCK if lock_path is None else lock_path
+    try:
+        stamped = float(open(path).read().strip())
+    except (OSError, ValueError):
+        return False
+    current = _t.time() if now is None else now
+    return 0.0 <= current - stamped <= INTERACTIVE_HOLD_S
+
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -85,6 +110,13 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.status:
         print(json.dumps(queue_status(args.state_root), ensure_ascii=False, indent=2))
+        return 0
+    if voice_active():
+        # Same clean no-op contract as a policy-plane outage: the queue
+        # keeps its durable state and the next timer tick retries.
+        print(json.dumps({"ok": True, "yielded": True,
+                          "reason": "interactive lock fresh - voice priority"},
+                         ensure_ascii=False))
         return 0
     result = run_once(
         state_root=args.state_root,
