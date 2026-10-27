@@ -1,5 +1,11 @@
 # UnderstandYourProjects execution plan v2
 
+> **2026-10-27：新方向已批准并开始实施。** 当前目标是 Pi 上的 HomeHub +
+> OpenClaw + gBrain，以及原生 iPhone / macOS App。以
+> [Pi 原生家庭迁移说明](PI_NATIVE_HOME_TRANSITION_20261027.md)及其中链接的 HomeHub 架构/计划为准。
+> 下文保留为旧 UYP/Jetson 路线的历史记录，其中的“current / active / accepted”
+> 和部署描述均属于原记录日期，不代表本轮现场状态。Jetson 与 XVF3800 不改动。
+
 **Status:** active plan; implementation is staged, not a production-complete claim
 **Updated:** 2026-10-16
 **Current UYP head:** `9e3585e` (`fix(uyp): enforce project scoped retrieval`)

@@ -1,5 +1,11 @@
 # UnderstandYourProjects
 
+> **2026-10-27：新方向已批准并开始实施。** 当前目标是 Pi 上的 HomeHub +
+> OpenClaw + gBrain，以及原生 iPhone / macOS App。以
+> [Pi 原生家庭迁移说明](docs/PI_NATIVE_HOME_TRANSITION_20261027.md)及其中链接的 HomeHub 架构/计划为准。
+> 下文保留为旧 UYP/Jetson 路线的历史记录，其中的“current / active / accepted”
+> 和部署描述均属于原记录日期，不代表本轮现场状态。Jetson 与 XVF3800 不改动。
+
 UnderstandYourProjects is a local project-knowledge management system for the era of capable coding agents.
 
 It connects user-authorized computers, NAS storage, GitHub repositories, and development devices to a dedicated **Jarvis Agent Box**. The box continuously discovers projects, extracts structure, builds semantic understanding, maintains a visual project map, answers questions with source evidence, and incrementally updates its knowledge as projects change.
